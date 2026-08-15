@@ -1,0 +1,14 @@
+{
+  "name": "logofacil-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check providers/index.mjs && node --check test/server.test.mjs && node --check test/providers.test.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
