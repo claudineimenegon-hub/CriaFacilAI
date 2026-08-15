@@ -72,6 +72,41 @@ test('bloqueia origem diferente da configurada', async () => {
   assert.equal(response.headers.get('access-control-allow-origin'), null);
 });
 
+test('POST /v1/assets/images recebe binário e retorna AssetReference', async () => {
+  let received;
+  const assetStore = {
+    maxImageBytes: 100,
+    readImage: async () => undefined,
+    saveImage: async (input) => {
+      received = input;
+      return {
+        id: '00000000-0000-4000-8000-000000000001',
+        mediaType: 'image',
+        mimeType: input.mimeType,
+        role: 'product',
+        width: 1,
+        height: 1,
+        temporaryUrl: '/v1/assets/images/00000000-0000-4000-8000-000000000001',
+        retentionPolicy: 'temporary',
+        expiresAt: '2026-08-15T13:00:00.000Z',
+      };
+    },
+  };
+  const baseUrl = await start({ imageProvider: provider(), assetStore });
+  const response = await fetch(`${baseUrl}/v1/assets/images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/png' },
+    body: Buffer.from([1, 2, 3]),
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(received.bytes, Buffer.from([1, 2, 3]));
+  assert.equal(received.mimeType, 'image/png');
+  assert.equal(payload.asset.mediaType, 'image');
+  assert.equal(Object.hasOwn(payload.asset, 'path'), false);
+});
+
 test('count padrão gera uma imagem e preserva imageBase64', async () => {
   let receivedPrompt;
   const baseUrl = await start({

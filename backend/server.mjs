@@ -1,5 +1,9 @@
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
+import {
+  AssetValidationError,
+  createTemporaryAssetStore,
+} from './assets/temporary-asset-store.mjs';
 import { createImageProvider } from './providers/index.mjs';
 import { ImageProviderError } from './providers/provider-error.mjs';
 
@@ -69,6 +73,22 @@ async function readJson(request) {
   }
 }
 
+async function readBinary(request, maxBytes) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of request) {
+    length += chunk.length;
+    if (length > maxBytes) {
+      throw new AssetValidationError('A imagem excede o tamanho permitido.', {
+        code: 'IMAGE_TOO_LARGE',
+        status: 413,
+      });
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, length);
+}
+
 function selectAllowedOrigin(requestOrigin, configuredOrigin) {
   if (!requestOrigin) return undefined;
   if (configuredOrigin === '*') return '*';
@@ -78,6 +98,7 @@ function selectAllowedOrigin(requestOrigin, configuredOrigin) {
 export function createServer({
   allowedOrigin = process.env.ALLOWED_ORIGIN,
   imageProvider = createImageProvider(),
+  assetStore = createTemporaryAssetStore(),
 } = {}) {
   return http.createServer(async (request, response) => {
     const origin = request.headers.origin;
@@ -89,6 +110,33 @@ export function createServer({
     if (request.method === 'OPTIONS') return sendJson(response, 204, {}, corsOrigin);
     if (request.method === 'GET' && request.url === '/health') {
       return sendJson(response, 200, { status: 'ok' }, corsOrigin);
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/v1/assets/images/')) {
+      const id = request.url.slice('/v1/assets/images/'.length);
+      const asset = await assetStore.readImage(id);
+      if (!asset) return sendJson(response, 404, { error: 'Imagem não encontrada.' }, corsOrigin);
+      const headers = {
+        'Content-Type': asset.mimeType,
+        'Cache-Control': 'private, max-age=60',
+        'X-Content-Type-Options': 'nosniff',
+      };
+      if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
+      response.writeHead(200, headers);
+      return response.end(asset.bytes);
+    }
+    if (request.method === 'POST' && request.url === '/v1/assets/images') {
+      const mimeType = request.headers['content-type']?.split(';')[0].trim().toLowerCase();
+      try {
+        const bytes = await readBinary(request, assetStore.maxImageBytes);
+        const asset = await assetStore.saveImage({ bytes, mimeType });
+        return sendJson(response, 201, { asset }, corsOrigin);
+      } catch (error) {
+        if (error instanceof AssetValidationError) {
+          return sendJson(response, error.status, { error: error.message }, corsOrigin);
+        }
+        console.error('Temporary image upload failed', error?.name ?? 'UnknownError');
+        return sendJson(response, 500, { error: 'Não foi possível armazenar a imagem.' }, corsOrigin);
+      }
     }
     if (request.method !== 'POST' || request.url !== '/v1/images/generate') {
       return sendJson(response, 404, { error: 'Rota não encontrada.' }, corsOrigin);
