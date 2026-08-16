@@ -39,7 +39,7 @@ test('ImageToImageProvider declara capability Standard sem substituir ImageProvi
   assert.equal(provider.capabilities.preservation, 'best_effort');
 });
 
-test('adaptador envia multipart com prompt e input_image_0 sem steps', async () => {
+test('adaptador envia multipart com prompt, guidance, seed e input_image_0 sem parâmetros não suportados', async () => {
   let captured;
   const provider = createCloudflareFlux2KleinImageToImageProvider({
     apiToken: 'test-token',
@@ -56,7 +56,12 @@ test('adaptador envia multipart com prompt e input_image_0 sem steps', async () 
     },
   });
 
-  const result = await provider.generate(request());
+  const result = await provider.generate(request({
+    parameters: {
+      common: { aspectRatio: '1:1', referenceStrength: 1 },
+      provider: { guidance: 4, seed: 104729 },
+    },
+  }));
 
   assert.match(captured.url, /flux-2-klein-4b$/);
   assert.equal(captured.options.headers.Authorization, 'Bearer test-token');
@@ -65,9 +70,32 @@ test('adaptador envia multipart com prompt e input_image_0 sem steps', async () 
   assert.equal(captured.options.body.get('prompt'), 'Premium product advertising image');
   assert.equal(captured.options.body.get('width'), '1024');
   assert.equal(captured.options.body.get('height'), '1024');
+  assert.equal(captured.options.body.get('guidance'), '4');
+  assert.equal(captured.options.body.get('seed'), '104729');
   assert.ok(captured.options.body.get('input_image_0') instanceof Blob);
   assert.equal(captured.options.body.has('steps'), false);
+  assert.equal(captured.options.body.has('referenceStrength'), false);
+  assert.equal(captured.options.body.has('negative_prompt'), false);
+  assert.equal(captured.options.body.has('mask'), false);
   assert.equal(result.imageBase64, png.toString('base64'));
+});
+
+test('adaptador omite guidance e seed quando não fornecidos', async () => {
+  let form;
+  const provider = createCloudflareFlux2KleinImageToImageProvider({
+    apiToken: 'test-token',
+    accountId: 'test-account',
+    prepareImage: async (bytes) => ({ bytes, mimeType: 'image/png', width: 1, height: 1 }),
+    fetchImpl: async (_, options) => {
+      form = options.body;
+      return Response.json({ result: { image: png.toString('base64') } });
+    },
+  });
+
+  await provider.generate(request());
+
+  assert.equal(form.has('guidance'), false);
+  assert.equal(form.has('seed'), false);
 });
 
 test('adaptador prepara até quatro referências com nomes indexados', async () => {

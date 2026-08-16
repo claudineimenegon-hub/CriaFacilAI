@@ -35,6 +35,7 @@ test('evento contém somente campos sanitizados permitidos', () => {
     token: 'must-not-appear',
     accountId: 'must-not-appear',
     image: Buffer.from('must-not-appear'),
+    imagesBase64: ['base64-must-not-appear'],
   });
 
   assert.deepEqual(Object.keys(event), [
@@ -43,6 +44,7 @@ test('evento contém somente campos sanitizados permitidos', () => {
   ]);
   assert.deepEqual(JSON.parse(lines[0]), event);
   assert.equal(lines[0].includes('must-not-appear'), false);
+  assert.equal(lines[0].includes('base64-must-not-appear'), false);
 });
 
 test('ciclo da requisição registra somente metadados sanitizados', () => {

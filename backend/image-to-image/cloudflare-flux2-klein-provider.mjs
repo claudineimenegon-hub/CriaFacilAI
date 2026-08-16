@@ -44,6 +44,10 @@ export function createCloudflareFlux2KleinImageToImageProvider({
       form.append('prompt', request.prompt);
       form.append('width', String(request.output.width));
       form.append('height', String(request.output.height));
+      const guidance = request.parameters?.provider?.guidance;
+      const seed = request.parameters?.provider?.seed;
+      if (Number.isFinite(guidance)) form.append('guidance', String(guidance));
+      if (Number.isInteger(seed) && seed >= 0) form.append('seed', String(seed));
       preparedInputs.forEach((input, index) => {
         form.append(
           `input_image_${index}`,
@@ -136,6 +140,8 @@ export function createCloudflareFlux2KleinImageToImageProvider({
           provider: 'cloudflare-flux2-klein',
           model,
           fixedSteps: 4,
+          guidance: Number.isFinite(guidance) ? guidance : undefined,
+          seed: Number.isInteger(seed) ? seed : undefined,
           preservation: 'best_effort',
           inputDimensions: preparedInputs.map(({ width, height }) => ({ width, height })),
         },

@@ -37,6 +37,10 @@ void main() {
     expect(request.outputSpecification.count, 4);
     expect(request.outputSpecification.aspectRatio, '4:5');
     expect(request.preservationOptions.preserveLabel, isTrue);
+    expect(
+      request.generationParameters.common.productCategory,
+      ProductCategory.beverages.name,
+    );
   });
 
   test('categoria pessoa atribui papel person à referência', () {
@@ -60,5 +64,7 @@ void main() {
 
     expect(request.inputs.single.role, AssetRole.person);
     expect(request.outputSpecification.count, 4);
+    expect(request.outputSpecification.resolution, '1024x1820');
+    expect(request.generationParameters.common.resolution, '1024x1820');
   });
 }

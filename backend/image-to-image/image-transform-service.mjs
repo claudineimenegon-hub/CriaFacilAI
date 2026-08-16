@@ -3,6 +3,8 @@ import { ProductPhotoPromptBuilder } from './product-photo-prompt-builder.mjs';
 
 const EXPECTED_COUNT = 4;
 const CONCURRENCY = 2;
+export const PRODUCT_PHOTO_GUIDANCE = 4;
+export const PRODUCT_PHOTO_SEEDS = Object.freeze([104729, 130363, 155921, 180503]);
 const supportedMimeTypes = new Set(['image/png', 'image/jpeg']);
 
 export class ImageTransformValidationError extends Error {
@@ -21,8 +23,8 @@ export function outputDimensions(aspectRatio) {
 function switchAspectRatio(aspectRatio) {
   switch (aspectRatio) {
     case '4:5': return { width: 1024, height: 1280 };
-    case '9:16': return { width: 768, height: 1365 };
-    case '16:9': return { width: 1365, height: 768 };
+    case '9:16': return { width: 1024, height: 1820 };
+    case '16:9': return { width: 1820, height: 1024 };
     case '1:1': return { width: 1024, height: 1024 };
     default:
       throw new ImageTransformValidationError('Proporção não suportada.', {
@@ -63,10 +65,17 @@ export async function generateProductPhotoBatch({
         prompt: request.prompt,
         preservation: request.preservation,
         artisticDirection: request.parameters?.common?.artisticDirection,
+        productCategory: request.parameters?.common?.productCategory,
         variationIndex,
       }),
       inputs,
-      parameters: request.parameters,
+      parameters: {
+        ...request.parameters,
+        provider: {
+          guidance: PRODUCT_PHOTO_GUIDANCE,
+          seed: PRODUCT_PHOTO_SEEDS[variationIndex],
+        },
+      },
       preservation: request.preservation,
       output,
     }));

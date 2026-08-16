@@ -28,6 +28,8 @@ void main() {
     expect(transport.payload?['inputAssetIds'], ['asset-1']);
     expect(transport.payload?['count'], 4);
     expect(transport.payload?['quality'], 'standard');
+    final parameters = transport.payload?['parameters'] as Map<String, dynamic>;
+    expect(parameters['common'], containsPair('productCategory', 'beverages'));
     expect(transport.payload.toString(), isNot(contains('imageBase64')));
   });
 
@@ -112,6 +114,7 @@ GenerationRequest _request() => GenerationRequest(
       aspectRatio: '1:1',
       resolution: '1024x1024',
       outputFormat: OutputFormat.png,
+      productCategory: 'beverages',
     ),
     image: ImageGenerationParameters(),
   ),

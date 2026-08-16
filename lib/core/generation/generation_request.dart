@@ -8,6 +8,7 @@ class CommonGenerationParameters {
     this.creativeStrength = 0.5,
     this.referenceStrength = 1,
     this.artisticDirection,
+    this.productCategory,
   }) : assert(creativeStrength >= 0 && creativeStrength <= 1),
        assert(referenceStrength >= 0 && referenceStrength <= 1);
 
@@ -17,6 +18,7 @@ class CommonGenerationParameters {
   final double creativeStrength;
   final double referenceStrength;
   final String? artisticDirection;
+  final String? productCategory;
 
   Map<String, Object?> toJson() => {
     'aspectRatio': aspectRatio,
@@ -25,6 +27,7 @@ class CommonGenerationParameters {
     'creativeStrength': creativeStrength,
     'referenceStrength': referenceStrength,
     if (artisticDirection != null) 'artisticDirection': artisticDirection,
+    if (productCategory != null) 'productCategory': productCategory,
   };
 }
 

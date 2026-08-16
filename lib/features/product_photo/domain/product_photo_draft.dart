@@ -73,6 +73,7 @@ class ProductPhotoDraft {
           creativeStrength: 0.6,
           referenceStrength: 1,
           artisticDirection: objective.label,
+          productCategory: category.name,
         ),
         image: const ImageGenerationParameters(),
       ),
