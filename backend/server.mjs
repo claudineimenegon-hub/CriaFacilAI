@@ -1,9 +1,21 @@
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
   AssetValidationError,
   createTemporaryAssetStore,
 } from './assets/temporary-asset-store.mjs';
+import { createImageToImageProvider } from './image-to-image/index.mjs';
+import { ImageToImageProviderError } from './image-to-image/image-to-image-provider.mjs';
+import {
+  categorizeImageToImageError,
+  createSanitizedImageToImageTelemetry,
+  sanitizeProviderErrorCode,
+} from './image-to-image/sanitized-error-telemetry.mjs';
+import {
+  generateProductPhotoBatch,
+  ImageTransformValidationError,
+} from './image-to-image/image-transform-service.mjs';
 import { createImageProvider } from './providers/index.mjs';
 import { ImageProviderError } from './providers/provider-error.mjs';
 
@@ -95,10 +107,75 @@ function selectAllowedOrigin(requestOrigin, configuredOrigin) {
   return requestOrigin === configuredOrigin ? requestOrigin : undefined;
 }
 
+const preservationKeys = [
+  'preserveProduct', 'preservePackaging', 'preserveLabel',
+  'preservePrintedText', 'preserveLogo', 'preserveColors',
+  'preserveProportions', 'preserveFace', 'preserveClothing',
+  'changeBackgroundOnly', 'changeLightingOnly', 'changeSceneOnly',
+];
+
+function validateTransformRequest(payload) {
+  const {
+    operation,
+    prompt,
+    inputAssetIds,
+    count,
+    quality,
+    aspectRatio,
+    preservation = {},
+    parameters = {},
+  } = payload;
+  if (operation !== 'imageToImage') {
+    throw new ImageTransformValidationError('Operação não suportada.', { code: 'INVALID_OPERATION' });
+  }
+  if (typeof prompt !== 'string' || prompt.trim().length < 3 || prompt.length > 4000) {
+    throw new ImageTransformValidationError('Descreva melhor a transformação.', { code: 'INVALID_PROMPT' });
+  }
+  if (!Array.isArray(inputAssetIds) || inputAssetIds.length < 1 || inputAssetIds.length > 4 ||
+      inputAssetIds.some((id) => typeof id !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id))) {
+    throw new ImageTransformValidationError('Referência de imagem inválida.', { code: 'INVALID_ASSET_ID' });
+  }
+  if (count !== 4) {
+    throw new ImageTransformValidationError('Foto Publicitária requer exatamente 4 propostas.', {
+      code: 'INVALID_COUNT',
+    });
+  }
+  if (quality !== 'standard') {
+    throw new ImageTransformValidationError('Qualidade ainda não disponível.', { code: 'INVALID_QUALITY' });
+  }
+  if (!['1:1', '4:5', '9:16', '16:9'].includes(aspectRatio)) {
+    throw new ImageTransformValidationError('Proporção não suportada.', { code: 'INVALID_ASPECT_RATIO' });
+  }
+  if (!preservation || typeof preservation !== 'object' || Array.isArray(preservation) ||
+      preservationKeys.some((key) => preservation[key] != null && typeof preservation[key] !== 'boolean')) {
+    throw new ImageTransformValidationError('Opções de preservação inválidas.', {
+      code: 'INVALID_PRESERVATION',
+    });
+  }
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+    throw new ImageTransformValidationError('Parâmetros de geração inválidos.', {
+      code: 'INVALID_PARAMETERS',
+    });
+  }
+  return {
+    operation,
+    prompt: prompt.trim(),
+    inputAssetIds: [...new Set(inputAssetIds)],
+    count,
+    quality,
+    aspectRatio,
+    preservation,
+    parameters,
+  };
+}
+
 export function createServer({
   allowedOrigin = process.env.ALLOWED_ORIGIN,
   imageProvider = createImageProvider(),
+  imageToImageProvider = createImageToImageProvider(),
   assetStore = createTemporaryAssetStore(),
+  imageToImageTelemetry = createSanitizedImageToImageTelemetry(),
 } = {}) {
   return http.createServer(async (request, response) => {
     const origin = request.headers.origin;
@@ -136,6 +213,74 @@ export function createServer({
         }
         console.error('Temporary image upload failed', error?.name ?? 'UnknownError');
         return sendJson(response, 500, { error: 'Não foi possível armazenar a imagem.' }, corsOrigin);
+      }
+    }
+    if (request.method === 'POST' && request.url === '/v1/images/transform') {
+      const requestId = randomUUID();
+      const startedAt = performance.now();
+      const recordTransformError = ({ status, code, validation = false }) => {
+        const sanitizedCode = validation
+          ? String(code ?? 'INVALID_INPUT').slice(0, 64)
+          : sanitizeProviderErrorCode(code);
+        imageToImageTelemetry.recordError({
+          requestId,
+          provider: imageToImageProvider.name,
+          model: imageToImageProvider.model,
+          status,
+          code: sanitizedCode,
+          category: categorizeImageToImageError({
+            code: sanitizedCode,
+            status,
+            validation,
+          }),
+          startedAt,
+        });
+      };
+      if (!imageToImageProvider.isConfigured) {
+        recordTransformError({ status: 503, code: 'PROVIDER_NOT_CONFIGURED' });
+        return sendJson(response, 503, { error: 'Transformação de imagem ainda não configurada.' }, corsOrigin);
+      }
+      if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
+        recordTransformError({ status: 415, code: 'INVALID_CONTENT_TYPE', validation: true });
+        return sendJson(response, 415, { error: 'Envie o conteúdo como JSON.' }, corsOrigin);
+      }
+      try {
+        const transformRequest = validateTransformRequest(await readJson(request));
+        const batch = await generateProductPhotoBatch({
+          provider: imageToImageProvider,
+          assetStore,
+          request: transformRequest,
+        });
+        return sendJson(response, 200, { batch }, corsOrigin);
+      } catch (error) {
+        if (error?.code === 'PAYLOAD_TOO_LARGE') {
+          recordTransformError({ status: 413, code: error.code, validation: true });
+          return sendJson(response, 413, { error: 'A solicitação é muito grande.' }, corsOrigin);
+        }
+        if (error?.code === 'INVALID_JSON') {
+          recordTransformError({ status: 400, code: error.code, validation: true });
+          return sendJson(response, 400, { error: 'JSON inválido.' }, corsOrigin);
+        }
+        if (error instanceof ImageTransformValidationError) {
+          recordTransformError({ status: error.status, code: error.code, validation: true });
+          return sendJson(response, error.status, { error: error.message }, corsOrigin);
+        }
+        if (error instanceof ImageToImageProviderError) {
+          const status = error.code === 'PROVIDER_NOT_CONFIGURED'
+            ? 503
+            : error.code === 'UPSTREAM_TIMEOUT'
+              ? 504
+              : error.status === 429 ? 429 : 502;
+          recordTransformError({
+            status: Number.isInteger(error.status) ? error.status : status,
+            code: error.code,
+          });
+          return sendJson(response, status, {
+            error: 'O provedor não conseguiu transformar esta imagem.',
+          }, corsOrigin);
+        }
+        recordTransformError({ status: 500, code: 'UPSTREAM_ERROR' });
+        return sendJson(response, 500, { error: 'Não foi possível transformar a imagem.' }, corsOrigin);
       }
     }
     if (request.method !== 'POST' || request.url !== '/v1/images/generate') {
@@ -190,11 +335,12 @@ export function createServer({
 
 export function startServer({ port = Number(process.env.PORT ?? 8080) } = {}) {
   const imageProvider = createImageProvider();
+  const imageToImageProvider = createImageToImageProvider();
   if (!imageProvider.isConfigured) console.warn(`${imageProvider.name} não configurado; a geração responderá 503.`);
   if (!process.env.ALLOWED_ORIGIN) {
     console.warn('ALLOWED_ORIGIN não configurada; requisições de navegador com Origin serão bloqueadas.');
   }
-  const server = createServer({ imageProvider });
+  const server = createServer({ imageProvider, imageToImageProvider });
   server.listen(port, '0.0.0.0', () => {
     console.log(`LogoFácil API disponível na porta ${port} usando ${imageProvider.name}/${imageProvider.model}.`);
   });

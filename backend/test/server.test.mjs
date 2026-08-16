@@ -26,6 +26,41 @@ function provider(overrides = {}) {
   };
 }
 
+function transformProvider(overrides = {}) {
+  return {
+    name: 'transform-test',
+    model: 'transform-test-model',
+    isConfigured: true,
+    generate: async () => ({ imageBase64: 'imagem-transformada' }),
+    ...overrides,
+  };
+}
+
+const transformAssetId = '00000000-0000-4000-8000-000000000001';
+const transformPayload = {
+  operation: 'imageToImage',
+  prompt: 'Campanha premium para produto',
+  inputAssetIds: [transformAssetId],
+  count: 4,
+  quality: 'standard',
+  aspectRatio: '4:5',
+  preservation: { preserveProduct: true, preserveColors: true },
+  parameters: { common: { artisticDirection: 'Estúdio Premium' } },
+};
+
+function transformAssetStore(overrides = {}) {
+  return {
+    maxImageBytes: 100,
+    saveImage: async () => {},
+    readImage: async () => ({
+      bytes: Buffer.from('reference-image'),
+      mimeType: 'image/png',
+      metadata: { id: transformAssetId },
+    }),
+    ...overrides,
+  };
+}
+
 test('GET /health informa que o serviço está disponível', async () => {
   const baseUrl = await start();
   const response = await fetch(`${baseUrl}/health`);
@@ -105,6 +140,159 @@ test('POST /v1/assets/images recebe binário e retorna AssetReference', async ()
   assert.equal(received.mimeType, 'image/png');
   assert.equal(payload.asset.mediaType, 'image');
   assert.equal(Object.hasOwn(payload.asset, 'path'), false);
+});
+
+test('POST /v1/images/transform retorna lote completo de quatro imagens', async () => {
+  let calls = 0;
+  const baseUrl = await start({
+    imageProvider: provider(),
+    imageToImageProvider: transformProvider({
+      generate: async () => ({ imageBase64: `imagem-${++calls}` }),
+    }),
+    assetStore: transformAssetStore(),
+  });
+  const response = await fetch(`${baseUrl}/v1/images/transform`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(transformPayload),
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.batch.expectedCount, 4);
+  assert.equal(payload.batch.status, 'completed');
+  assert.equal(payload.batch.imagesBase64.length, 4);
+  assert.equal(calls, 4);
+});
+
+test('transform rejeita ID inválido e asset expirado', async () => {
+  const invalidBaseUrl = await start({
+    imageProvider: provider(),
+    imageToImageProvider: transformProvider(),
+    assetStore: transformAssetStore(),
+  });
+  const invalid = await fetch(`${invalidBaseUrl}/v1/images/transform`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...transformPayload, inputAssetIds: ['../../secret'] }),
+  });
+  assert.equal(invalid.status, 400);
+
+  const expiredBaseUrl = await start({
+    imageProvider: provider(),
+    imageToImageProvider: transformProvider(),
+    assetStore: transformAssetStore({ readImage: async () => undefined }),
+  });
+  const expired = await fetch(`${expiredBaseUrl}/v1/images/transform`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(transformPayload),
+  });
+  assert.equal(expired.status, 404);
+});
+
+test('transform sanitiza erro e timeout do Cloudflare', async () => {
+  const { ImageToImageProviderError } =
+    await import('../image-to-image/image-to-image-provider.mjs');
+  for (const [code, expectedStatus] of [
+    ['upstream_secret_failure', 502],
+    ['UPSTREAM_TIMEOUT', 504],
+  ]) {
+    const baseUrl = await start({
+      imageProvider: provider(),
+      imageToImageProvider: transformProvider({
+        generate: async () => {
+          throw new ImageToImageProviderError('secret provider detail', {
+            provider: 'cloudflare-flux2-klein',
+            status: 401,
+            code,
+          });
+        },
+      }),
+      assetStore: transformAssetStore(),
+    });
+    const response = await fetch(`${baseUrl}/v1/images/transform`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(transformPayload),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, expectedStatus);
+    assert.deepEqual(payload, {
+      error: 'O provedor não conseguiu transformar esta imagem.',
+    });
+    assert.equal(JSON.stringify(payload).includes('secret'), false);
+  }
+});
+
+test('transform registra telemetria sanitizada por categoria sem alterar resposta HTTP', async () => {
+  const { ImageToImageProviderError } =
+    await import('../image-to-image/image-to-image-provider.mjs');
+  const cases = [
+    { code: '3030', providerStatus: 400, responseStatus: 502, category: 'content_moderation' },
+    { code: '3036', providerStatus: 429, responseStatus: 429, category: 'rate_limit' },
+    { code: 'UPSTREAM_TIMEOUT', providerStatus: 408, responseStatus: 504, category: 'timeout' },
+    { code: '3040', providerStatus: 429, responseStatus: 429, category: 'provider_unavailable' },
+    { code: '5004', providerStatus: 400, responseStatus: 502, category: 'invalid_input' },
+    { code: 'untrusted-secret-detail', providerStatus: 500, responseStatus: 502, category: 'internal_provider_error' },
+  ];
+
+  for (const current of cases) {
+    const events = [];
+    const baseUrl = await start({
+      imageProvider: provider(),
+      imageToImageProvider: transformProvider({
+        generate: async () => {
+          throw new ImageToImageProviderError('provider prompt image token account secret', {
+            provider: 'cloudflare-flux2-klein',
+            status: current.providerStatus,
+            code: current.code,
+          });
+        },
+      }),
+      imageToImageTelemetry: { recordError: (event) => events.push(event) },
+      assetStore: transformAssetStore(),
+    });
+    const response = await fetch(`${baseUrl}/v1/images/transform`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(transformPayload),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, current.responseStatus);
+    assert.deepEqual(payload, { error: 'O provedor não conseguiu transformar esta imagem.' });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].category, current.category);
+    assert.equal(events[0].code,
+      current.code === 'untrusted-secret-detail' ? 'UNKNOWN_PROVIDER_ERROR' : current.code);
+    assert.match(events[0].requestId, /^[0-9a-f-]{36}$/);
+    assert.equal(events[0].provider, 'transform-test');
+    assert.equal(events[0].model, 'transform-test-model');
+    assert.equal(JSON.stringify(events[0]).includes(transformPayload.prompt), false);
+    assert.equal(JSON.stringify(events[0]).includes('provider prompt image token account secret'), false);
+  }
+});
+
+test('transform registra entrada inválida sem incluir payload', async () => {
+  const events = [];
+  const baseUrl = await start({
+    imageProvider: provider(),
+    imageToImageProvider: transformProvider(),
+    imageToImageTelemetry: { recordError: (event) => events.push(event) },
+    assetStore: transformAssetStore(),
+  });
+  const response = await fetch(`${baseUrl}/v1/images/transform`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...transformPayload, prompt: 'sensitive prompt', count: 3 }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].category, 'invalid_input');
+  assert.equal(events[0].code, 'INVALID_COUNT');
+  assert.equal(JSON.stringify(events[0]).includes('sensitive prompt'), false);
 });
 
 test('count padrão gera uma imagem e preserva imageBase64', async () => {

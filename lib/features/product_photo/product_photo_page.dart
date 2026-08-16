@@ -6,7 +6,10 @@ import '../../core/assets/asset_upload_service.dart';
 import '../../core/assets/data/http_asset_upload_service.dart';
 import '../../core/assets/photo_selection_service.dart';
 import '../../core/generation/generation_types.dart';
+import 'data/http_product_photo_generation_service.dart';
 import 'domain/product_photo_draft.dart';
+import 'domain/product_photo_generation_service.dart';
+import 'product_photo_results_page.dart';
 
 enum _QuickMode { none, background, scene, lighting }
 
@@ -15,10 +18,12 @@ class ProductPhotoPage extends StatefulWidget {
     super.key,
     this.uploadService,
     this.photoSelectionService,
+    this.generationService,
   });
 
   final AssetUploadService? uploadService;
   final PhotoSelectionService? photoSelectionService;
+  final ProductPhotoGenerationService? generationService;
 
   @override
   State<ProductPhotoPage> createState() => _ProductPhotoPageState();
@@ -28,12 +33,14 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   final _descriptionController = TextEditingController();
   late final AssetUploadService _uploadService;
   late final PhotoSelectionService _photoSelectionService;
+  late final ProductPhotoGenerationService _generationService;
   Uint8List? _previewBytes;
   AssetReference? _asset;
   ProductCategory _category = ProductCategory.general;
   ProductVisualObjective _objective = ProductVisualObjective.premiumStudio;
   String _aspectRatio = '1:1';
   bool _isUploading = false;
+  bool _isGenerating = false;
   bool _preserveProduct = true;
   bool _preservePackaging = true;
   bool _preserveLabel = true;
@@ -50,6 +57,8 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
     _uploadService = widget.uploadService ?? HttpAssetUploadService();
     _photoSelectionService =
         widget.photoSelectionService ?? createPhotoSelectionService();
+    _generationService =
+        widget.generationService ?? HttpProductPhotoGenerationService();
   }
 
   @override
@@ -118,7 +127,7 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
     _asset = null;
   });
 
-  void _prepareGeneration() {
+  Future<void> _generate() async {
     final asset = _asset;
     if (asset == null) return;
     final request =
@@ -147,10 +156,21 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
           idempotencyKey:
               'product-${asset.id}-${DateTime.now().microsecondsSinceEpoch}',
         );
-    assert(request.outputSpecification.count == 4);
-    _showMessage(
-      'Foto preparada com segurança. O provedor foto → imagem será conectado na próxima etapa.',
-    );
+    setState(() => _isGenerating = true);
+    try {
+      final images = await _generationService.generateFour(request);
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              ProductPhotoResultsPage(images: images, title: _objective.label),
+        ),
+      );
+    } on ProductPhotoGenerationException catch (error) {
+      if (mounted) _showMessage(error.message);
+    } finally {
+      if (mounted) setState(() => _isGenerating = false);
+    }
   }
 
   void _showMessage(String message) =>
@@ -300,16 +320,25 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
             SizedBox(
               height: 56,
               child: FilledButton.icon(
-                onPressed: _asset == null || _isUploading
+                onPressed: _asset == null || _isUploading || _isGenerating
                     ? null
-                    : _prepareGeneration,
-                icon: const Icon(Icons.auto_awesome),
-                label: const Text('GERAR 4 PROPOSTAS'),
+                    : _generate,
+                icon: _isGenerating
+                    ? const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.auto_awesome),
+                label: Text(
+                  _isGenerating
+                      ? 'CRIANDO 4 PROPOSTAS...'
+                      : 'GERAR 4 PROPOSTAS',
+                ),
               ),
             ),
             const SizedBox(height: 10),
             const Text(
-              'A geração foto → imagem será ativada após a seleção do provedor apropriado.',
+              'A geração cria quatro direções publicitárias independentes.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white54, fontSize: 12),
             ),
