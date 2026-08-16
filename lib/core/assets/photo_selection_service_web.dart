@@ -1,7 +1,6 @@
 // ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 
 import 'dart:html' as html;
-import 'dart:typed_data';
 
 import 'photo_selection_service_base.dart';
 
@@ -18,12 +17,38 @@ class _WebPhotoSelectionService implements PhotoSelectionService {
     final files = input.files;
     if (files == null || files.isEmpty) return null;
     final file = files.first;
-    final reader = html.FileReader()..readAsArrayBuffer(file);
-    await reader.onLoad.first;
-    final result = reader.result;
-    if (result is! ByteBuffer) {
-      throw const PhotoSelectionException('Não foi possível ler esta foto.');
+    final reader = html.FileReader();
+    final completed = reader.onLoad.first.then((_) => true);
+    final failed = reader.onError.first.then<bool>((_) {
+      throw const PhotoSelectionException(
+        'Não foi possível ler esta foto.',
+        stage: 'file_reader',
+        exceptionType: 'FileReaderError',
+      );
+    });
+    final aborted = reader.onAbort.first.then<bool>((_) {
+      throw const PhotoSelectionException(
+        'A leitura da foto foi cancelada.',
+        stage: 'file_reader',
+        exceptionType: 'FileReaderAbort',
+      );
+    });
+    reader.readAsArrayBuffer(file);
+    try {
+      await Future.any([completed, failed, aborted]);
+    } on PhotoSelectionException {
+      rethrow;
+    } catch (error) {
+      throw PhotoSelectionException(
+        'Não foi possível ler esta foto.',
+        stage: 'file_reader',
+        exceptionType: error.runtimeType.toString(),
+      );
     }
-    return SelectedPhoto(bytes: result.asUint8List(), mimeType: file.type);
+    return selectedPhotoFromReaderResult(
+      result: reader.result,
+      browserMimeType: file.type,
+      fileName: file.name,
+    );
   }
 }

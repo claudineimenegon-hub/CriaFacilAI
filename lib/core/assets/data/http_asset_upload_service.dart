@@ -58,7 +58,7 @@ class HttpAssetUploadService implements AssetUploadService {
       );
     } on FormatException {
       throw const AssetUploadException('O servidor retornou dados inválidos.');
-    } on Exception {
+    } catch (_) {
       throw const AssetUploadException('Não foi possível enviar a imagem.');
     }
   }

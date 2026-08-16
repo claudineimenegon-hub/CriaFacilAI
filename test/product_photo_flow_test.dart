@@ -73,6 +73,75 @@ void main() {
     expect(find.text('Propostas publicitárias'), findsNothing);
     expect(find.text('GERAR 4 PROPOSTAS'), findsOneWidget);
   });
+
+  testWidgets('cancelamento do seletor mantém a tela sem erro', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProductPhotoPage(
+          photoSelectionService: _CallbackPhotoSelectionService(() async => null),
+          uploadService: _FakeUploadService(),
+          generationService: _FailingGenerationService(),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('SELECIONAR FOTO'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('SELECIONAR FOTO'), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('erro de leitura é exibido e não inicia upload', (tester) async {
+    final upload = _FakeUploadService();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProductPhotoPage(
+          photoSelectionService: _CallbackPhotoSelectionService(() async {
+            throw const PhotoSelectionException(
+              'Não foi possível ler esta foto.',
+              stage: 'file_reader',
+              exceptionType: 'FileReaderError',
+            );
+          }),
+          uploadService: upload,
+          generationService: _FailingGenerationService(),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('SELECIONAR FOTO'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Não foi possível ler esta foto.'), findsOneWidget);
+    expect(upload.calls, 0);
+  });
+
+  testWidgets('arquivo inválido não cria preview nem inicia upload', (tester) async {
+    final upload = _FakeUploadService();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProductPhotoPage(
+          photoSelectionService: _CallbackPhotoSelectionService(
+            () async => SelectedPhoto(
+              bytes: Uint8List.fromList([1, 2, 3]),
+              mimeType: 'image/jpeg',
+              fileName: 'falso.jpg',
+            ),
+          ),
+          uploadService: upload,
+          generationService: _FailingGenerationService(),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('SELECIONAR FOTO'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Selecione uma imagem PNG ou JPEG válida.'), findsOneWidget);
+    expect(find.byType(Image), findsNothing);
+    expect(upload.calls, 0);
+  });
 }
 
 final Uint8List _png = base64Decode(
@@ -86,12 +155,16 @@ class _FakePhotoSelectionService implements PhotoSelectionService {
 }
 
 class _FakeUploadService implements AssetUploadService {
+  int calls = 0;
+
   @override
   Future<AssetReference> uploadImage({
     required Uint8List bytes,
     required String mimeType,
     AssetRole role = AssetRole.product,
-  }) async => AssetReference(
+  }) async {
+    calls += 1;
+    return AssetReference(
     id: '00000000-0000-4000-8000-000000000001',
     mediaType: AssetMediaType.image,
     mimeType: mimeType,
@@ -100,7 +173,17 @@ class _FakeUploadService implements AssetUploadService {
     height: 1,
     internalReference: 'asset:test',
     retentionPolicy: AssetRetentionPolicy.temporary,
-  );
+    );
+  }
+}
+
+class _CallbackPhotoSelectionService implements PhotoSelectionService {
+  _CallbackPhotoSelectionService(this.callback);
+
+  final Future<SelectedPhoto?> Function() callback;
+
+  @override
+  Future<SelectedPhoto?> selectImage() => callback();
 }
 
 class _ControlledGenerationService implements ProductPhotoGenerationService {

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
+import sharp from 'sharp';
 import {
   AssetValidationError,
   createTemporaryAssetStore,
@@ -38,6 +39,19 @@ test('upload gera ID seguro, metadados e expiração sem expor caminho físico',
   assert.equal(Object.hasOwn(asset, 'path'), false);
   assert.equal(Object.hasOwn(asset, 'filename'), false);
   assert.ok(new Date(asset.expiresAt) > new Date());
+});
+
+test('aceita JPEG real e extrai dimensões', async () => {
+  const jpeg = await sharp({
+    create: { width: 640, height: 480, channels: 3, background: '#336699' },
+  }).jpeg().toBuffer();
+  const assetStore = await store();
+  const asset = await assetStore.saveImage({ bytes: jpeg, mimeType: 'image/jpeg' });
+
+  assert.equal(asset.mimeType, 'image/jpeg');
+  assert.equal(asset.width, 640);
+  assert.equal(asset.height, 480);
+  assert.deepEqual(await assetStore.listStoredFilenames(), [`${asset.id}.jpg`]);
 });
 
 test('rejeita MIME não suportado e conteúdo incompatível', async () => {
