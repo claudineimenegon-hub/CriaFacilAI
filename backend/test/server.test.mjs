@@ -107,6 +107,34 @@ test('bloqueia origem diferente da configurada', async () => {
   assert.equal(response.headers.get('access-control-allow-origin'), null);
 });
 
+test('preflight da transformação permite POST JSON para a origem configurada', async () => {
+  let providerCalled = false;
+  const baseUrl = await start({
+    allowedOrigin: 'http://localhost:57216',
+    imageProvider: provider(),
+    imageToImageProvider: transformProvider({
+      generate: async () => {
+        providerCalled = true;
+        return { imageBase64: 'imagem' };
+      },
+    }),
+  });
+  const response = await fetch(`${baseUrl}/v1/images/transform`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'http://localhost:57216',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type',
+    },
+  });
+
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get('access-control-allow-origin'), 'http://localhost:57216');
+  assert.match(response.headers.get('access-control-allow-methods'), /POST/);
+  assert.match(response.headers.get('access-control-allow-headers'), /Content-Type/i);
+  assert.equal(providerCalled, false);
+});
+
 test('POST /v1/assets/images recebe binário e retorna AssetReference', async () => {
   let received;
   const assetStore = {
@@ -144,12 +172,17 @@ test('POST /v1/assets/images recebe binário e retorna AssetReference', async ()
 
 test('POST /v1/images/transform retorna lote completo de quatro imagens', async () => {
   let calls = 0;
+  const requestEvents = [];
   const baseUrl = await start({
     imageProvider: provider(),
     imageToImageProvider: transformProvider({
       generate: async () => ({ imageBase64: `imagem-${++calls}` }),
     }),
     assetStore: transformAssetStore(),
+    imageToImageTelemetry: {
+      recordRequest: (event) => requestEvents.push(event),
+      recordError: () => {},
+    },
   });
   const response = await fetch(`${baseUrl}/v1/images/transform`, {
     method: 'POST',
@@ -163,6 +196,12 @@ test('POST /v1/images/transform retorna lote completo de quatro imagens', async 
   assert.equal(payload.batch.status, 'completed');
   assert.equal(payload.batch.imagesBase64.length, 4);
   assert.equal(calls, 4);
+  assert.deepEqual(requestEvents.map((event) => event.phase), [
+    'request_started',
+    'provider_started',
+    'completed',
+  ]);
+  assert.equal(requestEvents.at(-1).status, 200);
 });
 
 test('transform rejeita ID inválido e asset expirado', async () => {

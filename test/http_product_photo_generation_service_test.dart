@@ -5,6 +5,7 @@ import 'package:meu_app/core/generation/generation_request.dart';
 import 'package:meu_app/core/generation/generation_types.dart';
 import 'package:meu_app/features/image/data/http_transport.dart';
 import 'package:meu_app/features/product_photo/data/http_product_photo_generation_service.dart';
+import 'package:meu_app/features/product_photo/domain/product_photo_generation_service.dart';
 
 void main() {
   test('envia somente IDs de assets e decodifica quatro propostas', () async {
@@ -29,6 +30,65 @@ void main() {
     expect(transport.payload?['quality'], 'standard');
     expect(transport.payload.toString(), isNot(contains('imageBase64')));
   });
+
+  test('preserva mensagem sanitizada em resposta HTTP de erro', () async {
+    final service = HttpProductPhotoGenerationService(
+      baseUrl: 'http://api.example',
+      transport: _ResponseTransport(
+        statusCode: 429,
+        body: jsonEncode({'error': 'Serviço temporariamente indisponível.'}),
+      ),
+    );
+
+    await expectLater(
+      service.generateFour(_request()),
+      throwsA(
+        isA<ProductPhotoGenerationException>().having(
+          (error) => error.message,
+          'message',
+          'Serviço temporariamente indisponível.',
+        ),
+      ),
+    );
+  });
+
+  test('resposta JSON inválida produz erro controlado', () async {
+    final service = HttpProductPhotoGenerationService(
+      baseUrl: 'http://api.example',
+      transport: const _ResponseTransport(statusCode: 200, body: '<html>'),
+    );
+
+    await expectLater(
+      service.generateFour(_request()),
+      throwsA(
+        isA<ProductPhotoGenerationException>().having(
+          (error) => error.message,
+          'message',
+          'O servidor retornou uma resposta inválida.',
+        ),
+      ),
+    );
+  });
+
+  for (final failure in ImageHttpFailure.values) {
+    test('$failure do transporte vira erro de domínio sanitizado', () async {
+      final service = HttpProductPhotoGenerationService(
+        baseUrl: 'http://api.example',
+        transport: _FailingTransport(failure),
+      );
+
+      await expectLater(
+        service.generateFour(_request()),
+        throwsA(
+          isA<ProductPhotoGenerationException>().having(
+            (error) => error.message.contains('ProgressEvent'),
+            'não expõe ProgressEvent',
+            false,
+          ),
+        ),
+      );
+    });
+  }
 }
 
 GenerationRequest _request() => GenerationRequest(
@@ -69,5 +129,32 @@ class _FakeTransport implements ImageHttpTransport {
     payload = jsonDecode(body) as Map<String, dynamic>;
     expect(uri.path, '/v1/images/transform');
     return (statusCode: 200, body: jsonEncode(response));
+  }
+}
+
+class _ResponseTransport implements ImageHttpTransport {
+  const _ResponseTransport({required this.statusCode, required this.body});
+
+  final int statusCode;
+  final String body;
+
+  @override
+  Future<ImageHttpResponse> postJson(Uri uri, String body) async =>
+      (statusCode: statusCode, body: this.body);
+}
+
+class _FailingTransport implements ImageHttpTransport {
+  const _FailingTransport(this.failure);
+
+  final ImageHttpFailure failure;
+
+  @override
+  Future<ImageHttpResponse> postJson(Uri uri, String body) async {
+    final message = switch (failure) {
+      ImageHttpFailure.network => 'Não foi possível conectar ao servidor.',
+      ImageHttpFailure.aborted => 'A geração foi cancelada.',
+      ImageHttpFailure.timeout => 'A geração demorou demais.',
+    };
+    throw ImageHttpTransportException(failure, message);
   }
 }

@@ -83,7 +83,9 @@ class HttpProductPhotoGenerationService
       throw const ProductPhotoGenerationException(
         'O servidor retornou uma resposta inválida.',
       );
-    } on Exception {
+    } on ImageHttpTransportException catch (error) {
+      throw ProductPhotoGenerationException(error.message);
+    } catch (_) {
       throw const ProductPhotoGenerationException(
         'Não foi possível criar as propostas agora.',
       );

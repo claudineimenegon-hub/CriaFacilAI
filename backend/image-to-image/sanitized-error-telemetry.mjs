@@ -34,6 +34,29 @@ export function categorizeImageToImageError({ code, status, validation = false }
 
 export function createSanitizedImageToImageTelemetry({ write = console.error } = {}) {
   return {
+    recordRequest({
+      requestId,
+      phase,
+      provider,
+      model,
+      status,
+      startedAt,
+      timestamp = new Date(),
+    }) {
+      const event = Object.freeze({
+        requestId,
+        route: '/v1/images/transform',
+        operation: 'imageToImage',
+        phase,
+        provider: provider || 'unresolved',
+        model: model || 'unresolved',
+        statusHttp: Number.isInteger(status) ? status : null,
+        latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        timestamp: timestamp.toISOString(),
+      });
+      write(JSON.stringify(event));
+      return event;
+    },
     recordError({
       requestId,
       provider,

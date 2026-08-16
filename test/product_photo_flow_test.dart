@@ -72,6 +72,10 @@ void main() {
     expect(find.text('Falha controlada na transformação.'), findsOneWidget);
     expect(find.text('Propostas publicitárias'), findsNothing);
     expect(find.text('GERAR 4 PROPOSTAS'), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNotNull,
+    );
   });
 
   testWidgets('cancelamento do seletor mantém a tela sem erro', (tester) async {

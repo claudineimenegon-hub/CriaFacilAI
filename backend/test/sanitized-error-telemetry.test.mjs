@@ -44,3 +44,28 @@ test('evento contém somente campos sanitizados permitidos', () => {
   assert.deepEqual(JSON.parse(lines[0]), event);
   assert.equal(lines[0].includes('must-not-appear'), false);
 });
+
+test('ciclo da requisição registra somente metadados sanitizados', () => {
+  const lines = [];
+  const telemetry = createSanitizedImageToImageTelemetry({ write: (line) => lines.push(line) });
+  const event = telemetry.recordRequest({
+    requestId: 'request-id',
+    phase: 'provider_started',
+    provider: 'provider-name',
+    model: 'model-name',
+    status: null,
+    startedAt: performance.now(),
+    timestamp: new Date('2026-08-15T12:00:00.000Z'),
+    prompt: 'must-not-appear',
+    token: 'must-not-appear',
+    accountId: 'must-not-appear',
+    image: Buffer.from('must-not-appear'),
+  });
+
+  assert.deepEqual(Object.keys(event), [
+    'requestId', 'route', 'operation', 'phase', 'provider', 'model',
+    'statusHttp', 'latencyMs', 'timestamp',
+  ]);
+  assert.deepEqual(JSON.parse(lines[0]), event);
+  assert.equal(lines[0].includes('must-not-appear'), false);
+});

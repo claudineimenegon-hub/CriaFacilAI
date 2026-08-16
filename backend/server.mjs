@@ -218,6 +218,15 @@ export function createServer({
     if (request.method === 'POST' && request.url === '/v1/images/transform') {
       const requestId = randomUUID();
       const startedAt = performance.now();
+      const recordTransformPhase = (phase, status) =>
+        imageToImageTelemetry.recordRequest?.({
+          requestId,
+          phase,
+          provider: imageToImageProvider.name,
+          model: imageToImageProvider.model,
+          status,
+          startedAt,
+        });
       const recordTransformError = ({ status, code, validation = false }) => {
         const sanitizedCode = validation
           ? String(code ?? 'INVALID_INPUT').slice(0, 64)
@@ -236,6 +245,7 @@ export function createServer({
           startedAt,
         });
       };
+      recordTransformPhase('request_started');
       if (!imageToImageProvider.isConfigured) {
         recordTransformError({ status: 503, code: 'PROVIDER_NOT_CONFIGURED' });
         return sendJson(response, 503, { error: 'Transformação de imagem ainda não configurada.' }, corsOrigin);
@@ -246,11 +256,13 @@ export function createServer({
       }
       try {
         const transformRequest = validateTransformRequest(await readJson(request));
+        recordTransformPhase('provider_started');
         const batch = await generateProductPhotoBatch({
           provider: imageToImageProvider,
           assetStore,
           request: transformRequest,
         });
+        recordTransformPhase('completed', 200);
         return sendJson(response, 200, { batch }, corsOrigin);
       } catch (error) {
         if (error?.code === 'PAYLOAD_TOO_LARGE') {
