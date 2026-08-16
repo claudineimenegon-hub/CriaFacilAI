@@ -11,3 +11,4 @@ export function createImageToImageProvider({
 }
 
 export { createCloudflareFlux2KleinImageToImageProvider };
+export { ProductPhotoConceptPlanner } from './product-photo-concept-planner.mjs';

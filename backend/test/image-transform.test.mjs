@@ -8,6 +8,7 @@ import {
   PRODUCT_PHOTO_SEEDS,
 } from '../image-to-image/image-transform-service.mjs';
 import { ProductPhotoPromptBuilder } from '../image-to-image/product-photo-prompt-builder.mjs';
+import { ProductPhotoConceptPlanner } from '../image-to-image/product-photo-concept-planner.mjs';
 
 const assetId = '00000000-0000-4000-8000-000000000001';
 const imageBase64 = Buffer.from('image').toString('base64');
@@ -50,58 +51,68 @@ function assetStore(overrides = {}) {
   };
 }
 
-test('quatro briefings são independentes e preservação precede direção artística', () => {
+test('planejamento de bebidas produz quatro prompts independentes e hierárquicos', () => {
   const builder = new ProductPhotoPromptBuilder();
-  const prompts = Array.from({ length: 4 }, (_, variationIndex) => builder.build({
+  const plan = new ProductPhotoConceptPlanner().plan({
+    prompt: 'Premium bottle campaign',
+    productCategory: 'beverages',
+  });
+  const prompts = plan.concepts.map((concept) => builder.build({
     prompt: 'Premium bottle campaign',
     artisticDirection: 'Luxo',
-    productCategory: 'beverages',
     preservation: request().preservation,
-    variationIndex,
+    plan,
+    concept,
   }));
 
   assert.equal(new Set(prompts).size, 4);
-  assert.match(prompts[0], /PRODUCT HERO \/ PREMIUM CATALOG/);
-  assert.match(prompts[1], /LIFESTYLE \/ PRODUCT IN USE/);
-  assert.match(prompts[1], /serving or consumption context/);
-  assert.match(prompts[2], /LUXURY DISPLAY \/ PREMIUM COMMERCIAL PRESENTATION/);
-  assert.match(prompts[3], /EXTREME MACRO \/ DETAIL HERO/);
-  assert.match(prompts[3], /microtexture/);
+  assert.deepEqual(plan.concepts.map(({ name }) => name), [
+    'PRODUCT HERO', 'EXTREME MACRO', 'SERVING / CONSUMPTION CONTEXT',
+    'LIFESTYLE / HELD OR APPLIED',
+  ]);
   for (const prompt of prompts) {
-    assert.ok(prompt.indexOf('AUTHORITATIVE PRODUCT REFERENCE') < prompt.indexOf('CONCEPT:'));
-    assert.match(prompt, /Preserve printed text as faithfully as the model permits/);
-    assert.match(prompt, /never replace or redesign/);
-    assert.match(prompt, /washed-out appearance/);
+    assert.ok(prompt.indexOf('REFERENCE:') < prompt.indexOf('CONCEPT:'));
+    assert.match(prompt, /printed text/);
+    assert.match(prompt, /no redesign/i);
+    assert.match(prompt, /no washed-out/);
+    assert.match(prompt, /One ad photo/);
+    assert.match(prompt, /No typography/);
     assert.doesNotMatch(prompt, /variation\s*[1-4]/i);
   }
 });
 
 test('regras de joias são especializadas e não vazam para outras categorias', () => {
   const builder = new ProductPhotoPromptBuilder();
-  const jewelryLifestyle = builder.build({
-    prompt: 'Jewelry campaign',
+  const jewelryPlan = new ProductPhotoConceptPlanner().plan({
     productCategory: 'jewelry',
+    prompt: 'Jewelry campaign',
+  });
+  const electronicsPlan = new ProductPhotoConceptPlanner().plan({
+    productCategory: 'electronics',
+    prompt: 'Electronics campaign',
+  });
+  const jewelryLifestyle = builder.build({
+    prompt: 'Jewelry campaign', plan: jewelryPlan,
+    concept: jewelryPlan.concepts[0],
     preservation: { preserveProduct: true },
-    variationIndex: 1,
   });
   const jewelryMacro = builder.build({
-    prompt: 'Jewelry campaign',
-    productCategory: 'jewelry',
+    prompt: 'Jewelry campaign', plan: jewelryPlan,
+    concept: jewelryPlan.concepts[2],
     preservation: { preserveProduct: true },
-    variationIndex: 3,
   });
   const electronicsMacro = builder.build({
-    prompt: 'Electronics campaign',
-    productCategory: 'electronics',
+    prompt: 'Electronics campaign', plan: electronicsPlan,
+    concept: electronicsPlan.concepts[1],
     preservation: { preserveProduct: true },
-    variationIndex: 3,
   });
 
-  assert.match(jewelryLifestyle, /jewelry being worn naturally/);
-  assert.match(jewelryLifestyle, /central stone/);
-  assert.match(jewelryMacro, /facets, setting, metal, secondary stones/);
-  assert.doesNotMatch(electronicsMacro, /central stone|secondary stones|jewelry being worn/);
-  assert.match(electronicsMacro, /authentic surface detail/);
+  assert.match(jewelryLifestyle, /wear at correct anatomy/);
+  assert.match(jewelryLifestyle, /gem color\/position/);
+  assert.match(jewelryMacro, /gem color\/position/);
+  assert.match(jewelryMacro, /symmetry\/facets/);
+  assert.doesNotMatch(electronicsMacro, /gemstone|visible stone|jewelry/);
+  assert.match(electronicsMacro, /controls, ports/);
 });
 
 test('count=4 usa concorrência máxima de duas e quatro prompts distintos', async () => {
@@ -109,6 +120,7 @@ test('count=4 usa concorrência máxima de duas e quatro prompts distintos', asy
   let maxActive = 0;
   const prompts = [];
   const providerParameters = [];
+  const diagnosticLogs = [];
   const provider = {
     generate: async ({ prompt, parameters }) => {
       prompts.push(prompt);
@@ -124,6 +136,7 @@ test('count=4 usa concorrência máxima de duas e quatro prompts distintos', asy
     provider,
     assetStore: assetStore(),
     request: request(),
+    creativeDirectorLogger: { info: (entry) => diagnosticLogs.push(entry) },
   });
 
   assert.equal(batch.expectedCount, 4);
@@ -139,6 +152,10 @@ test('count=4 usa concorrência máxima de duas e quatro prompts distintos', asy
   ]);
   assert.deepEqual(providerParameters.map(({ seed }) => seed), PRODUCT_PHOTO_SEEDS);
   assert.equal(batch.preservationSupport, 'best_effort');
+  assert.equal(diagnosticLogs.length, 4);
+  assert.match(diagnosticLogs[0], /\[CreativeDirector\] Proposal 1/);
+  assert.match(diagnosticLogs[0], /concept:|composition:|humanPresence:|productInteraction:|finalPrompt:/);
+  assert.match(diagnosticLogs[3], /\[CreativeDirector\] Proposal 4/);
 });
 
 test('aspect ratios correspondem às dimensões efetivamente enviadas ao provider', () => {
