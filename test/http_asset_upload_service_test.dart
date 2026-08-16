@@ -47,12 +47,96 @@ void main() {
         mimeType: 'image/jpeg',
       ),
       throwsA(
-        isA<AssetUploadException>()
-            .having((error) => error.message, 'message', 'Imagem inválida.'),
+        isA<AssetUploadException>().having(
+          (error) => error.message,
+          'message',
+          'Imagem inválida.',
+        ),
       ),
     );
   });
+
+  for (final status in [200, 201]) {
+    test('aceita HTTP $status com JSON e AssetReference válidos', () async {
+      final service = HttpAssetUploadService(
+        baseUrl: 'http://api.example',
+        transport: _FakeAssetTransport(
+          response: (statusCode: status, body: _assetResponseBody),
+        ),
+      );
+
+      final asset = await service.uploadImage(
+        bytes: Uint8List.fromList([0xff, 0xd8, 0xff]),
+        mimeType: 'image/jpeg',
+      );
+
+      expect(asset.id, '00000000-0000-4000-8000-000000000001');
+      expect(asset.width, 1);
+      expect(asset.height, 1);
+    });
+  }
+
+  test('JSON inválido é convertido em erro amigável', () async {
+    final service = HttpAssetUploadService(
+      baseUrl: 'http://api.example',
+      transport: _FakeAssetTransport(
+        response: (statusCode: 201, body: 'not-json'),
+      ),
+    );
+
+    await expectLater(
+      service.uploadImage(
+        bytes: Uint8List.fromList([0xff, 0xd8, 0xff]),
+        mimeType: 'image/jpeg',
+      ),
+      throwsA(
+        isA<AssetUploadException>().having(
+          (error) => error.message,
+          'message',
+          'O servidor retornou dados inválidos.',
+        ),
+      ),
+    );
+  });
+
+  for (final failure in AssetHttpFailure.values) {
+    test('$failure do transporte é sanitizado', () async {
+      final service = HttpAssetUploadService(
+        baseUrl: 'http://api.example',
+        transport: _FailingAssetTransport(failure),
+      );
+
+      await expectLater(
+        service.uploadImage(
+          bytes: Uint8List.fromList([0xff, 0xd8, 0xff]),
+          mimeType: 'image/jpeg',
+        ),
+        throwsA(
+          isA<AssetUploadException>().having(
+            (error) => error.message.contains('ProgressEvent'),
+            'não expõe ProgressEvent',
+            false,
+          ),
+        ),
+      );
+    });
+  }
 }
+
+final _assetResponseBody = jsonEncode({
+  'asset': {
+    'id': '00000000-0000-4000-8000-000000000001',
+    'mediaType': 'image',
+    'mimeType': 'image/jpeg',
+    'role': 'product',
+    'width': 1,
+    'height': 1,
+    'hash': 'hash',
+    'temporaryUrl': '/v1/assets/images/00000000-0000-4000-8000-000000000001',
+    'retentionPolicy': 'temporary',
+    'expiresAt': '2026-08-15T13:00:00.000Z',
+  },
+});
 
 class _FakeAssetTransport implements AssetHttpTransport {
   _FakeAssetTransport({this.response});
@@ -69,23 +153,39 @@ class _FakeAssetTransport implements AssetHttpTransport {
   ) async {
     lastBytes = bytes;
     lastMimeType = mimeType;
-    return response ?? (
-      statusCode: 201,
-      body: jsonEncode({
-        'asset': {
-          'id': '00000000-0000-4000-8000-000000000001',
-          'mediaType': 'image',
-          'mimeType': 'image/png',
-          'role': 'product',
-          'width': 1,
-          'height': 1,
-          'hash': 'hash',
-          'temporaryUrl':
-              '/v1/assets/images/00000000-0000-4000-8000-000000000001',
-          'retentionPolicy': 'temporary',
-          'expiresAt': '2026-08-15T13:00:00.000Z',
-        },
-      }),
-    );
+    return response ??
+        (
+          statusCode: 201,
+          body: jsonEncode({
+            'asset': {
+              'id': '00000000-0000-4000-8000-000000000001',
+              'mediaType': 'image',
+              'mimeType': 'image/png',
+              'role': 'product',
+              'width': 1,
+              'height': 1,
+              'hash': 'hash',
+              'temporaryUrl':
+                  '/v1/assets/images/00000000-0000-4000-8000-000000000001',
+              'retentionPolicy': 'temporary',
+              'expiresAt': '2026-08-15T13:00:00.000Z',
+            },
+          }),
+        );
+  }
+}
+
+class _FailingAssetTransport implements AssetHttpTransport {
+  const _FailingAssetTransport(this.failure);
+
+  final AssetHttpFailure failure;
+
+  @override
+  Future<AssetHttpResponse> postBytes(
+    Uri uri,
+    Uint8List bytes,
+    String mimeType,
+  ) {
+    throw AssetHttpTransportException(failure, 'Erro sanitizado de upload.');
   }
 }

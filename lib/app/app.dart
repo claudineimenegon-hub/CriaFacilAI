@@ -10,7 +10,7 @@ class LogoFacilApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'LogoFácil IA',
+      title: 'CriaFácilAI',
       theme: AppTheme.dark,
       home: const AppShell(),
     );

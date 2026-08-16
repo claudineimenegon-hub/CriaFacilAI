@@ -78,7 +78,9 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: ProductPhotoPage(
-          photoSelectionService: _CallbackPhotoSelectionService(() async => null),
+          photoSelectionService: _CallbackPhotoSelectionService(
+            () async => null,
+          ),
           uploadService: _FakeUploadService(),
           generationService: _FailingGenerationService(),
         ),
@@ -117,7 +119,9 @@ void main() {
     expect(upload.calls, 0);
   });
 
-  testWidgets('arquivo inválido não cria preview nem inicia upload', (tester) async {
+  testWidgets('arquivo inválido não cria preview nem inicia upload', (
+    tester,
+  ) async {
     final upload = _FakeUploadService();
     await tester.pumpWidget(
       MaterialApp(
@@ -138,9 +142,62 @@ void main() {
     await tester.tap(find.text('SELECIONAR FOTO'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Selecione uma imagem PNG ou JPEG válida.'), findsOneWidget);
+    expect(
+      find.text('Selecione uma imagem PNG ou JPEG válida.'),
+      findsOneWidget,
+    );
     expect(find.byType(Image), findsNothing);
     expect(upload.calls, 0);
+  });
+
+  testWidgets('falha encerra uploading e permite nova tentativa com sucesso', (
+    tester,
+  ) async {
+    final upload = _RetryUploadService();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProductPhotoPage(
+          photoSelectionService: _FakePhotoSelectionService(),
+          uploadService: upload,
+          generationService: _FailingGenerationService(),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('SELECIONAR FOTO'));
+    await tester.pumpAndSettle();
+    expect(find.text('Falha temporária no upload.'), findsOneWidget);
+    expect(find.text('Enviando foto...'), findsNothing);
+    expect(find.text('SELECIONAR FOTO'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('GERAR 4 PROPOSTAS'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNull,
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('SELECIONAR FOTO'),
+      -500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('SELECIONAR FOTO'));
+    await tester.pumpAndSettle();
+    expect(find.text('Foto protegida temporariamente'), findsOneWidget);
+    expect(upload.calls, 2);
+
+    await tester.scrollUntilVisible(
+      find.text('GERAR 4 PROPOSTAS'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNotNull,
+    );
   });
 }
 
@@ -165,14 +222,14 @@ class _FakeUploadService implements AssetUploadService {
   }) async {
     calls += 1;
     return AssetReference(
-    id: '00000000-0000-4000-8000-000000000001',
-    mediaType: AssetMediaType.image,
-    mimeType: mimeType,
-    role: role,
-    width: 1,
-    height: 1,
-    internalReference: 'asset:test',
-    retentionPolicy: AssetRetentionPolicy.temporary,
+      id: '00000000-0000-4000-8000-000000000001',
+      mediaType: AssetMediaType.image,
+      mimeType: mimeType,
+      role: role,
+      width: 1,
+      height: 1,
+      internalReference: 'asset:test',
+      retentionPolicy: AssetRetentionPolicy.temporary,
     );
   }
 }
@@ -184,6 +241,32 @@ class _CallbackPhotoSelectionService implements PhotoSelectionService {
 
   @override
   Future<SelectedPhoto?> selectImage() => callback();
+}
+
+class _RetryUploadService implements AssetUploadService {
+  int calls = 0;
+
+  @override
+  Future<AssetReference> uploadImage({
+    required Uint8List bytes,
+    required String mimeType,
+    AssetRole role = AssetRole.product,
+  }) async {
+    calls += 1;
+    if (calls == 1) {
+      throw const AssetUploadException('Falha temporária no upload.');
+    }
+    return AssetReference(
+      id: '00000000-0000-4000-8000-000000000001',
+      mediaType: AssetMediaType.image,
+      mimeType: mimeType,
+      role: role,
+      width: 1,
+      height: 1,
+      internalReference: 'asset:test',
+      retentionPolicy: AssetRetentionPolicy.temporary,
+    );
+  }
 }
 
 class _ControlledGenerationService implements ProductPhotoGenerationService {

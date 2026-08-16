@@ -1,11 +1,11 @@
 {
-    "name": "meu_app",
-    "short_name": "meu_app",
+    "name": "CriaFácilAI",
+    "short_name": "CriaFácilAI",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Plataforma de criação visual com inteligência artificial.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

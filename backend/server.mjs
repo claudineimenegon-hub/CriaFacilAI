@@ -342,7 +342,7 @@ export function startServer({ port = Number(process.env.PORT ?? 8080) } = {}) {
   }
   const server = createServer({ imageProvider, imageToImageProvider });
   server.listen(port, '0.0.0.0', () => {
-    console.log(`LogoFácil API disponível na porta ${port} usando ${imageProvider.name}/${imageProvider.model}.`);
+    console.log(`CriaFácilAI API disponível na porta ${port} usando ${imageProvider.name}/${imageProvider.model}.`);
   });
   return server;
 }

@@ -91,7 +91,13 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
       );
       if (mounted) setState(() => _asset = asset);
     } on AssetUploadException catch (error) {
-      if (mounted) _showMessage(error.message);
+      if (mounted) {
+        setState(() {
+          _previewBytes = null;
+          _asset = null;
+        });
+        _showMessage(error.message);
+      }
     } on PhotoSelectionException catch (error) {
       if (mounted) _showMessage(error.message);
     } on Exception {

@@ -5,6 +5,7 @@ import 'package:meu_app/app/app.dart';
 void main() {
   testWidgets('exibe e navega pelas quatro áreas principais', (tester) async {
     await tester.pumpWidget(const LogoFacilApp());
+    expect(find.text('CriaFácilAI'), findsOneWidget);
     expect(find.text('Crie com inteligência artificial'), findsOneWidget);
     expect(find.byType(NavigationDestination), findsNWidgets(4));
 

@@ -64,7 +64,7 @@ class HomePage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'LogoFácil IA',
+          'CriaFácilAI',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [

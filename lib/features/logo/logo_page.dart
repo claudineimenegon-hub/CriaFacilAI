@@ -87,7 +87,7 @@ class _LogoPageState extends State<LogoPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'LogoFácil IA',
+          'CriaFácilAI',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
       ),

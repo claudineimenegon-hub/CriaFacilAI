@@ -1,4 +1,4 @@
-# LogoFácil API
+# CriaFácilAI API
 
 Backend com provedores intercambiáveis para manter todas as credenciais fora do aplicativo Flutter.
 
