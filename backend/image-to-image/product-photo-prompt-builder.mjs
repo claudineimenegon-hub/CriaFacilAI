@@ -1,3 +1,12 @@
+import {
+  createProductIdentitySpecification,
+  summarizeProductIdentitySpecification,
+} from './product-identity-spec.mjs';
+import {
+  createProductFidelityPolicy,
+  summarizeProductFidelityPolicy,
+} from './product-fidelity-policy.mjs';
+
 const MAX_PROMPT_LENGTH = 2048;
 const USER_BRIEF_BUDGET = 258;
 
@@ -71,8 +80,8 @@ function restrictiveMode(preservation) {
 
 function transformationDirection(preservation) {
   return restrictiveMode(preservation) ?? [
-    'FREE RE-STAGING: create a new professional ad photo.',
-    'Change composition, background, camera/framing, lighting, perspective, and product/scene relationship.',
+    'FREE RE-STAGING:',
+    'Change composition, background, camera/framing, lighting, perspective and scene relationship.',
     'Never return a cleaned-up reference copy.',
   ].join(' ');
 }
@@ -90,42 +99,74 @@ function globalConstraints({ allowCollage, allowText }) {
   ].join(' ');
 }
 
-function physicalFidelity(preservation, category) {
+function physicalFidelity(preservation, policy) {
   const protections = Object.entries(preservationInstructions)
     .filter(([key]) => preservation[key] === true)
     .map(([, instruction]) => instruction);
   const requested = protections.length > 0 ? protections.join(', ') : 'identity, geometry, materials, colors, distinctive details';
-  const jewelry = category === 'jewelry'
-    ? ' Jewelry: keep count/type/geometry, metal tone, gem color/position, setting/symmetry/facets; no stone changes; wear at correct anatomy, never overlay/float on face/eyes/body.'
-    : '';
-  return `FIDELITY (BEST EFFORT): same product — ${requested}. Change the photo, not the product; no redesign.${jewelry}`;
+  return [
+    `FIDELITY (BEST EFFORT): same product — ${requested}; no redesign.`,
+    summarizeProductFidelityPolicy(policy),
+  ].join(' ');
+}
+
+function visibilityDirection(visibilityIntent) {
+  const { mode, selection, allowPartialVisibility } = visibilityIntent;
+  return [
+    `VISIBILITY INTENT: ${mode}; ${selection}.`,
+    allowPartialVisibility
+      ? 'Justified subset/occlusion/partial view allowed.'
+      : 'Show selected product clearly when physically plausible.',
+    'Visibility never changes source inventory or product identity.',
+  ].join(' ');
 }
 
 export class ProductPhotoPromptBuilder {
-  build({ prompt, preservation = {}, artisticDirection, plan, concept }) {
-    if (!plan?.understanding || !concept) {
+  build({
+    prompt,
+    preservation = {},
+    artisticDirection,
+    plan,
+    concept,
+    identitySpecification,
+    fidelityPolicy,
+  }) {
+    if (!plan?.understanding || !concept?.visibilityIntent) {
       throw new TypeError('A product understanding and planned concept are required.');
     }
     const userBrief = clip(prompt, USER_BRIEF_BUDGET);
     const category = plan.understanding.category;
+    const identity = identitySpecification ?? createProductIdentitySpecification({
+      category,
+      preservation,
+    });
+    const policy = fidelityPolicy ?? createProductFidelityPolicy({ category });
     const objective = objectiveDirections[artisticDirection] ??
       'realistic, commercially useful advertising treatment';
+    const compact = userBrief.length > 180 ||
+      Object.values(preservation).filter((value) => value === true).length > 4;
     const categoryInteraction = category === 'jewelry'
       ? ''
       : `; ${clip(categoryPlacement[category] ?? categoryPlacement.general, 75)}`;
     const sections = [
       'REFERENCE: INPUT IMAGE 0 defines the product.',
-      physicalFidelity(preservation, category),
+      summarizeProductIdentitySpecification(identity),
+      physicalFidelity(preservation, policy),
       `USER BRIEF: ${userBrief}`,
       transformationDirection(preservation),
-      `CONCEPT: ${concept.name}. ${clip(operationalDirections[concept.name] ?? concept.objective, 120)} Intent: ${clip(concept.objective, 45)}; ${clip(objective, 50)}.`,
-      `INTERACTION: product${concept.humanPresent ? ' with supporting person' : ' alone'}; ${clip(concept.interaction, 75)}${categoryInteraction}.`,
-      `COMPOSITION: ${clip(`${concept.cameraDistance}; ${concept.angle}; ${concept.lens}; ${concept.composition}`, 150)}.`,
-      `LIGHTING/DEPTH: ${clip(`${concept.lighting}; ${concept.depthOfField}`, 110)}.`,
-      `MATERIAL/SET: ${clip(plan.understanding.materialDirection, 80)}; ${clip(concept.environment, 75)}.`,
-      'QUALITY: sharp commercial photo; dimensional light, microcontrast, controlled highlights; no washed-out/plastic/CGI look.',
+      `CONCEPT: ${concept.name}. ${clip(operationalDirections[concept.name] ?? concept.objective, compact ? 68 : 120)} Intent: ${clip(concept.objective, compact ? 24 : 45)}; ${clip(objective, 55)}.`,
+      `INTERACTION: product${concept.humanPresent ? ' with supporting person' : ' alone'}; ${clip(concept.interaction, compact ? 34 : 58)}${compact ? '' : categoryInteraction}.`,
+      visibilityDirection(concept.visibilityIntent),
+      `COMPOSITION: ${clip(`${concept.cameraDistance}; ${concept.angle}; ${concept.lens}; ${concept.composition}`, compact ? 66 : 104)}.`,
+      `LIGHTING/DEPTH: ${clip(`${concept.lighting}; ${concept.depthOfField}`, compact ? 46 : 76)}.`,
+      compact
+        ? null
+        : `MATERIAL/SET: ${clip(plan.understanding.materialDirection, 54)}; ${clip(concept.environment, 44)}.`,
+      compact
+        ? 'QUALITY: sharp commercial photo; realistic materials; no washed-out/plastic/CGI look.'
+        : 'QUALITY: sharp commercial photo; dimensional light, controlled highlights; no washed-out/plastic/CGI look.',
       globalConstraints(plan.understanding),
-    ];
+    ].filter(Boolean);
     const finalPrompt = sections.join('\n');
     if (finalPrompt.length > MAX_PROMPT_LENGTH) {
       throw new RangeError(`Product photo prompt has ${finalPrompt.length} characters; maximum is ${MAX_PROMPT_LENGTH}.`);

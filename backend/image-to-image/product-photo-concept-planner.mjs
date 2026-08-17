@@ -81,6 +81,56 @@ const plans = {
   general: ['hero', 'cleanCatalog', 'macro', 'editorial'],
 };
 
+const visibilityIntents = Object.freeze({
+  hero: Object.freeze({ mode: 'hero_item', selection: 'one_or_primary_item', allowPartialVisibility: false }),
+  cleanCatalog: Object.freeze({ mode: 'full_set', selection: 'all_evidenced_items_when_physically_plausible', allowPartialVisibility: false }),
+  macro: Object.freeze({ mode: 'macro_detail', selection: 'one_evidenced_detail', allowPartialVisibility: true }),
+  lifestyleWear: Object.freeze({ mode: 'contextual_use', selection: 'plausibly_visible_items', allowPartialVisibility: true }),
+  lifestyleHeld: Object.freeze({ mode: 'contextual_use', selection: 'plausibly_visible_items', allowPartialVisibility: true }),
+  functionalUse: Object.freeze({ mode: 'contextual_use', selection: 'functionally_relevant_items', allowPartialVisibility: true }),
+  serving: Object.freeze({ mode: 'contextual_use', selection: 'serving_relevant_items', allowPartialVisibility: true }),
+  environmental: Object.freeze({ mode: 'contextual_use', selection: 'scene_relevant_items', allowPartialVisibility: true }),
+  luxuryDisplay: Object.freeze({ mode: 'subset', selection: 'art_directed_subset', allowPartialVisibility: true }),
+  packaging: Object.freeze({ mode: 'subset', selection: 'presentation_relevant_items', allowPartialVisibility: true }),
+  foodHero: Object.freeze({ mode: 'hero_item', selection: 'one_or_primary_item', allowPartialVisibility: false }),
+  technical: Object.freeze({ mode: 'macro_detail', selection: 'functional_detail', allowPartialVisibility: true }),
+  motion: Object.freeze({ mode: 'hero_item', selection: 'one_or_primary_item', allowPartialVisibility: true }),
+  editorial: Object.freeze({ mode: 'subset', selection: 'art_directed_subset', allowPartialVisibility: true }),
+  conceptCampaign: Object.freeze({ mode: 'hero_item', selection: 'campaign_focal_item', allowPartialVisibility: true }),
+});
+
+function requestedVisibilityModes(prompt) {
+  const modes = [];
+  if (/\b(full set|complete set|all (?:items|pieces|products)|conjunto completo|todas? (?:as )?(?:pe[cç]as|unidades|produtos))\b/i.test(prompt)) {
+    modes.push('full_set');
+  }
+  if (/\b(subset|selection|selected pieces|subconjunto|sele[cç][aã]o de pe[cç]as)\b/i.test(prompt)) {
+    modes.push('subset');
+  }
+  if (/\b(macro|close[- ]?up|details?|detalhes?|aproxima[cç][aã]o)\b/i.test(prompt)) {
+    modes.push('macro_detail');
+  }
+  if (/\b(model|person|wearing|worn|using|holding|applied|modelo|pessoa|usando|vestindo|segurando|aplicando)\b/i.test(prompt)) {
+    modes.push('contextual_use');
+  }
+  if (/\b(hero|principal|destaque)\b/i.test(prompt)) modes.push('hero_item');
+  return Object.freeze([...new Set(modes)]);
+}
+
+function adaptiveConceptKeys(category, understanding) {
+  const selected = [...(plans[category] ?? plans.general)];
+  if (understanding.requestedVisibilityModes.includes('contextual_use') &&
+      !selected.some((key) => ['lifestyleWear', 'lifestyleHeld', 'functionalUse', 'serving', 'environmental'].includes(key))) {
+    const safelyWearable = ['jewelry', 'accessory', 'clothing', 'footwear'].includes(category);
+    const safelyHeld = ['perfume', 'cosmetic', 'beverage'].includes(category);
+    selected[3] = safelyWearable ? 'lifestyleWear' : safelyHeld ? 'lifestyleHeld' : 'functionalUse';
+  }
+  if (understanding.requestedVisibilityModes.includes('macro_detail') && !selected.includes('macro')) {
+    selected[2] = 'macro';
+  }
+  return selected;
+}
+
 export class ProductPhotoConceptPlanner {
   understand({ productCategory, prompt = '' }) {
     const declared = categoryAliases.get(String(productCategory ?? '').toLowerCase());
@@ -93,13 +143,17 @@ export class ProductPhotoConceptPlanner {
       preservation: category === 'jewelry' ? 'jewelry_specific_best_effort' : 'category_best_effort',
       allowCollage: /\b(collage|moodboard|contact sheet|split[ -]?screen|image grid|multi[ -]?panel|colagem|painel de refer[eê]ncias|tela dividida)\b/i.test(prompt),
       allowText: /\b(add|include|write|insert|adicionar|incluir|escrever|inserir)\b.{0,40}\b(text|title|headline|caption|slogan|lettering|texto|t[ií]tulo|legenda)\b/i.test(prompt),
+      requestedVisibilityModes: requestedVisibilityModes(prompt),
     });
   }
 
   plan(input) {
     const understanding = this.understand(input);
-    const selected = plans[understanding.category] ?? plans.general;
-    const concepts = Object.freeze(selected.map((key) => archetypes[key]));
+    const selected = adaptiveConceptKeys(understanding.category, understanding);
+    const concepts = Object.freeze(selected.map((key) => Object.freeze({
+      ...archetypes[key],
+      visibilityIntent: visibilityIntents[key] ?? visibilityIntents.hero,
+    })));
     assertConceptDiversity(concepts);
     return Object.freeze({
       understanding,

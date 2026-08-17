@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { ProductPhotoPromptBuilder } from './product-photo-prompt-builder.mjs';
 import { ProductPhotoConceptPlanner } from './product-photo-concept-planner.mjs';
+import { createProductIdentitySpecification } from './product-identity-spec.mjs';
+import { createProductFidelityPolicy } from './product-fidelity-policy.mjs';
 
 const EXPECTED_COUNT = 4;
 const CONCURRENCY = 2;
@@ -71,12 +73,22 @@ export async function generateProductPhotoBatch({
   if (plan.concepts.length !== EXPECTED_COUNT) {
     throw new Error('INCOMPLETE_CONCEPT_PLAN');
   }
+  const identitySpecification = createProductIdentitySpecification({
+    category: plan.understanding.category,
+    sourceInventory: request.parameters?.common?.sourceInventory,
+    preservation: request.preservation,
+  });
+  const fidelityPolicy = createProductFidelityPolicy({
+    category: plan.understanding.category,
+  });
   const prompts = plan.concepts.map((concept) => promptBuilder.build({
     prompt: request.prompt,
     preservation: request.preservation,
     artisticDirection: request.parameters?.common?.artisticDirection,
     plan,
     concept,
+    identitySpecification,
+    fidelityPolicy,
   }));
   plan.concepts.forEach((concept, index) => {
     creativeDirectorLogger?.info?.([
@@ -86,6 +98,8 @@ export async function generateProductPhotoBatch({
       `composition: ${concept.cameraDistance}; ${concept.angle}; ${concept.composition}`,
       `humanPresence: ${concept.humanPresent}`,
       `productInteraction: ${concept.interaction}`,
+      `visibilityIntent: ${concept.visibilityIntent.mode}; ${concept.visibilityIntent.selection}`,
+      `sourceInventoryState: ${identitySpecification.sourceInventory.state}`,
       `environment: ${concept.environment}`,
       `lighting: ${concept.lighting}`,
       `finalPrompt: ${prompts[index]}`,
