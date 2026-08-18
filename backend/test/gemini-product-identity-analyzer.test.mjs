@@ -269,6 +269,34 @@ test('preserva somente mensagem HTTP curta e segura do Gemini', async (t) => {
     assert.equal(events[0].upstreamMessage, 'Model is not available for generateContent.');
   });
 
+  await t.test('status e violações de campo seguras', async () => {
+    const events = [];
+    const analyzer = new GeminiProductIdentityAnalyzer({
+      apiKey,
+      logger: { info: (event) => events.push(event) },
+      fetchImpl: async () => geminiResponse(null, {
+        status: 400,
+        rawText: JSON.stringify({ error: {
+          message: 'Request contains an invalid argument.',
+          status: 'INVALID_ARGUMENT',
+          details: [{
+            '@type': 'type.googleapis.com/google.rpc.BadRequest',
+            fieldViolations: [{
+              field: 'generation_config.response_format.text.schema.properties.items',
+              description: 'Schema exceeded the supported complexity.',
+            }],
+          }],
+        } }),
+      }),
+    });
+    await assert.rejects(analyzer.analyze(analyzerInput()), { code: 'GEMINI_HTTP_ERROR' });
+    assert.equal(events[0].upstreamStatus, 'INVALID_ARGUMENT');
+    assert.deepEqual(events[0].fieldViolations, [{
+      field: 'generation_config.response_format.text.schema.properties.items',
+      description: 'Schema exceeded the supported complexity.',
+    }]);
+  });
+
   await t.test('mensagem sensível', async () => {
     const events = [];
     const analyzer = new GeminiProductIdentityAnalyzer({
@@ -276,11 +304,20 @@ test('preserva somente mensagem HTTP curta e segura do Gemini', async (t) => {
       logger: { info: (event) => events.push(event) },
       fetchImpl: async () => geminiResponse(null, {
         status: 400,
-        rawText: JSON.stringify({ error: { message: 'data:image/jpeg;base64,PRIVATE_BYTES' } }),
+        rawText: JSON.stringify({ error: {
+          message: 'data:image/jpeg;base64,PRIVATE_BYTES',
+          status: 'invalid status',
+          details: [{ fieldViolations: [{
+            field: 'unsafe field with spaces',
+            description: 'Authorization: secret data:image/jpeg;base64,PRIVATE_BYTES',
+          }] }],
+        } }),
       }),
     });
     await assert.rejects(analyzer.analyze(analyzerInput()), { code: 'GEMINI_HTTP_ERROR' });
     assert.equal(events[0].upstreamMessage, undefined);
+    assert.equal(events[0].upstreamStatus, undefined);
+    assert.equal(events[0].fieldViolations, undefined);
     assert.doesNotMatch(JSON.stringify(events), /data:image|base64|PRIVATE_BYTES/);
   });
 });

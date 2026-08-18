@@ -130,17 +130,39 @@ function responseText(payload) {
   return parts.find((part) => typeof part?.text === 'string')?.text;
 }
 
-function safeGeminiUpstreamMessage(rawResponse) {
+function safeDiagnosticText(value, maxLength = 240) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  if (!normalized || /data:|base64|authorization|api[ _-]?key|x-goog-api-key/i.test(normalized) ||
+      /[A-Za-z0-9+/_=-]{40,}/.test(normalized)) return undefined;
+  return normalized.slice(0, maxLength);
+}
+
+function safeGeminiUpstreamDiagnostics(rawResponse) {
   try {
-    const candidate = JSON.parse(rawResponse)?.error?.message;
-    if (typeof candidate !== 'string') return undefined;
-    const normalized = candidate.replace(/[\u0000-\u001f\u007f]+/g, ' ')
-      .replace(/\s+/g, ' ').trim();
-    if (!normalized || /data:|base64|authorization|api[ _-]?key|x-goog-api-key/i.test(normalized) ||
-        /[A-Za-z0-9+/_=-]{40,}/.test(normalized)) return undefined;
-    return normalized.slice(0, 240);
+    const upstreamError = JSON.parse(rawResponse)?.error;
+    const upstreamStatus = typeof upstreamError?.status === 'string' &&
+      /^[A-Z][A-Z0-9_]{0,63}$/.test(upstreamError.status)
+      ? upstreamError.status : undefined;
+    const fieldViolations = (Array.isArray(upstreamError?.details) ? upstreamError.details : [])
+      .flatMap((detail) => Array.isArray(detail?.fieldViolations) ? detail.fieldViolations : [])
+      .slice(0, 8)
+      .map((violation) => {
+        const field = typeof violation?.field === 'string' &&
+          /^[A-Za-z0-9_.\[\]-]{1,240}$/.test(violation.field)
+          ? violation.field : undefined;
+        const description = safeDiagnosticText(violation?.description);
+        return field ? { field, ...(description ? { description } : {}) } : undefined;
+      })
+      .filter(Boolean);
+    return {
+      upstreamMessage: safeDiagnosticText(upstreamError?.message),
+      upstreamStatus,
+      fieldViolations,
+    };
   } catch {
-    return undefined;
+    return { upstreamMessage: undefined, upstreamStatus: undefined, fieldViolations: [] };
   }
 }
 
@@ -242,10 +264,11 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         );
       }
       if (!response.ok) {
+        const diagnostics = safeGeminiUpstreamDiagnostics(rawResponse);
         const httpError = new GeminiProductIdentityAnalyzerError(
           'GEMINI_HTTP_ERROR', 'Product identity provider request failed.',
         );
-        httpError.upstreamMessage = safeGeminiUpstreamMessage(rawResponse);
+        Object.assign(httpError, diagnostics);
         throw httpError;
       }
       let payload;
@@ -305,6 +328,10 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         fallback: outcome.fallback,
         ...(terminalError?.upstreamMessage
           ? { upstreamMessage: terminalError.upstreamMessage } : {}),
+        ...(terminalError?.upstreamStatus
+          ? { upstreamStatus: terminalError.upstreamStatus } : {}),
+        ...(terminalError?.fieldViolations?.length
+          ? { fieldViolations: terminalError.fieldViolations } : {}),
       };
       if (this.logger?.info) {
         this.logger.info(event);
