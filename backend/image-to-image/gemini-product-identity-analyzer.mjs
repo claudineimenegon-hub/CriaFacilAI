@@ -56,7 +56,7 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
             },
           },
           ambiguousFeatures: {
-            type: 'array', maxItems: PRODUCT_IDENTITY_ANALYSIS_LIMITS.ambiguousFeaturesPerItem,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
               properties: {

@@ -123,6 +123,11 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
       .properties.observedFeatures.maxItems,
     undefined,
   );
+  assert.equal(
+    body.generationConfig.responseFormat.text.schema.properties.items.items
+      .properties.ambiguousFeatures.maxItems,
+    undefined,
+  );
   assert.equal(body.generationConfig.temperature, undefined);
   assert.equal(body.generationConfig.top_p, undefined);
   assert.equal(body.generationConfig.top_k, undefined);
