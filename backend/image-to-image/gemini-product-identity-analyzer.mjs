@@ -1,5 +1,4 @@
 import {
-  PRODUCT_IDENTITY_ANALYSIS_LIMITS,
   ProductIdentityAnalyzer,
   validateProductIdentityAnalysis,
 } from './product-identity-analyzer.mjs';
@@ -11,44 +10,41 @@ export const GEMINI_GENERATE_CONTENT_BASE_URL =
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_HTTP_RESPONSE_BYTES = 128 * 1024;
 
-const stateSchema = { type: 'string', enum: ['known', 'uncertain', 'unknown'] };
+// The remote schema intentionally describes only the response shape. Strict
+// limits and invariants are enforced after parsing by validateProductIdentityAnalysis.
+const stateSchema = { type: 'string' };
 const nullableString = { type: ['string', 'null'] };
 const evidenceStringSchema = {
   type: 'object',
-  additionalProperties: false,
   properties: { state: stateSchema, value: nullableString },
   required: ['state', 'value'],
 };
 const evidenceQuantitySchema = {
   type: 'object',
-  additionalProperties: false,
   properties: {
     state: stateSchema,
-    value: { type: ['integer', 'null'], minimum: 1, maximum: 1000 },
+    value: { type: ['integer', 'null'] },
   },
   required: ['state', 'value'],
 };
 
 export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
   type: 'object',
-  additionalProperties: false,
   properties: {
     state: stateSchema,
     items: {
-      type: 'array', maxItems: PRODUCT_IDENTITY_ANALYSIS_LIMITS.items,
+      type: 'array',
       items: {
-        type: 'object', additionalProperties: false,
+        type: 'object',
         properties: {
           id: { type: 'string' },
           functionalType: evidenceStringSchema,
           quantity: evidenceQuantitySchema,
-          observationCompleteness: {
-            type: 'string', enum: ['complete', 'partial', 'unknown'],
-          },
+          observationCompleteness: { type: 'string' },
           observedFeatures: {
             type: 'array',
             items: {
-              type: 'object', additionalProperties: false,
+              type: 'object',
               properties: {
                 id: { type: 'string' }, name: { type: 'string' }, value: { type: 'string' },
               },
@@ -58,13 +54,13 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
           ambiguousFeatures: {
             type: 'array',
             items: {
-              type: 'object', additionalProperties: false,
+              type: 'object',
               properties: {
                 id: { type: 'string' }, name: { type: 'string' },
-                visibility: { type: 'string', enum: ['partial', 'hidden'] },
+                visibility: { type: 'string' },
                 observedConstraint: nullableString,
                 plausibleHypotheses: {
-                  type: 'array', maxItems: PRODUCT_IDENTITY_ANALYSIS_LIMITS.hypothesesPerFeature,
+                  type: 'array',
                   items: { type: 'string' },
                 },
               },
@@ -81,12 +77,12 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
       },
     },
     relationships: {
-      type: 'array', maxItems: PRODUCT_IDENTITY_ANALYSIS_LIMITS.relationships,
+      type: 'array',
       items: {
-        type: 'object', additionalProperties: false,
+        type: 'object',
         properties: {
           type: { type: 'string' },
-          memberIds: { type: 'array', maxItems: 16, items: { type: 'string' } },
+          memberIds: { type: 'array', items: { type: 'string' } },
           state: stateSchema,
         },
         required: ['type', 'memberIds', 'state'],

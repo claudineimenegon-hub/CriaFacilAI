@@ -130,6 +130,36 @@ test('rejeita campos livres, enums inválidos e respostas excessivas', () => {
     })],
     relationships: [],
   }), /ambiguousFeatures/);
+  assert.throws(() => validateProductIdentityAnalysis({
+    state: 'uncertain',
+    items: [item({
+      completeness: 'partial',
+      ambiguousFeatures: [{
+        name: 'hidden structure',
+        visibility: 'hidden',
+        observedConstraint: null,
+        plausibleHypotheses: Array.from(
+          { length: PRODUCT_IDENTITY_ANALYSIS_LIMITS.hypothesesPerFeature + 1 },
+          (_, index) => `hypothesis-${index}`,
+        ),
+      }],
+    })],
+    relationships: [],
+  }), /plausibleHypotheses/);
+  assert.throws(() => validateProductIdentityAnalysis({
+    state: 'uncertain',
+    items: [item({
+      completeness: 'partial',
+      ambiguousFeatures: [{
+        name: 'hidden structure',
+        visibility: 'hidden',
+        observedConstraint: null,
+        plausibleHypotheses: [],
+        unexpectedProperty: 'must be rejected locally',
+      }],
+    })],
+    relationships: [],
+  }), /not allowed/);
 });
 
 test('analyzer executa uma vez e conjunto conhecido habilita Hero Set com identidade compartilhada', async () => {

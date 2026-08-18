@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import {
   DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL,
   GEMINI_GENERATE_CONTENT_BASE_URL,
+  GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
   GeminiProductIdentityAnalyzer,
   GeminiProductIdentityAnalyzerError,
 } from '../image-to-image/gemini-product-identity-analyzer.mjs';
@@ -66,6 +67,31 @@ function analyzerInput() {
   };
 }
 
+function semanticPropertyPaths(schema, prefix = '') {
+  const paths = [];
+  for (const [name, property] of Object.entries(schema?.properties ?? {})) {
+    const path = prefix ? `${prefix}.${name}` : name;
+    paths.push(path);
+    if (property.type === 'object') paths.push(...semanticPropertyPaths(property, path));
+    if (property.type === 'array' && property.items?.type === 'object') {
+      paths.push(...semanticPropertyPaths(property.items, `${path}[]`));
+    }
+  }
+  return paths.sort();
+}
+
+function collectRestrictionKeys(value, path = '$') {
+  if (!value || typeof value !== 'object') return [];
+  const restrictions = [];
+  for (const [key, entry] of Object.entries(value)) {
+    const entryPath = `${path}.${key}`;
+    if (['maxItems', 'minItems', 'minimum', 'maximum', 'additionalProperties', 'enum']
+      .includes(key)) restrictions.push(entryPath);
+    restrictions.push(...collectRestrictionKeys(entry, entryPath));
+  }
+  return restrictions;
+}
+
 test('GEMINI_API_KEY ausente falha antes da rede sem expor credencial', async () => {
   let fetchCalls = 0;
   const analyzer = new GeminiProductIdentityAnalyzer({
@@ -117,17 +143,8 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
     mimeType: 'image/jpeg', data: imageBytes.toString('base64'),
   });
   assert.equal(body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
-  assert.equal(body.generationConfig.responseFormat.text.schema.additionalProperties, false);
-  assert.equal(
-    body.generationConfig.responseFormat.text.schema.properties.items.items
-      .properties.observedFeatures.maxItems,
-    undefined,
-  );
-  assert.equal(
-    body.generationConfig.responseFormat.text.schema.properties.items.items
-      .properties.ambiguousFeatures.maxItems,
-    undefined,
-  );
+  assert.deepEqual(body.generationConfig.responseFormat.text.schema,
+    GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA);
   assert.equal(body.generationConfig.temperature, undefined);
   assert.equal(body.generationConfig.top_p, undefined);
   assert.equal(body.generationConfig.top_k, undefined);
@@ -136,6 +153,36 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   assert.equal(body.generationConfig.topK, undefined);
   assert.equal(body.generationConfig.candidateCount, undefined);
   assert.deepEqual(Object.keys(body.generationConfig), ['responseFormat']);
+});
+
+test('schema remoto simplificado preserva cobertura semântica sem duplicar validações locais', () => {
+  assert.deepEqual(semanticPropertyPaths(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA), [
+    'items',
+    'items[].ambiguousFeatures',
+    'items[].ambiguousFeatures[].id',
+    'items[].ambiguousFeatures[].name',
+    'items[].ambiguousFeatures[].observedConstraint',
+    'items[].ambiguousFeatures[].plausibleHypotheses',
+    'items[].ambiguousFeatures[].visibility',
+    'items[].functionalType',
+    'items[].functionalType.state',
+    'items[].functionalType.value',
+    'items[].id',
+    'items[].observationCompleteness',
+    'items[].observedFeatures',
+    'items[].observedFeatures[].id',
+    'items[].observedFeatures[].name',
+    'items[].observedFeatures[].value',
+    'items[].quantity',
+    'items[].quantity.state',
+    'items[].quantity.value',
+    'relationships',
+    'relationships[].memberIds',
+    'relationships[].state',
+    'relationships[].type',
+    'state',
+  ]);
+  assert.deepEqual(collectRestrictionKeys(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA), []);
 });
 
 test('aceita structured output com múltiplos itens, relações e evidências', async () => {
