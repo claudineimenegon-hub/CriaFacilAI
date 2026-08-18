@@ -116,8 +116,8 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   assert.deepEqual(image.inlineData, {
     mimeType: 'image/jpeg', data: imageBytes.toString('base64'),
   });
-  assert.equal(body.generationConfig.responseMimeType, 'application/json');
-  assert.equal(body.generationConfig.responseJsonSchema.additionalProperties, false);
+  assert.equal(body.generationConfig.responseFormat.text.mimeType, 'application/json');
+  assert.equal(body.generationConfig.responseFormat.text.schema.additionalProperties, false);
   assert.equal(body.generationConfig.temperature, undefined);
   assert.equal(body.generationConfig.top_p, undefined);
   assert.equal(body.generationConfig.top_k, undefined);
@@ -125,9 +125,7 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   assert.equal(body.generationConfig.topP, undefined);
   assert.equal(body.generationConfig.topK, undefined);
   assert.equal(body.generationConfig.candidateCount, undefined);
-  assert.deepEqual(Object.keys(body.generationConfig).sort(), [
-    'responseJsonSchema', 'responseMimeType',
-  ]);
+  assert.deepEqual(Object.keys(body.generationConfig), ['responseFormat']);
 });
 
 test('aceita structured output com múltiplos itens, relações e evidências', async () => {

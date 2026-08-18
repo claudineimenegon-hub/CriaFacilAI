@@ -211,8 +211,12 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
           ],
         }],
         generationConfig: {
-          responseMimeType: 'application/json',
-          responseJsonSchema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
+          responseFormat: {
+            text: {
+              mimeType: 'application/json',
+              schema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
+            },
+          },
         },
       };
       const response = await this.fetchImpl(endpoint, {
