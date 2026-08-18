@@ -5,7 +5,7 @@ import {
 } from './product-identity-analyzer.mjs';
 import { prepareGeminiAnalysisImages } from './gemini-analysis-preprocessor.mjs';
 
-export const DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL = 'gemini-2.5-flash-lite';
+export const DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_GENERATE_CONTENT_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -211,7 +211,6 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
           ],
         }],
         generationConfig: {
-          temperature: 0,
           responseMimeType: 'application/json',
           responseJsonSchema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
         },

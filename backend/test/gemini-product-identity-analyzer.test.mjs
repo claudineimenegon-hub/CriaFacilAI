@@ -86,7 +86,8 @@ test('factory seleciona unknown por padrão e gemini somente quando solicitado',
   });
   assert.ok(offline instanceof UnknownProductIdentityAnalyzer);
   assert.ok(gemini instanceof GeminiProductIdentityAnalyzer);
-  assert.equal(gemini.model, DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL);
+  assert.equal(DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL, 'gemini-3.5-flash-lite');
+  assert.equal(gemini.model, 'gemini-3.5-flash-lite');
   assert.throws(() => createProductIdentityAnalyzer({ analyzerName: 'unsupported' }),
     /PRODUCT_IDENTITY_ANALYZER inválido/);
 });
@@ -117,7 +118,16 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   });
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
   assert.equal(body.generationConfig.responseJsonSchema.additionalProperties, false);
-  assert.equal(body.generationConfig.temperature, 0);
+  assert.equal(body.generationConfig.temperature, undefined);
+  assert.equal(body.generationConfig.top_p, undefined);
+  assert.equal(body.generationConfig.top_k, undefined);
+  assert.equal(body.generationConfig.candidate_count, undefined);
+  assert.equal(body.generationConfig.topP, undefined);
+  assert.equal(body.generationConfig.topK, undefined);
+  assert.equal(body.generationConfig.candidateCount, undefined);
+  assert.deepEqual(Object.keys(body.generationConfig).sort(), [
+    'responseJsonSchema', 'responseMimeType',
+  ]);
 });
 
 test('aceita structured output com múltiplos itens, relações e evidências', async () => {
