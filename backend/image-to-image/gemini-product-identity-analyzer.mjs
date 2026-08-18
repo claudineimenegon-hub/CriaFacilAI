@@ -213,7 +213,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         generationConfig: {
           responseFormat: {
             text: {
-              mimeType: 'application/json',
+              mimeType: 'APPLICATION_JSON',
               schema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
             },
           },

@@ -116,7 +116,7 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   assert.deepEqual(image.inlineData, {
     mimeType: 'image/jpeg', data: imageBytes.toString('base64'),
   });
-  assert.equal(body.generationConfig.responseFormat.text.mimeType, 'application/json');
+  assert.equal(body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
   assert.equal(body.generationConfig.responseFormat.text.schema.additionalProperties, false);
   assert.equal(body.generationConfig.temperature, undefined);
   assert.equal(body.generationConfig.top_p, undefined);
