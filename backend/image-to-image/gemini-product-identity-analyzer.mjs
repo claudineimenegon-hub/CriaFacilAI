@@ -106,10 +106,11 @@ const analysisInstruction = [
 ].join(' ');
 
 export class GeminiProductIdentityAnalyzerError extends Error {
-  constructor(code, message) {
+  constructor(code, message, { statusHttp = null } = {}) {
     super(message);
     this.name = 'GeminiProductIdentityAnalyzerError';
     this.code = code;
+    this.statusHttp = Number.isInteger(statusHttp) ? statusHttp : null;
   }
 }
 
@@ -151,44 +152,45 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
 
   async analyze({ inputs, declaredCategory, userBrief, cacheKey } = {}) {
     void cacheKey;
-    if (!this.isConfigured) {
-      throw new GeminiProductIdentityAnalyzerError(
-        'GEMINI_NOT_CONFIGURED', 'Product identity perception is not configured.',
-      );
-    }
-    if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 4) {
-      throw new GeminiProductIdentityAnalyzerError(
-        'INVALID_ANALYZER_INPUT', 'Product identity analyzer inputs are invalid.',
-      );
-    }
     const startedAt = performance.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const endpoint = `${GEMINI_GENERATE_CONTENT_BASE_URL}/${encodeURIComponent(this.model)}:generateContent`;
-    const requestBody = {
-      contents: [{
-        role: 'user',
-        parts: [
-          {
-            text: [
-              analysisInstruction,
-              `Declared category (context only, not evidence): ${String(declaredCategory ?? 'unknown').slice(0, 80)}`,
-              `User brief (context only, not evidence): ${String(userBrief ?? '').slice(0, 4000)}`,
-            ].join('\n'),
-          },
-          ...inputs.map(({ bytes, mimeType }) => ({
-            inlineData: { mimeType, data: Buffer.from(bytes).toString('base64') },
-          })),
-        ],
-      }],
-      generationConfig: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-        responseJsonSchema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
-      },
-    };
-    let outcome = { status: null, fallback: true };
+    let outcome = { statusHttp: null, fallback: true };
+    let terminalError;
     try {
+      if (!this.isConfigured) {
+        throw new GeminiProductIdentityAnalyzerError(
+          'GEMINI_NOT_CONFIGURED', 'Product identity perception is not configured.',
+        );
+      }
+      if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 4) {
+        throw new GeminiProductIdentityAnalyzerError(
+          'INVALID_ANALYZER_INPUT', 'Product identity analyzer inputs are invalid.',
+        );
+      }
+      const requestBody = {
+        contents: [{
+          role: 'user',
+          parts: [
+            {
+              text: [
+                analysisInstruction,
+                `Declared category (context only, not evidence): ${String(declaredCategory ?? 'unknown').slice(0, 80)}`,
+                `User brief (context only, not evidence): ${String(userBrief ?? '').slice(0, 4000)}`,
+              ].join('\n'),
+            },
+            ...inputs.map(({ bytes, mimeType }) => ({
+              inlineData: { mimeType, data: Buffer.from(bytes).toString('base64') },
+            })),
+          ],
+        }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+          responseJsonSchema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
+        },
+      };
       const response = await this.fetchImpl(endpoint, {
         method: 'POST',
         headers: {
@@ -198,7 +200,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
-      outcome.status = response.status;
+      outcome.statusHttp = response.status;
       const contentLength = Number(response.headers?.get?.('content-length'));
       if (Number.isFinite(contentLength) && contentLength > MAX_HTTP_RESPONSE_BYTES) {
         throw new GeminiProductIdentityAnalyzerError(
@@ -228,7 +230,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
       }
       const validated = validateProductIdentityAnalysis(analysis);
       outcome = {
-        status: response.status,
+        statusHttp: response.status,
         fallback: false,
         state: validated.state,
         items: validated.items.length,
@@ -236,32 +238,46 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
       };
       return validated;
     } catch (error) {
+      let normalizedError;
       if (error?.name === 'AbortError') {
-        throw new GeminiProductIdentityAnalyzerError(
+        normalizedError = new GeminiProductIdentityAnalyzerError(
           'GEMINI_TIMEOUT', 'Product identity provider timed out.',
         );
+      } else if (error instanceof GeminiProductIdentityAnalyzerError ||
+          error?.code === 'INVALID_PRODUCT_IDENTITY_ANALYSIS') {
+        normalizedError = error;
+      } else {
+        normalizedError = new GeminiProductIdentityAnalyzerError(
+          'GEMINI_NETWORK_ERROR', 'Product identity provider request failed.',
+        );
       }
-      if (error instanceof GeminiProductIdentityAnalyzerError ||
-          error?.code === 'INVALID_PRODUCT_IDENTITY_ANALYSIS') throw error;
-      throw new GeminiProductIdentityAnalyzerError(
-        'GEMINI_NETWORK_ERROR', 'Product identity provider request failed.',
-      );
+      normalizedError.statusHttp = Number.isInteger(outcome.statusHttp)
+        ? outcome.statusHttp : normalizedError.statusHttp ?? null;
+      normalizedError.provider = 'gemini';
+      normalizedError.model = this.model;
+      normalizedError.latencyMs = Math.max(0, Math.round(performance.now() - startedAt));
+      terminalError = normalizedError;
+      throw normalizedError;
     } finally {
       clearTimeout(timeout);
-      this.logger?.info?.({
+      const event = {
         component: 'ProductIdentityAnalyzer',
         provider: 'gemini',
         model: this.model,
-        status: outcome.status,
+        errorCode: terminalError?.code ?? null,
+        statusHttp: outcome.statusHttp,
         latencyMs: Math.round(performance.now() - startedAt),
-        inputCount: inputs.length,
-        inputs: sanitizedInputMetadata(inputs),
-        state: outcome.state,
-        items: outcome.items,
-        relationships: outcome.relationships,
+        inputCount: Array.isArray(inputs) ? inputs.length : 0,
+        inputs: Array.isArray(inputs) ? sanitizedInputMetadata(inputs) : [],
+        state: outcome.state ?? 'unknown',
+        items: outcome.items ?? 0,
+        relationships: outcome.relationships ?? 0,
         fallback: outcome.fallback,
-      });
+      };
+      if (this.logger?.info) {
+        this.logger.info(event);
+        if (terminalError) terminalError.diagnosticLogged = true;
+      }
     }
   }
 }
-

@@ -168,6 +168,31 @@ test('falha ou saída inválida do analyzer usa fallback unknown sem inventário
   }
 });
 
+test('erro inesperado do analyzer gera diagnóstico sanitizado e mantém fallback', async () => {
+  const secret = 'data:image/jpeg;base64,PRIVATE_IMAGE_BYTES';
+  const analyzer = new DeterministicProductIdentityAnalyzer({ error: new Error(secret) });
+  const warnings = [];
+  const identities = [];
+  await generateProductPhotoBatch({
+    provider: { generate: async () => ({ imageBase64: 'ZHJ5LXJ1bg==' }) },
+    assetStore: assetStore(), request: request(), productIdentityAnalyzer: analyzer,
+    promptBuilder: { build: (input) => {
+      identities.push(input.identitySpecification);
+      return `safe prompt ${identities.length}`;
+    } },
+    creativeDirectorLogger: { info() {}, warn: (event) => warnings.push(event) },
+  });
+
+  assert.equal(identities[0].sourceInventory.state, 'unknown');
+  assert.equal(identities[0].sourceInventory.items.length, 0);
+  assert.equal(warnings.length, 1);
+  const event = JSON.parse(warnings[0].replace('[ProductIdentityAnalyzer] ', ''));
+  assert.equal(event.errorCode, 'UNEXPECTED_ANALYZER_ERROR');
+  assert.equal(event.fallback, true);
+  assert.equal(event.state, 'unknown');
+  assert.doesNotMatch(warnings[0], /data:image|base64|PRIVATE_IMAGE_BYTES/);
+});
+
 test('macro sem observedFeature usa seleção neutra e com evidência usa detalhe evidenciado', () => {
   const planner = new ProductPhotoConceptPlanner();
   const unknownPlan = planner.plan({ productCategory: 'general', prompt: 'macro detail' });
@@ -188,4 +213,3 @@ test('macro sem observedFeature usa seleção neutra e com evidência usa detalh
   const observedMacro = observedPlan.concepts.find(({ name }) => name === 'EXTREME MACRO');
   assert.equal(observedMacro.visibilityIntent.selection, 'one_evidenced_detail');
 });
-

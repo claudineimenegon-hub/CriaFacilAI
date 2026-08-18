@@ -92,11 +92,29 @@ export async function generateProductPhotoBatch({
           metadata?.hash ?? request.inputAssetIds[index]).join(':'),
       }),
     );
-  } catch {
+  } catch (error) {
     analyzedSourceInventory = unknownProductIdentityAnalysis();
-    creativeDirectorLogger?.warn?.(
-      '[ProductIdentityAnalyzer] Analysis unavailable or invalid; using unknown inventory.',
-    );
+    if (!error?.diagnosticLogged) {
+      const knownCodes = new Set([
+        'GEMINI_NOT_CONFIGURED', 'GEMINI_TIMEOUT', 'GEMINI_NETWORK_ERROR',
+        'GEMINI_HTTP_ERROR', 'GEMINI_RESPONSE_TOO_LARGE', 'GEMINI_INVALID_JSON',
+        'INVALID_PRODUCT_IDENTITY_ANALYSIS', 'INVALID_ANALYZER_INPUT',
+      ]);
+      creativeDirectorLogger?.warn?.(
+        `[ProductIdentityAnalyzer] ${JSON.stringify({
+          provider: error?.provider ?? 'unknown',
+          model: error?.model ?? productIdentityAnalyzer?.model ?? 'unknown',
+          errorCode: knownCodes.has(error?.code) ? error.code : 'UNEXPECTED_ANALYZER_ERROR',
+          statusHttp: Number.isInteger(error?.statusHttp) ? error.statusHttp : null,
+          latencyMs: Number.isInteger(error?.latencyMs) ? error.latencyMs : null,
+          inputCount: inputs.length,
+          state: 'unknown',
+          items: 0,
+          relationships: 0,
+          fallback: true,
+        })}`,
+      );
+    }
   }
   const identitySpecification = createProductIdentitySpecification({
     category: understanding.category,

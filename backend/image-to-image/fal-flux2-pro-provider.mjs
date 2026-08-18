@@ -127,6 +127,20 @@ function safeToken(value) {
   return /^[A-Za-z0-9_.-]+$/.test(normalized) ? normalized : undefined;
 }
 
+function safeUpstreamMessage(payload) {
+  const details = Array.isArray(payload?.detail) ? payload.detail : [];
+  const candidate = typeof payload?.detail === 'string' ? payload.detail
+    : typeof payload?.message === 'string' ? payload.message
+      : typeof payload?.error?.message === 'string' ? payload.error.message
+        : details.find((detail) => typeof detail?.msg === 'string')?.msg
+          ?? details.find((detail) => typeof detail?.message === 'string')?.message;
+  if (typeof candidate !== 'string') return undefined;
+  const normalized = candidate.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized || /data:|base64|authorization|api[ _-]?key|fal_key|https?:\/\//i.test(normalized) ||
+      /[A-Za-z0-9+/_=-]{40,}/.test(normalized)) return undefined;
+  return normalized.slice(0, 160);
+}
+
 export function sanitizeFalUpstreamError(payload) {
   const details = Array.isArray(payload?.detail) ? payload.detail : [];
   const providerErrorTypes = [...new Set(details
@@ -145,7 +159,42 @@ export function sanitizeFalUpstreamError(payload) {
   return {
     providerErrorType: providerErrorTypes[0] ?? structuralCode ?? 'validation_error',
     invalidFields,
+    upstreamMessage: safeUpstreamMessage(payload),
   };
+}
+
+export function categorizeFalUpstreamError({ status, sanitized }) {
+  if (status === 401 || status === 403) return 'authentication';
+  if (status === 429) return 'quota';
+  if (status === 413) return 'dimension_or_size';
+  if (status >= 500) return 'upstream_unavailable';
+  const evidence = [
+    sanitized?.providerErrorType,
+    sanitized?.upstreamMessage,
+    ...(sanitized?.invalidFields ?? []),
+  ].filter(Boolean).join(' ');
+  if (/dimension|width|height|resolution|image_size|too.large|size/i.test(evidence)) {
+    return 'dimension_or_size';
+  }
+  if (/schema|payload|json|field|required|validation|type_error/i.test(evidence)) {
+    return 'schema_or_payload';
+  }
+  if (status === 400 || status === 422) return 'invalid_input';
+  return 'other';
+}
+
+function logFalFailure(logger, diagnosticContext, startedAt, fields) {
+  logger?.warn?.({
+    ...diagnosticContext,
+    statusHttp: Number.isInteger(fields.statusHttp) ? fields.statusHttp : null,
+    latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    providerErrorCode: fields.providerErrorCode,
+    category: fields.category,
+    providerErrorType: fields.providerErrorType,
+    invalidFields: fields.invalidFields ?? [],
+    ...(fields.upstreamMessage ? { upstreamMessage: fields.upstreamMessage } : {}),
+    timestamp: new Date().toISOString(),
+  });
 }
 
 function validateOutput(output) {
@@ -220,6 +269,7 @@ export function createFalFlux2ProImageToImageProvider({
       };
       if (Number.isInteger(seed) && seed >= 0) input.seed = seed;
 
+      const providerStartedAt = performance.now();
       let response;
       try {
         response = await fetchImpl(`https://fal.run/${model}`, {
@@ -232,17 +282,15 @@ export function createFalFlux2ProImageToImageProvider({
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (error) {
-        logger?.warn?.({
-          ...diagnosticContext,
+        const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+        logFalFailure(logger, diagnosticContext, providerStartedAt, {
           statusHttp: null,
-          category: error?.name === 'TimeoutError' || error?.name === 'AbortError'
-            ? 'timeout' : 'provider_unavailable',
-          providerErrorType: error?.name === 'TimeoutError' || error?.name === 'AbortError'
-            ? 'upstream_timeout' : 'network_error',
+          category: timedOut ? 'timeout' : 'upstream_unavailable',
+          providerErrorCode: timedOut ? 'UPSTREAM_TIMEOUT' : 'PROVIDER_UNAVAILABLE',
+          providerErrorType: timedOut ? 'upstream_timeout' : 'network_error',
           invalidFields: [],
-          timestamp: new Date().toISOString(),
         });
-        if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        if (timedOut) {
           throw providerError('fal.ai demorou para responder.', {
             code: 'UPSTREAM_TIMEOUT',
           });
@@ -254,6 +302,12 @@ export function createFalFlux2ProImageToImageProvider({
 
       const contentType = response.headers.get('content-type') ?? '';
       if (!contentType.toLowerCase().includes('application/json')) {
+        logFalFailure(logger, diagnosticContext, providerStartedAt, {
+          statusHttp: response.status,
+          category: response.status >= 500 ? 'upstream_unavailable' : 'other',
+          providerErrorCode: 'INVALID_CONTENT_TYPE',
+          providerErrorType: 'invalid_content_type',
+        });
         throw providerError('fal.ai retornou formato inesperado.', {
           status: response.status,
           code: 'INVALID_CONTENT_TYPE',
@@ -263,6 +317,12 @@ export function createFalFlux2ProImageToImageProvider({
       try {
         payload = await response.json();
       } catch {
+        logFalFailure(logger, diagnosticContext, providerStartedAt, {
+          statusHttp: response.status,
+          category: response.status >= 500 ? 'upstream_unavailable' : 'schema_or_payload',
+          providerErrorCode: 'INVALID_JSON',
+          providerErrorType: 'invalid_json',
+        });
         throw providerError('fal.ai retornou JSON inválido.', {
           status: response.status,
           code: 'INVALID_JSON',
@@ -270,20 +330,18 @@ export function createFalFlux2ProImageToImageProvider({
       }
       if (!response.ok) {
         const sanitized = sanitizeFalUpstreamError(payload);
-        logger?.warn?.({
-          ...diagnosticContext,
+        const providerErrorCode = response.status === 400 || response.status === 422
+          ? 'INVALID_UPSTREAM_INPUT'
+          : response.status === 429 ? 'RATE_LIMITED' : 'UPSTREAM_ERROR';
+        logFalFailure(logger, diagnosticContext, providerStartedAt, {
           statusHttp: response.status,
-          category: response.status === 400 || response.status === 422
-            ? 'invalid_input'
-            : response.status === 429 ? 'rate_limit' : 'internal_provider_error',
+          providerErrorCode,
+          category: categorizeFalUpstreamError({ status: response.status, sanitized }),
           ...sanitized,
-          timestamp: new Date().toISOString(),
         });
         throw providerError('Falha no serviço fal.ai.', {
           status: response.status,
-          code: response.status === 400 || response.status === 422
-            ? 'INVALID_UPSTREAM_INPUT'
-            : response.status === 429 ? 'RATE_LIMITED' : 'UPSTREAM_ERROR',
+          code: providerErrorCode,
         });
       }
 

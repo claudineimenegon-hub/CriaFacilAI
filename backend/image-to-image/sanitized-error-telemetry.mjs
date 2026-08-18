@@ -3,7 +3,8 @@ const knownProviderCodes = new Set([
   '3042', '5004', '5005', '5007', '5016', '5018', '5019', '5035',
   'PROVIDER_NOT_CONFIGURED', 'UPSTREAM_TIMEOUT', 'INVALID_CONTENT_TYPE',
   'INVALID_JSON', 'MISSING_IMAGE', 'RESULT_TOO_LARGE', 'INVALID_IMAGE',
-  'UPSTREAM_ERROR',
+  'UPSTREAM_ERROR', 'INVALID_UPSTREAM_INPUT', 'RATE_LIMITED',
+  'PROVIDER_UNAVAILABLE',
 ]);
 
 const moderationCodes = new Set(['3030', 'CONTENT_MODERATION']);
@@ -11,8 +12,11 @@ const rateLimitCodes = new Set(['3036', 'RATE_LIMITED']);
 const timeoutCodes = new Set(['3007', '3008', 'UPSTREAM_TIMEOUT']);
 const unavailableCodes = new Set([
   '3023', '3040', '5018', '5035', 'PROVIDER_NOT_CONFIGURED',
+  'PROVIDER_UNAVAILABLE',
 ]);
-const invalidInputCodes = new Set(['3003', '3006', '5004', 'INVALID_JSON']);
+const invalidInputCodes = new Set([
+  '3003', '3006', '5004', 'INVALID_JSON', 'INVALID_UPSTREAM_INPUT',
+]);
 
 export function sanitizeProviderErrorCode(code) {
   const normalized = String(code ?? '').trim().toUpperCase();

@@ -230,10 +230,85 @@ test('logging contém somente metadados sanitizados', async () => {
   assert.deepEqual(events[0].inputs, [{
     mimeType: 'image/jpeg', bytes: imageBytes.length, width: 1200, height: 900,
   }]);
+  assert.equal(events[0].errorCode, null);
+  assert.equal(events[0].statusHttp, 200);
+  assert.equal(events[0].inputCount, 1);
+  assert.equal(events[0].state, 'unknown');
+  assert.equal(events[0].items, 0);
+  assert.equal(events[0].relationships, 0);
+  assert.equal(events[0].fallback, false);
   const serialized = JSON.stringify(events[0]);
   assert.doesNotMatch(serialized, new RegExp(apiKey));
   assert.doesNotMatch(serialized, new RegExp(imageBytes.toString('base64')));
   assert.doesNotMatch(serialized, /complete collection/);
+});
+
+test('telemetria distingue todas as categorias de falha Gemini', async (t) => {
+  const scenarios = [
+    {
+      name: 'not configured', code: 'GEMINI_NOT_CONFIGURED', statusHttp: null,
+      options: { apiKey: '', fetchImpl: async () => { throw new Error('must not run'); } },
+    },
+    {
+      name: 'timeout', code: 'GEMINI_TIMEOUT', statusHttp: null,
+      options: {
+        apiKey, timeoutMs: 5,
+        fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        }),
+      },
+    },
+    {
+      name: 'network', code: 'GEMINI_NETWORK_ERROR', statusHttp: null,
+      options: { apiKey, fetchImpl: async () => { throw new Error('dns secret'); } },
+    },
+    {
+      name: 'http', code: 'GEMINI_HTTP_ERROR', statusHttp: 400,
+      options: { apiKey, fetchImpl: async () => geminiResponse(null, {
+        status: 400, rawText: 'private upstream response',
+      }) },
+    },
+    {
+      name: 'too large', code: 'GEMINI_RESPONSE_TOO_LARGE', statusHttp: 200,
+      options: { apiKey, fetchImpl: async () => geminiResponse(null, {
+        rawText: 'x'.repeat(128 * 1024 + 1),
+      }) },
+    },
+    {
+      name: 'invalid json', code: 'GEMINI_INVALID_JSON', statusHttp: 200,
+      options: { apiKey, fetchImpl: async () => geminiResponse(null, { rawText: '{invalid' }) },
+    },
+    {
+      name: 'invalid analysis', code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS', statusHttp: 200,
+      options: { apiKey, fetchImpl: async () => geminiResponse({
+        state: 'known', items: 'invalid', relationships: [],
+      }) },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const events = [];
+      const analyzer = new GeminiProductIdentityAnalyzer({
+        ...scenario.options,
+        logger: { info: (event) => events.push(event) },
+      });
+      await assert.rejects(analyzer.analyze(analyzerInput()), { code: scenario.code });
+      assert.equal(events.length, 1);
+      assert.equal(events[0].errorCode, scenario.code);
+      assert.equal(events[0].statusHttp, scenario.statusHttp);
+      assert.equal(events[0].fallback, true);
+      assert.equal(events[0].state, 'unknown');
+      assert.equal(events[0].items, 0);
+      assert.equal(events[0].relationships, 0);
+      const serialized = JSON.stringify(events[0]);
+      assert.doesNotMatch(serialized, /test-key-must-never-leak|base64|data:image|dns secret|private upstream/i);
+    });
+  }
 });
 
 test('benchmark offline: uma chamada alimenta V2, Hero Set e quatro intenções distintas', async () => {
@@ -327,4 +402,3 @@ test('benchmark uncertain mantém planejamento seguro sem Hero Set', async () =>
   assert.equal(macro.visibilityIntent.selection,
     'reference_visible_detail_or_safe_close_view');
 });
-

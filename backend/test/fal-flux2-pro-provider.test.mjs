@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  categorizeFalUpstreamError,
   createFalFlux2ProImageToImageProvider as createFalProviderImplementation,
   FAL_FLUX2_PRO_EDIT_MODEL,
 } from '../image-to-image/fal-flux2-pro-provider.mjs';
@@ -145,6 +146,10 @@ test('sanitiza erro HTTP do upstream', async () => {
     return true;
   });
   assert.equal(logs.length, 1);
+  assert.equal(logs[0].providerErrorCode, 'INVALID_UPSTREAM_INPUT');
+  assert.equal(logs[0].category, 'dimension_or_size');
+  assert.equal(logs[0].statusHttp, 400);
+  assert.ok(Number.isInteger(logs[0].latencyMs));
   assert.equal(logs[0].providerErrorType, 'value_error.image_too_large');
   assert.deepEqual(logs[0].invalidFields, ['body.image_urls.0']);
   assert.equal(logs[0].promptLength, sensitivePrompt.length);
@@ -159,6 +164,49 @@ test('sanitiza erro HTTP do upstream', async () => {
   });
   const serialized = JSON.stringify(logs);
   assert.doesNotMatch(serialized, /private product prompt|base64|SECRET|Authorization|FAL_KEY/);
+});
+
+test('categoriza erros HTTP fal.ai sem depender de payload bruto', () => {
+  assert.equal(categorizeFalUpstreamError({ status: 401, sanitized: {} }), 'authentication');
+  assert.equal(categorizeFalUpstreamError({ status: 429, sanitized: {} }), 'quota');
+  assert.equal(categorizeFalUpstreamError({ status: 413, sanitized: {} }), 'dimension_or_size');
+  assert.equal(categorizeFalUpstreamError({ status: 503, sanitized: {} }), 'upstream_unavailable');
+  assert.equal(categorizeFalUpstreamError({
+    status: 422, sanitized: { providerErrorType: 'schema_validation_error', invalidFields: [] },
+  }), 'schema_or_payload');
+  assert.equal(categorizeFalUpstreamError({ status: 400, sanitized: {} }), 'invalid_input');
+});
+
+test('preserva mensagem curta segura da fal.ai e rejeita conteúdo sensível', async (t) => {
+  await t.test('mensagem segura', async () => {
+    const logs = [];
+    const provider = createFalFlux2ProImageToImageProvider({
+      apiKey: 'test-secret',
+      logger: { warn: (event) => logs.push(event) },
+      fetchImpl: async () => jsonResponse({
+        code: 'capacity_error', message: 'Model capacity temporarily unavailable.',
+      }, { status: 503 }),
+    });
+    await assert.rejects(provider.generate(request()), { code: 'UPSTREAM_ERROR' });
+    assert.equal(logs[0].category, 'upstream_unavailable');
+    assert.equal(logs[0].providerErrorCode, 'UPSTREAM_ERROR');
+    assert.equal(logs[0].upstreamMessage, 'Model capacity temporarily unavailable.');
+  });
+
+  await t.test('mensagem sensível', async () => {
+    const logs = [];
+    const provider = createFalFlux2ProImageToImageProvider({
+      apiKey: 'test-secret',
+      logger: { warn: (event) => logs.push(event) },
+      fetchImpl: async () => jsonResponse({
+        message: 'data:image/jpeg;base64,VERY_SECRET_IMAGE_PAYLOAD',
+      }, { status: 500 }),
+    });
+    await assert.rejects(provider.generate(request()), { code: 'UPSTREAM_ERROR' });
+    assert.equal(logs[0].upstreamMessage, undefined);
+    const serialized = JSON.stringify(logs);
+    assert.doesNotMatch(serialized, /test-secret|data:image|base64|VERY_SECRET|Authorization/i);
+  });
 });
 
 test('envia dimensões corretas para todos os aspect ratios suportados', async () => {
