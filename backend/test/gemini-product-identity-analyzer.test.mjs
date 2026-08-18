@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import sharp from 'sharp';
 
 import {
   DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL,
@@ -18,7 +19,9 @@ import { ProductPhotoPromptBuilder } from '../image-to-image/product-photo-promp
 
 const apiKey = 'test-key-must-never-leak';
 const assetId = '00000000-0000-4000-8000-000000000001';
-const imageBytes = Buffer.from('mock-image-bytes');
+const imageBytes = await sharp({
+  create: { width: 1200, height: 900, channels: 3, background: '#808080' },
+}).jpeg().toBuffer();
 
 function genericItem({
   id = 'item-1', typeState = 'known', type = 'generic product',
@@ -241,6 +244,37 @@ test('logging contém somente metadados sanitizados', async () => {
   assert.doesNotMatch(serialized, new RegExp(apiKey));
   assert.doesNotMatch(serialized, new RegExp(imageBytes.toString('base64')));
   assert.doesNotMatch(serialized, /complete collection/);
+});
+
+test('preserva somente mensagem HTTP curta e segura do Gemini', async (t) => {
+  await t.test('mensagem segura', async () => {
+    const events = [];
+    const analyzer = new GeminiProductIdentityAnalyzer({
+      apiKey,
+      logger: { info: (event) => events.push(event) },
+      fetchImpl: async () => geminiResponse(null, {
+        status: 404,
+        rawText: JSON.stringify({ error: { message: 'Model is not available for generateContent.' } }),
+      }),
+    });
+    await assert.rejects(analyzer.analyze(analyzerInput()), { code: 'GEMINI_HTTP_ERROR' });
+    assert.equal(events[0].upstreamMessage, 'Model is not available for generateContent.');
+  });
+
+  await t.test('mensagem sensível', async () => {
+    const events = [];
+    const analyzer = new GeminiProductIdentityAnalyzer({
+      apiKey,
+      logger: { info: (event) => events.push(event) },
+      fetchImpl: async () => geminiResponse(null, {
+        status: 400,
+        rawText: JSON.stringify({ error: { message: 'data:image/jpeg;base64,PRIVATE_BYTES' } }),
+      }),
+    });
+    await assert.rejects(analyzer.analyze(analyzerInput()), { code: 'GEMINI_HTTP_ERROR' });
+    assert.equal(events[0].upstreamMessage, undefined);
+    assert.doesNotMatch(JSON.stringify(events), /data:image|base64|PRIVATE_BYTES/);
+  });
 });
 
 test('telemetria distingue todas as categorias de falha Gemini', async (t) => {

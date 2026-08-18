@@ -3,6 +3,7 @@ import {
   ProductIdentityAnalyzer,
   validateProductIdentityAnalysis,
 } from './product-identity-analyzer.mjs';
+import { prepareGeminiAnalysisImages } from './gemini-analysis-preprocessor.mjs';
 
 export const DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL = 'gemini-2.5-flash-lite';
 export const GEMINI_GENERATE_CONTENT_BASE_URL =
@@ -129,6 +130,20 @@ function responseText(payload) {
   return parts.find((part) => typeof part?.text === 'string')?.text;
 }
 
+function safeGeminiUpstreamMessage(rawResponse) {
+  try {
+    const candidate = JSON.parse(rawResponse)?.error?.message;
+    if (typeof candidate !== 'string') return undefined;
+    const normalized = candidate.replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    if (!normalized || /data:|base64|authorization|api[ _-]?key|x-goog-api-key/i.test(normalized) ||
+        /[A-Za-z0-9+/_=-]{40,}/.test(normalized)) return undefined;
+    return normalized.slice(0, 240);
+  } catch {
+    return undefined;
+  }
+}
+
 export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
   constructor({
     apiKey = process.env.GEMINI_API_KEY,
@@ -136,6 +151,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
       DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL,
     fetchImpl = globalThis.fetch,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    prepareInputs = prepareGeminiAnalysisImages,
     logger,
   } = {}) {
     super();
@@ -143,6 +159,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     this.model = model;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
+    this.prepareInputs = prepareInputs;
     this.logger = logger;
   }
 
@@ -158,6 +175,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     const endpoint = `${GEMINI_GENERATE_CONTENT_BASE_URL}/${encodeURIComponent(this.model)}:generateContent`;
     let outcome = { statusHttp: null, fallback: true };
     let terminalError;
+    let preparedInputs;
     try {
       if (!this.isConfigured) {
         throw new GeminiProductIdentityAnalyzerError(
@@ -165,6 +183,13 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         );
       }
       if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 4) {
+        throw new GeminiProductIdentityAnalyzerError(
+          'INVALID_ANALYZER_INPUT', 'Product identity analyzer inputs are invalid.',
+        );
+      }
+      try {
+        preparedInputs = await this.prepareInputs(inputs);
+      } catch {
         throw new GeminiProductIdentityAnalyzerError(
           'INVALID_ANALYZER_INPUT', 'Product identity analyzer inputs are invalid.',
         );
@@ -180,7 +205,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
                 `User brief (context only, not evidence): ${String(userBrief ?? '').slice(0, 4000)}`,
               ].join('\n'),
             },
-            ...inputs.map(({ bytes, mimeType }) => ({
+            ...preparedInputs.map(({ bytes, mimeType }) => ({
               inlineData: { mimeType, data: Buffer.from(bytes).toString('base64') },
             })),
           ],
@@ -214,9 +239,11 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         );
       }
       if (!response.ok) {
-        throw new GeminiProductIdentityAnalyzerError(
+        const httpError = new GeminiProductIdentityAnalyzerError(
           'GEMINI_HTTP_ERROR', 'Product identity provider request failed.',
         );
+        httpError.upstreamMessage = safeGeminiUpstreamMessage(rawResponse);
+        throw httpError;
       }
       let payload;
       let analysis;
@@ -268,11 +295,13 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         statusHttp: outcome.statusHttp,
         latencyMs: Math.round(performance.now() - startedAt),
         inputCount: Array.isArray(inputs) ? inputs.length : 0,
-        inputs: Array.isArray(inputs) ? sanitizedInputMetadata(inputs) : [],
+        inputs: Array.isArray(preparedInputs) ? sanitizedInputMetadata(preparedInputs) : [],
         state: outcome.state ?? 'unknown',
         items: outcome.items ?? 0,
         relationships: outcome.relationships ?? 0,
         fallback: outcome.fallback,
+        ...(terminalError?.upstreamMessage
+          ? { upstreamMessage: terminalError.upstreamMessage } : {}),
       };
       if (this.logger?.info) {
         this.logger.info(event);

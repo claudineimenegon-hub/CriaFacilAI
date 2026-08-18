@@ -252,6 +252,9 @@ export function createFalFlux2ProImageToImageProvider({
           byteLength: input.bytes.length,
           resized: Boolean(input.resized),
         })),
+        totalInputMegapixels: Number((preparedInputs.reduce(
+          (total, input) => total + input.width * input.height, 0,
+        ) / 1_000_000).toFixed(3)),
         outputWidth: request.output.width,
         outputHeight: request.output.height,
         seedPresent: Number.isInteger(seed),

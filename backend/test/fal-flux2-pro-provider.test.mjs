@@ -153,6 +153,7 @@ test('sanitiza erro HTTP do upstream', async () => {
   assert.equal(logs[0].providerErrorType, 'value_error.image_too_large');
   assert.deepEqual(logs[0].invalidFields, ['body.image_urls.0']);
   assert.equal(logs[0].promptLength, sensitivePrompt.length);
+  assert.equal(logs[0].totalInputMegapixels, 0.307);
   assert.deepEqual(logs[0].inputMetadata[0], {
     mimeType: 'image/jpeg',
     originalWidth: 640,
