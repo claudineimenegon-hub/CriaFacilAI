@@ -43,6 +43,7 @@ const categoryPlacement = {
 };
 
 const operationalDirections = {
+  'HERO SET / PREMIUM STILL LIFE': 'Create a sophisticated full-set still life showing every observed item at once, preserving quantity and making each item identifiable on a dynamically selected premium set.',
   'LIFESTYLE / WORN IN USE': 'Create a new editorial ad with a person wearing the product correctly; use campaign framing and a scene unlike the reference photo.',
   'LIFESTYLE / HELD OR APPLIED': 'Create a new lifestyle ad showing credible handling or application; keep the product unobstructed and dominant.',
   'LUXURY DISPLAY': 'Create a fully re-staged luxury still life without a model, using a new premium surface, set, composition, and lighting.',
@@ -144,7 +145,9 @@ export class ProductPhotoPromptBuilder {
     const objective = objectiveDirections[artisticDirection] ??
       'realistic, commercially useful advertising treatment';
     const compact = userBrief.length > 180 ||
-      Object.values(preservation).filter((value) => value === true).length > 4;
+      Object.values(preservation).filter((value) => value === true).length > 4 ||
+      identity.sourceInventory.items.some((item) =>
+        item.observedFeatures.length > 0 || item.ambiguousFeatures.length > 0);
     const categoryInteraction = category === 'jewelry'
       ? ''
       : `; ${clip(categoryPlacement[category] ?? categoryPlacement.general, 75)}`;

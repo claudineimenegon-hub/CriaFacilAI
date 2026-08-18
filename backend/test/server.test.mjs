@@ -172,6 +172,7 @@ test('POST /v1/assets/images recebe binário e retorna AssetReference', async ()
 
 test('POST /v1/images/transform retorna lote completo de quatro imagens', async () => {
   let calls = 0;
+  let analyzerCalls = 0;
   const requestEvents = [];
   const baseUrl = await start({
     imageProvider: provider(),
@@ -179,6 +180,12 @@ test('POST /v1/images/transform retorna lote completo de quatro imagens', async 
       generate: async () => ({ imageBase64: `imagem-${++calls}` }),
     }),
     assetStore: transformAssetStore(),
+    productIdentityAnalyzer: {
+      analyze: async () => {
+        analyzerCalls += 1;
+        return { state: 'unknown', items: [], relationships: [] };
+      },
+    },
     imageToImageTelemetry: {
       recordRequest: (event) => requestEvents.push(event),
       recordError: () => {},
@@ -196,6 +203,7 @@ test('POST /v1/images/transform retorna lote completo de quatro imagens', async 
   assert.equal(payload.batch.status, 'completed');
   assert.equal(payload.batch.imagesBase64.length, 4);
   assert.equal(calls, 4);
+  assert.equal(analyzerCalls, 1);
   assert.deepEqual(requestEvents.map((event) => event.phase), [
     'request_started',
     'provider_started',

@@ -3,6 +3,11 @@ import { ProductPhotoPromptBuilder } from './product-photo-prompt-builder.mjs';
 import { ProductPhotoConceptPlanner } from './product-photo-concept-planner.mjs';
 import { createProductIdentitySpecification } from './product-identity-spec.mjs';
 import { createProductFidelityPolicy } from './product-fidelity-policy.mjs';
+import {
+  UnknownProductIdentityAnalyzer,
+  unknownProductIdentityAnalysis,
+  validateProductIdentityAnalysis,
+} from './product-identity-analyzer.mjs';
 
 const EXPECTED_COUNT = 4;
 const CONCURRENCY = 2;
@@ -43,6 +48,7 @@ export async function generateProductPhotoBatch({
   request,
   promptBuilder = new ProductPhotoPromptBuilder(),
   conceptPlanner = new ProductPhotoConceptPlanner(),
+  productIdentityAnalyzer = new UnknownProductIdentityAnalyzer(),
   creativeDirectorLogger = defaultCreativeDirectorLogger,
 }) {
   const inputs = [];
@@ -64,20 +70,50 @@ export async function generateProductPhotoBatch({
   }
 
   const output = { ...outputDimensions(request.aspectRatio), count: EXPECTED_COUNT };
-  const plan = conceptPlanner.plan({
+  const planningInput = {
     prompt: request.prompt,
     productCategory: request.parameters?.common?.productCategory,
     artisticDirection: request.parameters?.common?.artisticDirection,
     preservation: request.preservation,
+  };
+  const understanding = conceptPlanner.understand(planningInput);
+  let analyzedSourceInventory;
+  try {
+    const analyzerInputs = Object.freeze(inputs.map((input) => Object.freeze({
+      ...input,
+      bytes: Buffer.from(input.bytes),
+    })));
+    analyzedSourceInventory = validateProductIdentityAnalysis(
+      await productIdentityAnalyzer.analyze({
+        inputs: analyzerInputs,
+        declaredCategory: understanding.category,
+        userBrief: request.prompt,
+        cacheKey: inputs.map(({ metadata }, index) =>
+          metadata?.hash ?? request.inputAssetIds[index]).join(':'),
+      }),
+    );
+  } catch {
+    analyzedSourceInventory = unknownProductIdentityAnalysis();
+    creativeDirectorLogger?.warn?.(
+      '[ProductIdentityAnalyzer] Analysis unavailable or invalid; using unknown inventory.',
+    );
+  }
+  const identitySpecification = createProductIdentitySpecification({
+    category: understanding.category,
+    sourceInventory: analyzedSourceInventory,
+    preservation: request.preservation,
+  });
+  const plan = conceptPlanner.plan({
+    ...planningInput,
+    canonicalIdentity: identitySpecification,
   });
   if (plan.concepts.length !== EXPECTED_COUNT) {
     throw new Error('INCOMPLETE_CONCEPT_PLAN');
   }
-  const identitySpecification = createProductIdentitySpecification({
-    category: plan.understanding.category,
-    sourceInventory: request.parameters?.common?.sourceInventory,
-    preservation: request.preservation,
-  });
+  if (plan.concepts.some((concept) =>
+    Object.hasOwn(concept, 'productIdentity') || Object.hasOwn(concept, 'canonicalIdentity'))) {
+    throw new Error('CONCEPT_MUST_NOT_OVERRIDE_CANONICAL_IDENTITY');
+  }
   const fidelityPolicy = createProductFidelityPolicy({
     category: plan.understanding.category,
   });
@@ -100,6 +136,7 @@ export async function generateProductPhotoBatch({
       `productInteraction: ${concept.interaction}`,
       `visibilityIntent: ${concept.visibilityIntent.mode}; ${concept.visibilityIntent.selection}`,
       `sourceInventoryState: ${identitySpecification.sourceInventory.state}`,
+      `canonicalIdentityVersion: ${identitySpecification.version}`,
       `environment: ${concept.environment}`,
       `lighting: ${concept.lighting}`,
       `finalPrompt: ${prompts[index]}`,

@@ -43,6 +43,7 @@ function concept(name, objective, cameraDistance, angle, lens, composition, envi
 
 const archetypes = {
   hero: concept('PRODUCT HERO', 'conversion-focused principal campaign image', 'medium product shot', 'slightly low three-quarter angle', '70–100 mm product-photography perspective', 'dominant product with deliberate negative space', 'studio or restrained campaign set', 'directional key shaped for the material, controlled fill, precise rim separation', 'deep focus across the product', false, 'No human interaction.'),
+  heroSet: concept('HERO SET / PREMIUM STILL LIFE', 'present the complete observed set as one sophisticated campaign image', 'complete set medium shot', 'considered three-quarter showcase angle', '70–100 mm low-distortion still-life perspective', 'all observed items simultaneously visible, individually identifiable, and hierarchically composed', 'dynamic category-appropriate premium surface or open presentation, selected by the Creative Director', 'sculpted key, controlled fill, precise material accents, and clear separation for every item', 'all items critically legible with dimensional set depth', false, 'No human interaction; preserve observed quantity and relationships.'),
   cleanCatalog: concept('CLEAN CATALOG', 'accurate e-commerce listing and product evaluation', 'complete product shot', 'neutral front or three-quarter angle', '85–120 mm low-distortion perspective', 'centered, legible silhouette with clean margins', 'seamless neutral catalog background', 'large controlled key, even but dimensional fill, natural contact shadow', 'complete-product sharpness', false, 'No human interaction.'),
   macro: concept('EXTREME MACRO', 'communicate craftsmanship and authentic detail', 'extreme close-up', 'detail-specific grazing angle', '90–120 mm macro perspective', 'one meaningful real detail fills the frame while preserving recognizable context', 'minimal non-distracting surface or background', 'raking key light, restrained fill, accent positioned to reveal material structure', 'selective depth of field with the defining detail critically sharp', false, 'No human interaction.'),
   lifestyleWear: concept('LIFESTYLE / WORN IN USE', 'show aspiration, scale, fit, and natural use', 'medium contextual shot', 'eye-level three-quarter angle', '50–85 mm editorial perspective', 'product is the focal point on the wearer', 'credible category-specific editorial setting', 'directional key, controlled fill, separation light', 'product/placement sharp; environment separated', true, 'A person wears it only in its intended position, with plausible scale/contact.'),
@@ -83,6 +84,7 @@ const plans = {
 
 const visibilityIntents = Object.freeze({
   hero: Object.freeze({ mode: 'hero_item', selection: 'one_or_primary_item', allowPartialVisibility: false }),
+  heroSet: Object.freeze({ mode: 'full_set', selection: 'all_observed_items', allowPartialVisibility: false }),
   cleanCatalog: Object.freeze({ mode: 'full_set', selection: 'all_evidenced_items_when_physically_plausible', allowPartialVisibility: false }),
   macro: Object.freeze({ mode: 'macro_detail', selection: 'one_evidenced_detail', allowPartialVisibility: true }),
   lifestyleWear: Object.freeze({ mode: 'contextual_use', selection: 'plausibly_visible_items', allowPartialVisibility: true }),
@@ -117,7 +119,35 @@ function requestedVisibilityModes(prompt) {
   return Object.freeze([...new Set(modes)]);
 }
 
-function adaptiveConceptKeys(category, understanding) {
+function isClearlyObservedMultiProductSet(canonicalIdentity) {
+  const inventory = canonicalIdentity?.sourceInventory;
+  if (inventory?.state !== 'known' || inventory.items.length === 0) return false;
+  let total = 0;
+  for (const item of inventory.items) {
+    if (item.quantity.state !== 'known') return false;
+    total += item.quantity.value;
+  }
+  return total > 1;
+}
+
+function hasStructuredObservedFeature(canonicalIdentity) {
+  return canonicalIdentity?.sourceInventory?.items.some((item) =>
+    item.observedFeatures.length > 0) === true;
+}
+
+function visibilityIntentFor(key, canonicalIdentity) {
+  const intent = visibilityIntents[key] ?? visibilityIntents.hero;
+  if ((key === 'macro' || key === 'technical') &&
+      !hasStructuredObservedFeature(canonicalIdentity)) {
+    return Object.freeze({
+      ...intent,
+      selection: 'reference_visible_detail_or_safe_close_view',
+    });
+  }
+  return intent;
+}
+
+function adaptiveConceptKeys(category, understanding, canonicalIdentity) {
   const selected = [...(plans[category] ?? plans.general)];
   if (understanding.requestedVisibilityModes.includes('contextual_use') &&
       !selected.some((key) => ['lifestyleWear', 'lifestyleHeld', 'functionalUse', 'serving', 'environmental'].includes(key))) {
@@ -127,6 +157,11 @@ function adaptiveConceptKeys(category, understanding) {
   }
   if (understanding.requestedVisibilityModes.includes('macro_detail') && !selected.includes('macro')) {
     selected[2] = 'macro';
+  }
+  if (isClearlyObservedMultiProductSet(canonicalIdentity) && !selected.includes('heroSet')) {
+    const replaceable = selected.findIndex((key) =>
+      ['luxuryDisplay', 'cleanCatalog', 'hero', 'editorial', 'conceptCampaign'].includes(key));
+    selected[replaceable >= 0 ? replaceable : 0] = 'heroSet';
   }
   return selected;
 }
@@ -149,10 +184,14 @@ export class ProductPhotoConceptPlanner {
 
   plan(input) {
     const understanding = this.understand(input);
-    const selected = adaptiveConceptKeys(understanding.category, understanding);
+    const selected = adaptiveConceptKeys(
+      understanding.category,
+      understanding,
+      input.canonicalIdentity,
+    );
     const concepts = Object.freeze(selected.map((key) => Object.freeze({
       ...archetypes[key],
-      visibilityIntent: visibilityIntents[key] ?? visibilityIntents.hero,
+      visibilityIntent: visibilityIntentFor(key, input.canonicalIdentity),
     })));
     assertConceptDiversity(concepts);
     return Object.freeze({

@@ -34,22 +34,81 @@ function normalizeAttributes(attributes) {
   }).filter(Boolean);
 }
 
+function normalizeObservedFeatures(features) {
+  if (!Array.isArray(features)) return [];
+  return features.slice(0, 16).map((feature, index) => {
+    if (!feature || typeof feature !== 'object' || Array.isArray(feature)) return undefined;
+    const name = safeToken(feature.name, 40) ?? `observed-feature-${index + 1}`;
+    const value = safeToken(feature.value, 120);
+    if (!value) return undefined;
+    return Object.freeze({
+      id: safeToken(feature.id, 40) ?? name,
+      name,
+      value,
+      evidence: 'observed',
+      immutable: true,
+    });
+  }).filter(Boolean);
+}
+
+function normalizeAmbiguousFeatures(features) {
+  if (!Array.isArray(features)) return [];
+  return features.slice(0, 12).map((feature, index) => {
+    if (!feature || typeof feature !== 'object' || Array.isArray(feature)) return undefined;
+    const name = safeToken(feature.name, 40) ?? `hidden-feature-${index + 1}`;
+    const candidates = Array.isArray(feature.plausibleHypotheses)
+      ? feature.plausibleHypotheses.map((value) => safeToken(value, 120)).filter(Boolean).slice(0, 4)
+      : [];
+    const suppliedHypothesis = safeToken(feature.canonicalHypothesis, 120);
+    const canonicalValue = suppliedHypothesis ?? candidates[0] ??
+      'minimal continuous completion consistent with all observed evidence';
+    return Object.freeze({
+      id: safeToken(feature.id, 40) ?? name,
+      name,
+      visibility: feature.visibility === 'partial' ? 'partial' : 'hidden',
+      observedConstraint: safeToken(feature.observedConstraint, 100) ?? null,
+      evidence: 'ambiguous',
+      canonicalHypothesis: Object.freeze({
+        value: canonicalValue,
+        confidence: 'uncertain',
+        provenance: suppliedHypothesis ? 'supplied_hypothesis'
+          : candidates.length > 0 ? 'deterministic_candidate_selection' : 'conservative_default',
+      }),
+    });
+  }).filter(Boolean);
+}
+
 function normalizeItem(item, index) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
   const id = safeToken(item.id, 40) ?? `source-item-${index + 1}`;
-  const type = safeToken(item.functionalType ?? item.type);
-  const typeState = type ? (evidenceStates.has(item.typeState) ? item.typeState : 'known') : 'unknown';
-  const quantity = Number.isInteger(item.quantity) && item.quantity > 0
-    ? item.quantity
+  const suppliedType = item.functionalType && typeof item.functionalType === 'object'
+    ? item.functionalType : undefined;
+  const type = safeToken(suppliedType?.value ?? item.functionalType ?? item.type);
+  const typeState = type
+    ? (evidenceStates.has(suppliedType?.state ?? item.typeState)
+      ? (suppliedType?.state ?? item.typeState) : 'known')
+    : 'unknown';
+  const suppliedQuantity = item.quantity && typeof item.quantity === 'object'
+    ? item.quantity : undefined;
+  const quantityValue = suppliedQuantity?.value ?? item.quantity;
+  const quantity = Number.isInteger(quantityValue) && quantityValue > 0
+    ? quantityValue
     : null;
   const quantityState = quantity == null
     ? 'unknown'
-    : evidenceStates.has(item.quantityState) ? item.quantityState : 'known';
+    : evidenceStates.has(suppliedQuantity?.state ?? item.quantityState)
+      ? (suppliedQuantity?.state ?? item.quantityState) : 'known';
   return Object.freeze({
     id,
     functionalType: evidenceValue(type, typeState),
     quantity: evidenceValue(quantity, quantityState),
     attributes: Object.freeze(normalizeAttributes(item.attributes)),
+    observationCompleteness: ['complete', 'partial', 'unknown'].includes(item.observationCompleteness)
+      ? item.observationCompleteness : 'unknown',
+    observedFeatures: Object.freeze(normalizeObservedFeatures(item.observedFeatures)),
+    ambiguousFeatures: Object.freeze(item.observationCompleteness === 'complete'
+      ? []
+      : normalizeAmbiguousFeatures(item.ambiguousFeatures)),
   });
 }
 
@@ -93,7 +152,7 @@ export function createProductIdentitySpecification({
     .sort();
 
   return Object.freeze({
-    version: 1,
+    version: 2,
     sourceInventory: Object.freeze({
       state: inventoryState,
       items: Object.freeze(items),
@@ -103,6 +162,8 @@ export function createProductIdentitySpecification({
     productIdentity: Object.freeze({
       category: evidenceValue(categoryValue === 'general' ? null : categoryValue, categoryState),
       stableAcrossScenes: true,
+      canonicalForGeneration: true,
+      observedEvidenceImmutable: true,
       protectedAttributes: Object.freeze(protectedAttributes),
     }),
   });
@@ -121,11 +182,21 @@ export function summarizeProductIdentitySpecification(specification) {
     const quantity = item.quantity.value == null ? 'quantity-unknown' : `qty-${item.quantity.value}`;
     return `${item.id}:${type}:${quantity}`;
   }).join(', ');
+  const observed = inventory.items.flatMap((item) => item.observedFeatures
+    .map((feature) => `${item.id}.${feature.name}=${feature.value}`));
+  const hypotheses = inventory.items.flatMap((item) => item.ambiguousFeatures
+    .map((feature) => `${item.id}.${feature.name}=${feature.canonicalHypothesis.value}`));
   const relationships = inventory.relationships.length > 0
     ? ` Relations: ${inventory.relationships.map(({ type, memberIds }) =>
       `${type}(${memberIds.join('+')})`).join(', ')}.`
     : '';
-  return `SOURCE INVENTORY (${inventory.state}): ${items}.${relationships}`;
+  return [
+    `SOURCE INVENTORY (${inventory.state}): ${items}.${relationships}`,
+    observed.length > 0 ? `OBSERVED IMMUTABLE: ${observed.join(', ')}.` : null,
+    hypotheses.length > 0
+      ? `CANONICAL HIDDEN HYPOTHESES (UNCERTAIN; SHARED BY ALL PROPOSALS): ${hypotheses.join(', ')}. Do not reinterpret independently.`
+      : null,
+  ].filter(Boolean).join(' ');
 }
 
 export const PRODUCT_IDENTITY_EVIDENCE_STATES = Object.freeze([...evidenceStates]);
