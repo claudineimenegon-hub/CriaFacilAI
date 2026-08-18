@@ -118,6 +118,11 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   });
   assert.equal(body.generationConfig.responseFormat.text.mimeType, 'APPLICATION_JSON');
   assert.equal(body.generationConfig.responseFormat.text.schema.additionalProperties, false);
+  assert.equal(
+    body.generationConfig.responseFormat.text.schema.properties.items.items
+      .properties.observedFeatures.maxItems,
+    undefined,
+  );
   assert.equal(body.generationConfig.temperature, undefined);
   assert.equal(body.generationConfig.top_p, undefined);
   assert.equal(body.generationConfig.top_k, undefined);

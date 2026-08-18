@@ -46,7 +46,7 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
             type: 'string', enum: ['complete', 'partial', 'unknown'],
           },
           observedFeatures: {
-            type: 'array', maxItems: PRODUCT_IDENTITY_ANALYSIS_LIMITS.observedFeaturesPerItem,
+            type: 'array',
             items: {
               type: 'object', additionalProperties: false,
               properties: {
