@@ -3,6 +3,7 @@ import { ProductPhotoPromptBuilder } from './product-photo-prompt-builder.mjs';
 import { ProductPhotoConceptPlanner } from './product-photo-concept-planner.mjs';
 import { createProductIdentitySpecification } from './product-identity-spec.mjs';
 import { createProductFidelityPolicy } from './product-fidelity-policy.mjs';
+import { compileProductFidelityConstraints } from './product-fidelity-constraints.mjs';
 import {
   UnknownProductIdentityAnalyzer,
   unknownProductIdentityAnalysis,
@@ -134,9 +135,11 @@ export async function generateProductPhotoBatch({
     sourceInventory: analyzedSourceInventory,
     preservation: request.preservation,
   });
+  const fidelityConstraints = compileProductFidelityConstraints(identitySpecification);
   const plan = conceptPlanner.plan({
     ...planningInput,
     canonicalIdentity: identitySpecification,
+    fidelityConstraints,
   });
   if (plan.concepts.length !== EXPECTED_COUNT) {
     throw new Error('INCOMPLETE_CONCEPT_PLAN');
@@ -147,6 +150,7 @@ export async function generateProductPhotoBatch({
   }
   const fidelityPolicy = createProductFidelityPolicy({
     category: plan.understanding.category,
+    constraints: fidelityConstraints,
   });
   const prompts = plan.concepts.map((concept) => promptBuilder.build({
     prompt: request.prompt,
@@ -156,6 +160,7 @@ export async function generateProductPhotoBatch({
     concept,
     identitySpecification,
     fidelityPolicy,
+    fidelityConstraints,
   }));
   plan.concepts.forEach((concept, index) => {
     creativeDirectorLogger?.info?.([
@@ -182,6 +187,7 @@ export async function generateProductPhotoBatch({
     concept: plan.concepts[variationIndex],
     identitySpecification,
     fidelityPolicy,
+    fidelityConstraints,
   });
   const isRetryableContentPolicy = (error) =>
     error?.status === 422 &&

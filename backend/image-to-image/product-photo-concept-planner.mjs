@@ -92,12 +92,12 @@ const visibilityIntents = Object.freeze({
   functionalUse: Object.freeze({ mode: 'contextual_use', selection: 'functionally_relevant_items', allowPartialVisibility: true }),
   serving: Object.freeze({ mode: 'contextual_use', selection: 'serving_relevant_items', allowPartialVisibility: true }),
   environmental: Object.freeze({ mode: 'contextual_use', selection: 'scene_relevant_items', allowPartialVisibility: true }),
-  luxuryDisplay: Object.freeze({ mode: 'subset', selection: 'art_directed_subset', allowPartialVisibility: true }),
+  luxuryDisplay: Object.freeze({ mode: 'subset', selection: 'explicit_evidenced_selection', allowPartialVisibility: true }),
   packaging: Object.freeze({ mode: 'subset', selection: 'presentation_relevant_items', allowPartialVisibility: true }),
   foodHero: Object.freeze({ mode: 'hero_item', selection: 'one_or_primary_item', allowPartialVisibility: false }),
   technical: Object.freeze({ mode: 'macro_detail', selection: 'functional_detail', allowPartialVisibility: true }),
   motion: Object.freeze({ mode: 'hero_item', selection: 'one_or_primary_item', allowPartialVisibility: true }),
-  editorial: Object.freeze({ mode: 'subset', selection: 'art_directed_subset', allowPartialVisibility: true }),
+  editorial: Object.freeze({ mode: 'subset', selection: 'explicit_evidenced_selection', allowPartialVisibility: true }),
   conceptCampaign: Object.freeze({ mode: 'hero_item', selection: 'campaign_focal_item', allowPartialVisibility: true }),
 });
 
@@ -135,16 +135,16 @@ function hasStructuredObservedFeature(canonicalIdentity) {
     item.observedFeatures.length > 0) === true;
 }
 
-function visibilityIntentFor(key, canonicalIdentity) {
+function visibilityIntentFor(key, canonicalIdentity, fidelityConstraints) {
   const intent = visibilityIntents[key] ?? visibilityIntents.hero;
   if ((key === 'macro' || key === 'technical') &&
       !hasStructuredObservedFeature(canonicalIdentity)) {
-    return Object.freeze({
+    return quantitativeVisibilityIntent(Object.freeze({
       ...intent,
       selection: 'reference_visible_detail_or_safe_close_view',
-    });
+    }), fidelityConstraints);
   }
-  return intent;
+  return quantitativeVisibilityIntent(intent, fidelityConstraints);
 }
 
 function adaptiveConceptKeys(category, understanding, canonicalIdentity) {
@@ -191,7 +191,9 @@ export class ProductPhotoConceptPlanner {
     );
     const concepts = Object.freeze(selected.map((key) => Object.freeze({
       ...archetypes[key],
-      visibilityIntent: visibilityIntentFor(key, input.canonicalIdentity),
+       visibilityIntent: visibilityIntentFor(
+         key, input.canonicalIdentity, input.fidelityConstraints,
+       ),
     })));
     assertConceptDiversity(concepts);
     return Object.freeze({
@@ -217,3 +219,4 @@ export function assertConceptDiversity(concepts) {
     }
   }
 }
+import { quantitativeVisibilityIntent } from './product-fidelity-constraints.mjs';

@@ -1,14 +1,16 @@
 import {
   createProductIdentitySpecification,
-  summarizeProductIdentitySpecification,
 } from './product-identity-spec.mjs';
 import {
   createProductFidelityPolicy,
-  summarizeProductFidelityPolicy,
 } from './product-fidelity-policy.mjs';
+import {
+  compileProductFidelityConstraints,
+  summarizeProductFidelityConstraints,
+} from './product-fidelity-constraints.mjs';
 
 const MAX_PROMPT_LENGTH = 2048;
-const USER_BRIEF_BUDGET = 258;
+const USER_BRIEF_BUDGET = 100;
 
 const objectiveDirections = {
   'Estúdio Premium': 'disciplined premium studio campaign treatment',
@@ -97,22 +99,21 @@ function restrictiveMode(preservation) {
 
 function transformationDirection(preservation) {
   return restrictiveMode(preservation) ?? [
-    'FREE RE-STAGING:',
-    'Change composition, background, camera/framing, lighting, perspective and scene relationship.',
-    'Never return a cleaned-up reference copy.',
+    'FREE RE-STAGING: change scene, composition, camera/framing, lighting, and perspective;',
+    'keep all identity locks.',
   ].join(' ');
 }
 
 function globalConstraints({ allowCollage, allowText }) {
   return [
-    'CONSTRAINTS: correct anatomy; no impossible/floating placement, deformed body, duplicates.',
+    'CONSTRAINTS: correct anatomy; no impossible/floating placement, deformation, or duplicates.',
     allowCollage
-      ? 'Use only the coherent multi-image layout explicitly requested.'
-      : 'One ad photo; no moodboard/contact sheet/split screen/grid/collage/panels.',
+      ? 'Use only the requested coherent multi-image layout.'
+      : 'One ad photo; no moodboard/grid/collage/panels.',
     allowText
-      ? 'Use exact requested text only; invent no other typography/branding.'
-      : 'No typography, caption, logo, brand, watermark, label, invented text.',
-    'Product primary; model supports it.',
+      ? 'Use exact requested text only; no other typography/branding.'
+      : 'No typography, logo, brand, watermark, or invented text.',
+    'Product prominence comes from composition.',
   ].join(' ');
 }
 
@@ -121,21 +122,25 @@ function physicalFidelity(preservation, policy) {
     .filter(([key]) => preservation[key] === true)
     .map(([, instruction]) => instruction);
   const requested = protections.length > 0 ? protections.join(', ') : 'identity, geometry, materials, colors, distinctive details';
-  return [
-    `FIDELITY (BEST EFFORT): same product — ${requested}; no redesign.`,
-    summarizeProductFidelityPolicy(policy),
-  ].join(' ');
+  const category = policy.categoryRules.length > 0
+    ? ` CATEGORY (${policy.category}): ${policy.categoryRules.join(' ')}` : '';
+  return `FIDELITY (BEST EFFORT): same product—${requested}; no redesign.${category}`;
 }
 
-function visibilityDirection(visibilityIntent) {
-  const { mode, selection, allowPartialVisibility } = visibilityIntent;
+function identityEvidenceSections(identity, constraints) {
+  const materialIds = new Set(constraints.materialAppearance.map((feature) =>
+    `${feature.itemId}:${feature.featureId}`));
+  const observed = identity.sourceInventory.items.flatMap((item) => item.observedFeatures
+    .filter((feature) => !materialIds.has(`${item.id}:${feature.id}`))
+    .map((feature) => `${item.id}.${feature.name}=${feature.value}`));
+  const hypotheses = identity.sourceInventory.items.flatMap((item) => item.ambiguousFeatures
+    .map((feature) => `${item.id}.${feature.name}=${feature.canonicalHypothesis.value}`));
   return [
-    `VISIBILITY INTENT: ${mode}; ${selection}.`,
-    allowPartialVisibility
-      ? 'Justified subset/occlusion/partial view allowed.'
-      : 'Show selected product clearly when physically plausible.',
-    'Visibility never changes source inventory or product identity.',
-  ].join(' ');
+    observed.length > 0 ? `OBSERVED IDENTITY: ${observed.join('; ')}.` : null,
+    hypotheses.length > 0
+      ? `CANONICAL HIDDEN (UNCERTAIN; SHARED): ${hypotheses.join('; ')}. Do not reinterpret.`
+      : null,
+  ].filter(Boolean);
 }
 
 export class ProductPhotoPromptBuilder {
@@ -151,6 +156,7 @@ export class ProductPhotoPromptBuilder {
     concept,
     identitySpecification,
     fidelityPolicy,
+    fidelityConstraints,
     safetyNeutral = false,
   }) {
     if (!plan?.understanding || !concept?.visibilityIntent) {
@@ -163,41 +169,51 @@ export class ProductPhotoPromptBuilder {
       preservation,
     });
     const policy = fidelityPolicy ?? createProductFidelityPolicy({ category });
+    const constraints = fidelityConstraints ?? policy.constraints ??
+      compileProductFidelityConstraints(identity);
+    const denseFidelity = constraints.itemLocks.length > 1 ||
+      constraints.materialAppearance.length > 0 ||
+      constraints.relationshipLocks.length > 0;
     const objective = objectiveDirections[artisticDirection] ??
       'realistic, commercially useful advertising treatment';
-    const compact = userBrief.length > 180 ||
-      Object.values(preservation).filter((value) => value === true).length > 4 ||
-      identity.sourceInventory.items.some((item) =>
-        item.observedFeatures.length > 0 || item.ambiguousFeatures.length > 0);
+    // Fidelity blocks are never trimmed. Creative sections always use their
+    // compact form so the fixed provider budget is spent on identity first.
+    const compact = true;
     const categoryInteraction = category === 'jewelry'
       ? ''
       : `; ${clip(categoryPlacement[category] ?? categoryPlacement.general, 75)}`;
     const sections = [
       'REFERENCE: INPUT IMAGE 0 defines the product.',
-      summarizeProductIdentitySpecification(identity),
+      ...summarizeProductFidelityConstraints(constraints, concept.visibilityIntent, {
+        contextual: concept.humanPresent || concept.visibilityIntent.mode === 'contextual_use',
+      }),
+      ...identityEvidenceSections(identity, constraints),
       physicalFidelity(preservation, policy),
       `USER BRIEF: ${userBrief}`,
       transformationDirection(preservation),
       `CONCEPT: ${concept.name}. ${clip(safetyNeutral
         ? safetyNeutralDirection(concept)
-        : operationalDirections[concept.name] ?? concept.objective, compact ? 68 : 120)} Intent: ${clip(concept.objective, compact ? 24 : 45)}; ${clip(objective, 55)}.`,
+        : operationalDirections[concept.name] ?? concept.objective, denseFidelity ? 72 : 90)} Intent: ${clip(concept.objective, denseFidelity ? 28 : 35)}; ${clip(objective, 55)}.`,
       `INTERACTION: ${clip(safetyNeutral
         ? concept.humanPresent
           ? 'Natural commercial interaction that keeps the product clearly visible.'
           : 'Product presented independently in a commercial still-life arrangement.'
-        : concept.interaction, compact ? 58 : 90)}${compact ? '' : categoryInteraction}.`,
-      visibilityDirection(concept.visibilityIntent),
+        : concept.interaction, denseFidelity ? 68 : 90)}${compact ? '' : categoryInteraction}.`,
       `COMPOSITION: ${clip(safetyNeutral
         ? 'Balanced product-focused commercial composition with clear geometry and scale.'
-        : `${concept.cameraDistance}; ${concept.angle}; ${concept.lens}; ${concept.composition}`, compact ? 66 : 104)}.`,
+        : `${concept.cameraDistance}; ${concept.angle}; ${concept.lens}; ${concept.composition}`, denseFidelity ? 64 : 85)}.`,
       `LIGHTING/DEPTH: ${clip(safetyNeutral
         ? 'Controlled studio lighting with clear product detail and natural depth.'
-        : `${concept.lighting}; ${concept.depthOfField}`, compact ? 46 : 76)}.`,
-      compact
+        : `${concept.lighting}; ${concept.depthOfField}`, denseFidelity ? 48 : 65)}.`,
+      denseFidelity
         ? null
+        : compact
+          ? `MATERIAL/SET: ${clip(plan.understanding.materialDirection, 34)}.`
         : `MATERIAL/SET: ${clip(plan.understanding.materialDirection, 54)}; ${clip(concept.environment, 44)}.`,
-      compact
-        ? 'QUALITY: sharp commercial photo; realistic materials; no washed-out/plastic/CGI look.'
+      denseFidelity
+        ? 'QUALITY: sharp realistic commercial photo.'
+        : compact
+          ? 'QUALITY: sharp commercial photo; realistic materials; no washed-out/plastic/CGI look.'
         : 'QUALITY: sharp commercial photo; dimensional light, controlled highlights; no washed-out/plastic/CGI look.',
       globalConstraints(plan.understanding),
     ].filter(Boolean);

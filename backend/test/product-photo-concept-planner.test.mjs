@@ -72,7 +72,7 @@ test('texto e logo não são inventados e existentes são preservados best effor
     prompt: 'Jewelry gift campaign', plan, concept: plan.concepts[2],
     preservation: { preservePrintedText: true, preserveLogo: true },
   });
-  assert.match(prompt, /No typography, caption, logo, brand/);
+  assert.match(prompt, /No typography, logo, brand/);
   assert.match(prompt, /no redesign/i);
   assert.match(prompt, /printed text/);
   assert.match(prompt, /logo/);
@@ -104,10 +104,10 @@ test('restrições globais bloqueiam anatomia impossível, colagem, texto e dupl
   assert.match(prompt, /correct anatomy/);
   assert.match(prompt, /no impossible\/floating placement/);
   assert.match(prompt, /One ad photo/);
-  assert.match(prompt, /no moodboard\/contact sheet\/split screen\/grid\/collage/);
-  assert.match(prompt, /No typography, caption, logo/);
+  assert.match(prompt, /no moodboard\/grid\/collage/);
+  assert.match(prompt, /No typography, logo/);
   assert.match(prompt, /no redesign/);
-  assert.match(prompt, /Product primary; model supports it/);
+  assert.match(prompt, /Product prominence comes from composition/);
   assert.match(prompt, /never overlay\/float on face\/eyes\/body/);
 });
 
@@ -117,7 +117,7 @@ test('pedidos explícitos liberam somente colagem ou texto solicitados', () => {
     prompt: 'Create a collage campaign', plan: collagePlan,
     concept: collagePlan.concepts[0],
   });
-  assert.match(collagePrompt, /coherent multi-image layout explicitly requested/);
+  assert.match(collagePrompt, /requested coherent multi-image layout/);
 
   const textPlan = planner.plan({ productCategory: 'general', prompt: 'Include title Summer Sale' });
   const textPrompt = builder.build({
@@ -125,7 +125,7 @@ test('pedidos explícitos liberam somente colagem ou texto solicitados', () => {
     concept: textPlan.concepts[0],
   });
   assert.match(textPrompt, /Use exact requested text only/);
-  assert.match(textPrompt, /invent no other typography\/branding/);
+  assert.match(textPrompt, /no other typography\/branding/);
 });
 
 test('UTF-8 válido seleciona direções Estúdio Premium e Cinematográfico', () => {
@@ -168,8 +168,8 @@ test('modo livre exige nova direção visual em múltiplas dimensões', () => {
   const plan = planner.plan({ productCategory: 'jewelry', prompt: 'Jewelry campaign' });
   const prompt = builder.build({ prompt: 'Jewelry campaign', plan, concept: plan.concepts[0] });
   assert.match(prompt, /FREE RE-STAGING/);
-  assert.match(prompt, /Change composition, background, camera\/framing, lighting, perspective/);
-  assert.match(prompt, /Never return a cleaned-up reference copy/);
+  assert.match(prompt, /change scene, composition, camera\/framing, lighting, and perspective/);
+  assert.match(prompt, /keep all identity locks/);
 });
 
 test('modos restritivos não recebem reencenação incompatível', () => {

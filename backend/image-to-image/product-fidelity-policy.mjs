@@ -31,11 +31,12 @@ const categoryRules = Object.freeze({
   ]),
 });
 
-export function createProductFidelityPolicy({ category = 'general' } = {}) {
+export function createProductFidelityPolicy({ category = 'general', constraints } = {}) {
   return Object.freeze({
     globalRules: GLOBAL_PRODUCT_FIDELITY_RULES,
     category,
     categoryRules: categoryRules[category] ?? Object.freeze([]),
+    constraints,
   });
 }
 

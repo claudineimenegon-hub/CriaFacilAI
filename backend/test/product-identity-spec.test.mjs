@@ -12,6 +12,7 @@ import {
 import { ProductPhotoConceptPlanner } from '../image-to-image/product-photo-concept-planner.mjs';
 import { ProductPhotoPromptBuilder } from '../image-to-image/product-photo-prompt-builder.mjs';
 import { generateProductPhotoBatch } from '../image-to-image/image-transform-service.mjs';
+import { compileProductFidelityConstraints } from '../image-to-image/product-fidelity-constraints.mjs';
 import { DeterministicProductIdentityAnalyzer } from './support/deterministic-product-identity-analyzer.mjs';
 
 const sourceInventory = {
@@ -107,10 +108,9 @@ test('subset altera visibilidade sem permitir conversão semântica', () => {
     concept: subset,
   });
 
-  assert.match(prompt, /VISIBILITY INTENT: subset/);
-  assert.match(prompt, /justified subset/i);
-  assert.match(prompt, /never changes source inventory or product identity/i);
-  assert.match(prompt, /no semantic conversion/i);
+  assert.match(prompt, /VISIBILITY INTENT\/LOCK \(subset\)/);
+  assert.match(prompt, /follow only evidenced reference visibility/i);
+  assert.match(prompt, /no merge, conversion, substitution, duplication/i);
   assert.doesNotMatch(prompt, /must show every|show all source/i);
 });
 
@@ -281,12 +281,18 @@ test('fonte multi-product conhecida produz Hero Set e mantém opções de subcon
     productCategory: 'accessories',
     prompt: 'Sophisticated generic campaign',
     canonicalIdentity: identity,
+    fidelityConstraints: compileProductFidelityConstraints(identity),
   });
   const heroSet = plan.concepts.find(({ name }) => name === 'HERO SET / PREMIUM STILL LIFE');
 
   assert.ok(heroSet);
   assert.deepEqual(heroSet.visibilityIntent, {
     mode: 'full_set', selection: 'all_observed_items', allowPartialVisibility: false,
+    selectedItems: [
+      { itemId: 'item-a', quantity: 1, quantityState: 'known' },
+      { itemId: 'item-b', quantity: 2, quantityState: 'known' },
+    ],
+    pairPolicy: 'not_applicable',
   });
   assert.match(heroSet.environment, /category-appropriate/);
   assert.ok(plan.concepts.some(({ visibilityIntent }) =>
