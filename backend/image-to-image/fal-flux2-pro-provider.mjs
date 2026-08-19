@@ -137,7 +137,8 @@ function upstreamRequestId(response, payload) {
     const candidate = safeRequestId(response.headers.get(name));
     if (candidate) return candidate;
   }
-  return safeRequestId(payload?.request_id) ?? safeRequestId(payload?.requestId);
+  return safeRequestId(payload?.request_id) ?? safeRequestId(payload?.requestId)
+    ?? safeRequestId(payload?.error?.request_id) ?? safeRequestId(payload?.error?.requestId);
 }
 
 function safeUpstreamMessage(payload) {
@@ -145,6 +146,7 @@ function safeUpstreamMessage(payload) {
   const candidate = typeof payload?.detail === 'string' ? payload.detail
     : typeof payload?.message === 'string' ? payload.message
       : typeof payload?.error?.message === 'string' ? payload.error.message
+        : typeof payload?.error?.detail === 'string' ? payload.error.detail
         : details.find((detail) => typeof detail?.msg === 'string')?.msg
           ?? details.find((detail) => typeof detail?.message === 'string')?.message;
   if (typeof candidate !== 'string') return undefined;
@@ -168,7 +170,8 @@ export function sanitizeFalUpstreamError(payload) {
     });
     return tokens.every(Boolean) ? tokens.join('.') : undefined;
   }).filter(Boolean))];
-  const structuralCode = safeToken(payload?.code) ?? safeToken(payload?.type);
+  const structuralCode = safeToken(payload?.error?.type) ?? safeToken(payload?.error?.code)
+    ?? safeToken(payload?.type) ?? safeToken(payload?.code);
   return {
     providerErrorType: providerErrorTypes[0] ?? structuralCode ?? 'validation_error',
     invalidFields,
@@ -208,8 +211,31 @@ function logFalFailure(logger, diagnosticContext, startedAt, fields) {
     invalidFields: fields.invalidFields ?? [],
     ...(fields.upstreamMessage ? { upstreamMessage: fields.upstreamMessage } : {}),
     ...(fields.upstreamRequestId ? { upstreamRequestId: fields.upstreamRequestId } : {}),
+    errorOrigin: fields.errorOrigin,
+    failurePhase: fields.failurePhase,
+    upstreamStatusHttp: Number.isInteger(fields.upstreamStatusHttp)
+      ? fields.upstreamStatusHttp : null,
     timestamp: new Date().toISOString(),
   });
+}
+
+function diagnosticErrorFields(diagnosticContext, fields) {
+  return {
+    invalidFields: [],
+    proposalIndex: diagnosticContext?.proposalIndex ?? null,
+    retryAttempt: diagnosticContext?.retryAttempt ?? 0,
+    upstreamStatusHttp: null,
+    ...fields,
+  };
+}
+
+function enrichProviderError(error, diagnosticContext, fields) {
+  if (!(error instanceof ImageToImageProviderError)) return error;
+  const diagnostic = diagnosticErrorFields(diagnosticContext, fields);
+  for (const [key, value] of Object.entries(diagnostic)) {
+    if (error[key] == null || key === 'upstreamStatusHttp') error[key] = value;
+  }
+  return error;
 }
 
 function validateOutput(output) {
@@ -250,7 +276,22 @@ export function createFalFlux2ProImageToImageProvider({
       }
 
       const seed = request.parameters?.provider?.seed;
-      const preparedInputs = await prepareInputs(request.inputs);
+      let preparedInputs;
+      try {
+        preparedInputs = await prepareInputs(request.inputs);
+      } catch (error) {
+        if (error instanceof ImageToImageProviderError) throw error;
+        throw providerError('Falha local ao preparar referências para fal.ai.', {
+          code: 'UPSTREAM_ERROR',
+          category: 'internal_provider_error',
+          providerErrorType: 'local_provider_error',
+          proposalIndex: Number.isInteger(request.proposalIndex) ? request.proposalIndex : null,
+          retryAttempt: Number.isInteger(request.retryAttempt) ? request.retryAttempt : 0,
+          errorOrigin: 'local_pipeline',
+          failurePhase: 'local_pipeline',
+          upstreamStatusHttp: null,
+        });
+      }
       const diagnosticContext = {
         requestId: randomUUID(),
         operation: 'imageToImage',
@@ -303,49 +344,63 @@ export function createFalFlux2ProImageToImageProvider({
         });
       } catch (error) {
         const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
-        logFalFailure(logger, diagnosticContext, providerStartedAt, {
+        const failure = diagnosticErrorFields(diagnosticContext, {
           statusHttp: null,
           category: timedOut ? 'timeout' : 'upstream_unavailable',
           providerErrorCode: timedOut ? 'UPSTREAM_TIMEOUT' : 'PROVIDER_UNAVAILABLE',
           providerErrorType: timedOut ? 'upstream_timeout' : 'network_error',
-          invalidFields: [],
+          errorOrigin: 'network',
+          failurePhase: 'request',
         });
+        logFalFailure(logger, diagnosticContext, providerStartedAt, failure);
         if (timedOut) {
           throw providerError('fal.ai demorou para responder.', {
             code: 'UPSTREAM_TIMEOUT',
+            ...failure,
           });
         }
         throw providerError('Não foi possível acessar fal.ai.', {
           code: 'PROVIDER_UNAVAILABLE',
+          ...failure,
         });
       }
 
       const contentType = response.headers.get('content-type') ?? '';
       if (!contentType.toLowerCase().includes('application/json')) {
-        logFalFailure(logger, diagnosticContext, providerStartedAt, {
+        const failure = diagnosticErrorFields(diagnosticContext, {
           statusHttp: response.status,
           category: response.status >= 500 ? 'upstream_unavailable' : 'other',
           providerErrorCode: 'INVALID_CONTENT_TYPE',
           providerErrorType: 'invalid_content_type',
+          errorOrigin: 'upstream_http',
+          failurePhase: 'response_content_type',
+          upstreamStatusHttp: response.status,
         });
+        logFalFailure(logger, diagnosticContext, providerStartedAt, failure);
         throw providerError('fal.ai retornou formato inesperado.', {
           status: response.status,
           code: 'INVALID_CONTENT_TYPE',
+          ...failure,
         });
       }
       let payload;
       try {
         payload = await response.json();
       } catch {
-        logFalFailure(logger, diagnosticContext, providerStartedAt, {
+        const failure = diagnosticErrorFields(diagnosticContext, {
           statusHttp: response.status,
           category: response.status >= 500 ? 'upstream_unavailable' : 'schema_or_payload',
           providerErrorCode: 'INVALID_JSON',
           providerErrorType: 'invalid_json',
+          errorOrigin: 'upstream_http',
+          failurePhase: 'response_json',
+          upstreamStatusHttp: response.status,
         });
+        logFalFailure(logger, diagnosticContext, providerStartedAt, failure);
         throw providerError('fal.ai retornou JSON inválido.', {
           status: response.status,
           code: 'INVALID_JSON',
+          ...failure,
         });
       }
       if (!response.ok) {
@@ -355,21 +410,21 @@ export function createFalFlux2ProImageToImageProvider({
         const providerErrorCode = response.status === 400 || response.status === 422
           ? 'INVALID_UPSTREAM_INPUT'
           : response.status === 429 ? 'RATE_LIMITED' : 'UPSTREAM_ERROR';
-        logFalFailure(logger, diagnosticContext, providerStartedAt, {
+        const failure = diagnosticErrorFields(diagnosticContext, {
           statusHttp: response.status,
           providerErrorCode,
           category,
           upstreamRequestId: requestId,
+          errorOrigin: 'upstream_http',
+          failurePhase: 'upstream_http',
+          upstreamStatusHttp: response.status,
           ...sanitized,
         });
+        logFalFailure(logger, diagnosticContext, providerStartedAt, failure);
         throw providerError('Falha no serviço fal.ai.', {
           status: response.status,
           code: providerErrorCode,
-          category,
-          upstreamRequestId: requestId,
-          proposalIndex: diagnosticContext.proposalIndex,
-          retryAttempt: diagnosticContext.retryAttempt,
-          ...sanitized,
+          ...failure,
         });
       }
 
@@ -378,6 +433,11 @@ export function createFalFlux2ProImageToImageProvider({
         throw providerError('fal.ai não retornou uma imagem.', {
           status: response.status,
           code: 'MISSING_IMAGE',
+          ...diagnosticErrorFields(diagnosticContext, {
+            category: 'schema_or_payload', providerErrorType: 'missing_image',
+            errorOrigin: 'upstream_http', failurePhase: 'result_contract',
+            upstreamStatusHttp: response.status,
+          }),
         });
       }
 
@@ -393,12 +453,22 @@ export function createFalFlux2ProImageToImageProvider({
           throw providerError('fal.ai retornou URL de imagem inválida.', {
             status: response.status,
             code: 'INVALID_IMAGE_URL',
+            ...diagnosticErrorFields(diagnosticContext, {
+              category: 'schema_or_payload', providerErrorType: 'invalid_image_url',
+              errorOrigin: 'upstream_http', failurePhase: 'result_contract',
+              upstreamStatusHttp: response.status,
+            }),
           });
         }
         if (parsedUrl.protocol !== 'https:') {
           throw providerError('fal.ai retornou URL de imagem não segura.', {
             status: response.status,
             code: 'INVALID_IMAGE_URL',
+            ...diagnosticErrorFields(diagnosticContext, {
+              category: 'schema_or_payload', providerErrorType: 'invalid_image_url',
+              errorOrigin: 'upstream_http', failurePhase: 'result_contract',
+              upstreamStatusHttp: response.status,
+            }),
           });
         }
         let imageResponse;
@@ -411,16 +481,45 @@ export function createFalFlux2ProImageToImageProvider({
           if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
             throw providerError('Download da imagem fal.ai excedeu o tempo.', {
               code: 'UPSTREAM_TIMEOUT',
+              ...diagnosticErrorFields(diagnosticContext, {
+                category: 'timeout', providerErrorType: 'upstream_timeout',
+                errorOrigin: 'network', failurePhase: 'request',
+              }),
             });
           }
           throw providerError('Não foi possível baixar a imagem fal.ai.', {
             code: 'IMAGE_DOWNLOAD_ERROR',
+            ...diagnosticErrorFields(diagnosticContext, {
+              category: 'upstream_unavailable', providerErrorType: 'network_error',
+              errorOrigin: 'network', failurePhase: 'request',
+            }),
           });
         }
-        imageBytes = await readLimitedImage(imageResponse, MAX_RESULT_BYTES);
+        try {
+          imageBytes = await readLimitedImage(imageResponse, MAX_RESULT_BYTES);
+        } catch (error) {
+          throw enrichProviderError(error, diagnosticContext, {
+            category: imageResponse.status >= 500 ? 'upstream_unavailable' : 'schema_or_payload',
+            providerErrorType: 'invalid_image_result',
+            errorOrigin: 'upstream_http',
+            failurePhase: 'result_contract',
+            upstreamStatusHttp: imageResponse.status,
+          });
+        }
       }
 
-      const mimeType = validateResult(imageBytes, response.status);
+      let mimeType;
+      try {
+        mimeType = validateResult(imageBytes, response.status);
+      } catch (error) {
+        throw enrichProviderError(error, diagnosticContext, {
+          category: 'schema_or_payload',
+          providerErrorType: 'invalid_image_result',
+          errorOrigin: 'upstream_http',
+          failurePhase: 'result_contract',
+          upstreamStatusHttp: response.status,
+        });
+      }
       return {
         imageBase64: imageBytes.toString('base64'),
         mimeType,

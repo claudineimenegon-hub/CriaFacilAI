@@ -309,15 +309,16 @@ test('transform registra telemetria sanitizada por categoria sem alterar respost
 
     assert.equal(response.status, current.responseStatus);
     assert.deepEqual(payload, { error: 'O provedor não conseguiu transformar esta imagem.' });
-    assert.equal(events.length, 1);
-    assert.equal(events[0].category, current.category);
-    assert.equal(events[0].code,
-      current.code === 'untrusted-secret-detail' ? 'UNKNOWN_PROVIDER_ERROR' : current.code);
-    assert.match(events[0].requestId, /^[0-9a-f-]{36}$/);
-    assert.equal(events[0].provider, 'transform-test');
-    assert.equal(events[0].model, 'transform-test-model');
-    assert.equal(JSON.stringify(events[0]).includes(transformPayload.prompt), false);
-    assert.equal(JSON.stringify(events[0]).includes('provider prompt image token account secret'), false);
+    assert.equal(events.length, 4);
+    assert.ok(events.every((event) => event.category === current.category));
+    assert.ok(events.every((event) => event.code ===
+      (current.code === 'untrusted-secret-detail' ? 'UNKNOWN_PROVIDER_ERROR' : current.code)));
+    assert.ok(events.every((event) => /^[0-9a-f-]{36}$/.test(event.requestId)));
+    assert.ok(events.every((event) => event.provider === 'transform-test'));
+    assert.ok(events.every((event) => event.model === 'transform-test-model'));
+    assert.deepEqual(events.map((event) => event.proposalIndex), [1, 2, 3, 4]);
+    assert.equal(JSON.stringify(events).includes(transformPayload.prompt), false);
+    assert.equal(JSON.stringify(events).includes('provider prompt image token account secret'), false);
   }
 });
 
@@ -340,6 +341,66 @@ test('transform registra entrada inválida sem incluir payload', async () => {
   assert.equal(events[0].category, 'invalid_input');
   assert.equal(events[0].code, 'INVALID_COUNT');
   assert.equal(JSON.stringify(events[0]).includes('sensitive prompt'), false);
+});
+
+test('transform registra separadamente todas as proposals que falham', async () => {
+  const { ImageToImageProviderError } =
+    await import('../image-to-image/image-to-image-provider.mjs');
+  const events = [];
+  const baseUrl = await start({
+    imageProvider: provider(),
+    imageToImageProvider: transformProvider({
+      generate: async (request) => {
+        if (request.proposalIndex <= 2) {
+          throw new ImageToImageProviderError('sanitized provider failure', {
+            provider: 'fal-flux2-pro', status: 500, code: 'UPSTREAM_ERROR',
+            category: 'upstream_unavailable', providerErrorType: 'capacity_error',
+            upstreamRequestId: `fal-safe-${request.proposalIndex}`,
+            proposalIndex: request.proposalIndex, retryAttempt: request.retryAttempt,
+            errorOrigin: 'upstream_http', failurePhase: 'upstream_http', upstreamStatusHttp: 500,
+          });
+        }
+        return { imageBase64: 'imagem-transformada' };
+      },
+    }),
+    imageToImageTelemetry: { recordError: (event) => events.push(event) },
+    assetStore: transformAssetStore(),
+  });
+  const response = await fetch(`${baseUrl}/v1/images/transform`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(transformPayload),
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal(events.length, 2);
+  assert.ok(events.every((event) => event.status === 502));
+  assert.deepEqual(events.map((event) => event.proposalIndex), [1, 2]);
+  assert.ok(events.every((event) => event.retryAttempt === 0));
+  assert.ok(events.every((event) => event.errorOrigin === 'upstream_http'));
+  assert.ok(events.every((event) => event.upstreamStatusHttp === 500));
+  assert.deepEqual(events.map((event) => event.upstreamRequestId), ['fal-safe-1', 'fal-safe-2']);
+});
+
+test('catch genérico identifica erro local sem inventar status upstream', async () => {
+  const events = [];
+  const baseUrl = await start({
+    imageProvider: provider(),
+    imageToImageProvider: transformProvider(),
+    imageToImageTelemetry: { recordError: (event) => events.push(event) },
+    assetStore: transformAssetStore({ readImage: async () => { throw new Error('local secret'); } }),
+  });
+  const response = await fetch(`${baseUrl}/v1/images/transform`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(transformPayload),
+  });
+
+  assert.equal(response.status, 500);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].status, 500);
+  assert.equal(events[0].errorOrigin, 'local_pipeline');
+  assert.equal(events[0].failurePhase, 'local_pipeline');
+  assert.equal(events[0].upstreamStatusHttp, null);
+  assert.equal(JSON.stringify(events[0]).includes('local secret'), false);
 });
 
 test('count padrão gera uma imagem e preserva imageBase64', async () => {

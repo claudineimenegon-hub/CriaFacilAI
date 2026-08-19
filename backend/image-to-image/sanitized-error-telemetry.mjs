@@ -23,8 +23,16 @@ export function sanitizeProviderErrorCode(code) {
   return knownProviderCodes.has(normalized) ? normalized : 'UNKNOWN_PROVIDER_ERROR';
 }
 
-export function categorizeImageToImageError({ code, status, validation = false }) {
+export function categorizeImageToImageError({
+  code, status, validation = false, errorOrigin, upstreamStatusHttp,
+}) {
   if (validation) return 'invalid_input';
+  if (errorOrigin === 'upstream_http' && Number.isInteger(upstreamStatusHttp)) {
+    if (upstreamStatusHttp >= 500) return 'upstream_unavailable';
+    if (upstreamStatusHttp === 429) return 'rate_limit';
+  }
+  if (errorOrigin === 'network') return code === 'UPSTREAM_TIMEOUT' ? 'timeout' : 'provider_unavailable';
+  if (errorOrigin === 'local_pipeline') return 'internal_provider_error';
   const sanitizedCode = sanitizeProviderErrorCode(code);
   if (moderationCodes.has(sanitizedCode)) return 'content_moderation';
   if (timeoutCodes.has(sanitizedCode) || status === 408 || status === 504) return 'timeout';
@@ -74,6 +82,9 @@ export function createSanitizedImageToImageTelemetry({ write = console.error } =
       upstreamRequestId,
       proposalIndex,
       retryAttempt,
+      errorOrigin,
+      failurePhase,
+      upstreamStatusHttp,
       startedAt,
       timestamp = new Date(),
     }) {
@@ -91,6 +102,9 @@ export function createSanitizedImageToImageTelemetry({ write = console.error } =
         ...(upstreamRequestId ? { upstreamRequestId } : {}),
         ...(Number.isInteger(proposalIndex) ? { proposalIndex } : {}),
         ...(Number.isInteger(retryAttempt) ? { retryAttempt } : {}),
+        ...(errorOrigin ? { errorOrigin } : {}),
+        ...(failurePhase ? { failurePhase } : {}),
+        upstreamStatusHttp: Number.isInteger(upstreamStatusHttp) ? upstreamStatusHttp : null,
         latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
         timestamp: timestamp.toISOString(),
       });

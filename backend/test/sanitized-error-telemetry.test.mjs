@@ -13,6 +13,12 @@ test('classifica categorias técnicas do fluxo image-to-image', () => {
   assert.equal(categorizeImageToImageError({ code: '3040', status: 429 }), 'provider_unavailable');
   assert.equal(categorizeImageToImageError({ code: 'INVALID_JSON', status: 400, validation: true }), 'invalid_input');
   assert.equal(categorizeImageToImageError({ code: 'UPSTREAM_ERROR', status: 500 }), 'internal_provider_error');
+  assert.equal(categorizeImageToImageError({
+    code: 'UPSTREAM_ERROR', status: 502, errorOrigin: 'upstream_http', upstreamStatusHttp: 500,
+  }), 'upstream_unavailable');
+  assert.equal(categorizeImageToImageError({
+    code: 'UPSTREAM_ERROR', status: 500, errorOrigin: 'local_pipeline', upstreamStatusHttp: null,
+  }), 'internal_provider_error');
 });
 
 test('código desconhecido não é registrado literalmente', () => {
@@ -40,7 +46,7 @@ test('evento contém somente campos sanitizados permitidos', () => {
 
   assert.deepEqual(Object.keys(event), [
     'requestId', 'operation', 'provider', 'model', 'statusHttp',
-    'providerErrorCode', 'category', 'invalidFields', 'latencyMs', 'timestamp',
+    'providerErrorCode', 'category', 'invalidFields', 'upstreamStatusHttp', 'latencyMs', 'timestamp',
   ]);
   assert.deepEqual(JSON.parse(lines[0]), event);
   assert.equal(lines[0].includes('must-not-appear'), false);
@@ -56,6 +62,7 @@ test('telemetria preserva diagnóstico seguro por proposta e retry sem prompt', 
     providerErrorType: 'content_policy_violation', invalidFields: ['body.prompt'],
     upstreamMessage: 'The content was flagged by a content checker.',
     upstreamRequestId: 'fal-safe-id', proposalIndex: 2, retryAttempt: 1,
+    errorOrigin: 'upstream_http', failurePhase: 'upstream_http', upstreamStatusHttp: 422,
     startedAt: performance.now(), prompt: 'must-not-appear',
   });
 
@@ -65,6 +72,9 @@ test('telemetria preserva diagnóstico seguro por proposta e retry sem prompt', 
   assert.equal(event.upstreamRequestId, 'fal-safe-id');
   assert.equal(event.proposalIndex, 2);
   assert.equal(event.retryAttempt, 1);
+  assert.equal(event.errorOrigin, 'upstream_http');
+  assert.equal(event.failurePhase, 'upstream_http');
+  assert.equal(event.upstreamStatusHttp, 422);
   assert.doesNotMatch(lines[0], /must-not-appear|base64|Authorization|FAL_KEY/i);
 });
 

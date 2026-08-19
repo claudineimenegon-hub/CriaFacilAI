@@ -2,6 +2,7 @@ export class ImageToImageProviderError extends Error {
   constructor(message, {
     provider, status, code, category, providerErrorType, invalidFields,
     upstreamMessage, upstreamRequestId, proposalIndex, retryAttempt,
+    errorOrigin, failurePhase, upstreamStatusHttp,
   } = {}) {
     super(message);
     this.name = 'ImageToImageProviderError';
@@ -15,6 +16,9 @@ export class ImageToImageProviderError extends Error {
     this.upstreamRequestId = upstreamRequestId;
     this.proposalIndex = proposalIndex;
     this.retryAttempt = retryAttempt;
+    this.errorOrigin = errorOrigin;
+    this.failurePhase = failurePhase;
+    this.upstreamStatusHttp = Number.isInteger(upstreamStatusHttp) ? upstreamStatusHttp : null;
   }
 }
 

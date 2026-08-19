@@ -118,13 +118,99 @@ test('converte timeout e erro de rede em erros controlados', async () => {
   await assert.rejects(
     createFalFlux2ProImageToImageProvider({ apiKey: 'test', fetchImpl: async () => { throw timeout; } })
       .generate(request()),
-    { code: 'UPSTREAM_TIMEOUT' },
+    (error) => {
+      assert.equal(error.code, 'UPSTREAM_TIMEOUT');
+      assert.equal(error.errorOrigin, 'network');
+      assert.equal(error.failurePhase, 'request');
+      assert.equal(error.upstreamStatusHttp, null);
+      return true;
+    },
   );
   await assert.rejects(
     createFalFlux2ProImageToImageProvider({ apiKey: 'test', fetchImpl: async () => { throw new Error('dns'); } })
       .generate(request()),
-    { code: 'PROVIDER_UNAVAILABLE' },
+    (error) => {
+      assert.equal(error.code, 'PROVIDER_UNAVAILABLE');
+      assert.equal(error.errorOrigin, 'network');
+      assert.equal(error.upstreamStatusHttp, null);
+      return true;
+    },
   );
+});
+
+test('normaliza HTTP 500 JSON, Content-Type inesperado e JSON inválido', async (t) => {
+  await t.test('JSON válido', async () => {
+    const provider = createFalFlux2ProImageToImageProvider({
+      apiKey: 'test',
+      fetchImpl: async () => jsonResponse({
+        error: { type: 'capacity_error', message: 'Capacity temporarily unavailable.' },
+        request_id: 'fal-request-safe',
+      }, { status: 500 }),
+    });
+    await assert.rejects(provider.generate(request({ proposalIndex: 3, retryAttempt: 1 })), (error) => {
+      assert.equal(error.errorOrigin, 'upstream_http');
+      assert.equal(error.failurePhase, 'upstream_http');
+      assert.equal(error.upstreamStatusHttp, 500);
+      assert.equal(error.category, 'upstream_unavailable');
+      assert.equal(error.providerErrorType, 'capacity_error');
+      assert.equal(error.upstreamRequestId, 'fal-request-safe');
+      assert.equal(error.proposalIndex, 3);
+      assert.equal(error.retryAttempt, 1);
+      return true;
+    });
+  });
+  await t.test('Content-Type inesperado', async () => {
+    const provider = createFalFlux2ProImageToImageProvider({
+      apiKey: 'test', fetchImpl: async () => new Response('unavailable', { status: 500 }),
+    });
+    await assert.rejects(provider.generate(request()), (error) => {
+      assert.equal(error.failurePhase, 'response_content_type');
+      assert.equal(error.errorOrigin, 'upstream_http');
+      assert.equal(error.upstreamStatusHttp, 500);
+      return true;
+    });
+  });
+  await t.test('JSON inválido', async () => {
+    const provider = createFalFlux2ProImageToImageProvider({
+      apiKey: 'test',
+      fetchImpl: async () => new Response('{', {
+        status: 500, headers: { 'content-type': 'application/json' },
+      }),
+    });
+    await assert.rejects(provider.generate(request()), (error) => {
+      assert.equal(error.failurePhase, 'response_json');
+      assert.equal(error.errorOrigin, 'upstream_http');
+      assert.equal(error.upstreamStatusHttp, 500);
+      return true;
+    });
+  });
+});
+
+test('normaliza falha local e erro de contrato do resultado', async (t) => {
+  await t.test('falha local', async () => {
+    const provider = createFalFlux2ProImageToImageProvider({
+      apiKey: 'test', prepareInputs: async () => { throw new Error('FAL_KEY secret prompt base64'); },
+    });
+    await assert.rejects(provider.generate(request({ proposalIndex: 2 })), (error) => {
+      assert.equal(error.errorOrigin, 'local_pipeline');
+      assert.equal(error.failurePhase, 'local_pipeline');
+      assert.equal(error.upstreamStatusHttp, null);
+      assert.equal(error.proposalIndex, 2);
+      assert.doesNotMatch(JSON.stringify(error), /FAL_KEY secret prompt base64/);
+      return true;
+    });
+  });
+  await t.test('contrato do resultado', async () => {
+    const provider = createFalFlux2ProImageToImageProvider({
+      apiKey: 'test', fetchImpl: async () => jsonResponse({ images: [] }),
+    });
+    await assert.rejects(provider.generate(request()), (error) => {
+      assert.equal(error.failurePhase, 'result_contract');
+      assert.equal(error.errorOrigin, 'upstream_http');
+      assert.equal(error.upstreamStatusHttp, 200);
+      return true;
+    });
+  });
 });
 
 test('sanitiza erro HTTP do upstream', async () => {

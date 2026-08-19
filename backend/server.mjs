@@ -233,6 +233,7 @@ export function createServer({
       const recordTransformError = ({
         status, code, validation = false, category, providerErrorType,
         invalidFields, upstreamMessage, upstreamRequestId, proposalIndex, retryAttempt,
+        errorOrigin, failurePhase, upstreamStatusHttp,
       }) => {
         const sanitizedCode = validation
           ? String(code ?? 'INVALID_INPUT').slice(0, 64)
@@ -247,6 +248,8 @@ export function createServer({
             code: sanitizedCode,
             status,
             validation,
+            errorOrigin,
+            upstreamStatusHttp,
           }),
           providerErrorType,
           invalidFields,
@@ -254,6 +257,9 @@ export function createServer({
           upstreamRequestId,
           proposalIndex,
           retryAttempt,
+          errorOrigin,
+          failurePhase,
+          upstreamStatusHttp,
           startedAt,
         });
       };
@@ -300,17 +306,23 @@ export function createServer({
               : ['3036', '3040', 'RATE_LIMITED'].includes(providerFailure?.code)
                 ? 429
                 : 502;
-          recordTransformError({
-            status: Number.isInteger(providerFailure?.status) ? providerFailure.status : 502,
-            code: providerFailure?.code ?? error.code,
-            category: providerFailure?.category,
-            providerErrorType: providerFailure?.providerErrorType,
-            invalidFields: providerFailure?.invalidFields,
-            upstreamMessage: providerFailure?.upstreamMessage,
-            upstreamRequestId: providerFailure?.upstreamRequestId,
-            proposalIndex: firstFailure?.proposalIndex,
-            retryAttempt: providerFailure?.retryAttempt,
-          });
+          for (const failure of error.failures) {
+            const current = failure.error;
+            recordTransformError({
+              status: responseStatus,
+              code: current?.code ?? error.code,
+              category: current?.category,
+              providerErrorType: current?.providerErrorType,
+              invalidFields: current?.invalidFields,
+              upstreamMessage: current?.upstreamMessage,
+              upstreamRequestId: current?.upstreamRequestId,
+              proposalIndex: failure.proposalIndex,
+              retryAttempt: current?.retryAttempt,
+              errorOrigin: current?.errorOrigin,
+              failurePhase: current?.failurePhase,
+              upstreamStatusHttp: current?.upstreamStatusHttp,
+            });
+          }
           return sendJson(response, responseStatus, {
             error: 'O provedor não conseguiu transformar esta imagem.',
           }, corsOrigin);
@@ -322,7 +334,7 @@ export function createServer({
               ? 504
               : error.status === 429 ? 429 : 502;
           recordTransformError({
-            status: Number.isInteger(error.status) ? error.status : status,
+            status,
             code: error.code,
             category: error.category,
             providerErrorType: error.providerErrorType,
@@ -331,12 +343,21 @@ export function createServer({
             upstreamRequestId: error.upstreamRequestId,
             proposalIndex: error.proposalIndex,
             retryAttempt: error.retryAttempt,
+            errorOrigin: error.errorOrigin,
+            failurePhase: error.failurePhase,
+            upstreamStatusHttp: error.upstreamStatusHttp,
           });
           return sendJson(response, status, {
             error: 'O provedor não conseguiu transformar esta imagem.',
           }, corsOrigin);
         }
-        recordTransformError({ status: 500, code: 'UPSTREAM_ERROR' });
+        recordTransformError({
+          status: 500,
+          code: 'UPSTREAM_ERROR',
+          errorOrigin: 'local_pipeline',
+          failurePhase: 'local_pipeline',
+          upstreamStatusHttp: null,
+        });
         return sendJson(response, 500, { error: 'Não foi possível transformar a imagem.' }, corsOrigin);
       }
     }
