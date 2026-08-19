@@ -40,11 +40,32 @@ test('evento contém somente campos sanitizados permitidos', () => {
 
   assert.deepEqual(Object.keys(event), [
     'requestId', 'operation', 'provider', 'model', 'statusHttp',
-    'providerErrorCode', 'category', 'latencyMs', 'timestamp',
+    'providerErrorCode', 'category', 'invalidFields', 'latencyMs', 'timestamp',
   ]);
   assert.deepEqual(JSON.parse(lines[0]), event);
   assert.equal(lines[0].includes('must-not-appear'), false);
   assert.equal(lines[0].includes('base64-must-not-appear'), false);
+});
+
+test('telemetria preserva diagnóstico seguro por proposta e retry sem prompt', () => {
+  const lines = [];
+  const telemetry = createSanitizedImageToImageTelemetry({ write: (line) => lines.push(line) });
+  const event = telemetry.recordError({
+    requestId: 'local-id', provider: 'fal-flux2-pro', model: 'fal-ai/flux-2-pro/edit',
+    status: 422, code: 'INVALID_UPSTREAM_INPUT', category: 'content_policy',
+    providerErrorType: 'content_policy_violation', invalidFields: ['body.prompt'],
+    upstreamMessage: 'The content was flagged by a content checker.',
+    upstreamRequestId: 'fal-safe-id', proposalIndex: 2, retryAttempt: 1,
+    startedAt: performance.now(), prompt: 'must-not-appear',
+  });
+
+  assert.equal(event.statusHttp, 422);
+  assert.equal(event.category, 'content_policy');
+  assert.deepEqual(event.invalidFields, ['body.prompt']);
+  assert.equal(event.upstreamRequestId, 'fal-safe-id');
+  assert.equal(event.proposalIndex, 2);
+  assert.equal(event.retryAttempt, 1);
+  assert.doesNotMatch(lines[0], /must-not-appear|base64|Authorization|FAL_KEY/i);
 });
 
 test('ciclo da requisição registra somente metadados sanitizados', () => {

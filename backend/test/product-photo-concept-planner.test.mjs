@@ -158,7 +158,9 @@ test('brief longo mantém intenção reservada mesmo com todas as proteções', 
   });
   assert.match(prompt, new RegExp(distinctiveIntent));
   const preservedBrief = prompt.split('USER BRIEF: ')[1].split('\n')[0];
-  assert.ok(preservedBrief.length >= PRODUCT_PHOTO_USER_BRIEF_BUDGET - 1);
+  assert.ok(preservedBrief.length <= PRODUCT_PHOTO_USER_BRIEF_BUDGET);
+  assert.match(preservedBrief, /[.!?]$/);
+  assert.doesNotMatch(preservedBrief, /…/);
   assert.ok(prompt.length <= 2048);
 });
 
@@ -193,7 +195,8 @@ test('quatro prompts de joias possuem instruções operacionais distintas', () =
     prompt: 'Jewelry campaign', plan, concept,
   }));
   assert.match(prompts[0], /new editorial ad with a person wearing the product correctly/);
-  assert.match(prompts[1], /fully re-staged luxury still life without a model/);
+  assert.match(prompts[1], /premium commercial still life with refined studio staging/);
+  assert.doesNotMatch(prompts[1], /without a model|product alone|No human interaction|negative fill/i);
   assert.match(prompts[2], /significantly closer commercial macro/);
   assert.match(prompts[3], /campaign key visual with a unique composition/);
   assert.equal(new Set(prompts).size, 4);

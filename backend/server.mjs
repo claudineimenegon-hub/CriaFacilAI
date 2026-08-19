@@ -15,6 +15,7 @@ import {
 } from './image-to-image/sanitized-error-telemetry.mjs';
 import {
   generateProductPhotoBatch,
+  ImageTransformBatchError,
   ImageTransformValidationError,
 } from './image-to-image/image-transform-service.mjs';
 import { createImageProvider } from './providers/index.mjs';
@@ -229,7 +230,10 @@ export function createServer({
           status,
           startedAt,
         });
-      const recordTransformError = ({ status, code, validation = false }) => {
+      const recordTransformError = ({
+        status, code, validation = false, category, providerErrorType,
+        invalidFields, upstreamMessage, upstreamRequestId, proposalIndex, retryAttempt,
+      }) => {
         const sanitizedCode = validation
           ? String(code ?? 'INVALID_INPUT').slice(0, 64)
           : sanitizeProviderErrorCode(code);
@@ -239,11 +243,17 @@ export function createServer({
           model: imageToImageProvider.model,
           status,
           code: sanitizedCode,
-          category: categorizeImageToImageError({
+          category: category ?? categorizeImageToImageError({
             code: sanitizedCode,
             status,
             validation,
           }),
+          providerErrorType,
+          invalidFields,
+          upstreamMessage,
+          upstreamRequestId,
+          proposalIndex,
+          retryAttempt,
           startedAt,
         });
       };
@@ -280,6 +290,31 @@ export function createServer({
           recordTransformError({ status: error.status, code: error.code, validation: true });
           return sendJson(response, error.status, { error: error.message }, corsOrigin);
         }
+        if (error instanceof ImageTransformBatchError) {
+          const firstFailure = error.failures[0];
+          const providerFailure = firstFailure?.error;
+          const responseStatus = providerFailure?.code === 'PROVIDER_NOT_CONFIGURED'
+            ? 503
+            : providerFailure?.code === 'UPSTREAM_TIMEOUT'
+              ? 504
+              : ['3036', '3040', 'RATE_LIMITED'].includes(providerFailure?.code)
+                ? 429
+                : 502;
+          recordTransformError({
+            status: Number.isInteger(providerFailure?.status) ? providerFailure.status : 502,
+            code: providerFailure?.code ?? error.code,
+            category: providerFailure?.category,
+            providerErrorType: providerFailure?.providerErrorType,
+            invalidFields: providerFailure?.invalidFields,
+            upstreamMessage: providerFailure?.upstreamMessage,
+            upstreamRequestId: providerFailure?.upstreamRequestId,
+            proposalIndex: firstFailure?.proposalIndex,
+            retryAttempt: providerFailure?.retryAttempt,
+          });
+          return sendJson(response, responseStatus, {
+            error: 'O provedor não conseguiu transformar esta imagem.',
+          }, corsOrigin);
+        }
         if (error instanceof ImageToImageProviderError) {
           const status = error.code === 'PROVIDER_NOT_CONFIGURED'
             ? 503
@@ -289,6 +324,13 @@ export function createServer({
           recordTransformError({
             status: Number.isInteger(error.status) ? error.status : status,
             code: error.code,
+            category: error.category,
+            providerErrorType: error.providerErrorType,
+            invalidFields: error.invalidFields,
+            upstreamMessage: error.upstreamMessage,
+            upstreamRequestId: error.upstreamRequestId,
+            proposalIndex: error.proposalIndex,
+            retryAttempt: error.retryAttempt,
           });
           return sendJson(response, status, {
             error: 'O provedor não conseguiu transformar esta imagem.',

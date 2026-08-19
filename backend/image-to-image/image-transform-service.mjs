@@ -25,6 +25,19 @@ export class ImageTransformValidationError extends Error {
   }
 }
 
+export class ImageTransformBatchError extends Error {
+  constructor({ successfulResults, failures }) {
+    super('INCOMPLETE_IMAGE_BATCH');
+    this.name = 'ImageTransformBatchError';
+    this.code = 'INCOMPLETE_IMAGE_BATCH';
+    this.successfulResults = Object.freeze([...successfulResults]);
+    this.failures = Object.freeze(failures.map(({ proposalIndex, error }) => Object.freeze({
+      proposalIndex,
+      error,
+    })));
+  }
+}
+
 export function outputDimensions(aspectRatio) {
   return switchAspectRatio(aspectRatio);
 }
@@ -160,10 +173,22 @@ export async function generateProductPhotoBatch({
       `finalPrompt: ${prompts[index]}`,
     ].join('\n'));
   });
-  const results = [];
-  for (let start = 0; start < EXPECTED_COUNT; start += CONCURRENCY) {
-    const batch = [start, start + 1].map((variationIndex) => provider.generate({
-      prompt: prompts[variationIndex],
+
+  const buildPromptInput = (variationIndex) => ({
+    prompt: request.prompt,
+    preservation: request.preservation,
+    artisticDirection: request.parameters?.common?.artisticDirection,
+    plan,
+    concept: plan.concepts[variationIndex],
+    identitySpecification,
+    fidelityPolicy,
+  });
+  const isRetryableContentPolicy = (error) =>
+    error?.status === 422 &&
+    error?.providerErrorType === 'content_policy_violation' &&
+    Array.isArray(error?.invalidFields) && error.invalidFields.includes('body.prompt');
+  const generateVariation = async (variationIndex) => {
+    const commonRequest = {
       inputs,
       parameters: {
         ...request.parameters,
@@ -174,11 +199,41 @@ export async function generateProductPhotoBatch({
       },
       preservation: request.preservation,
       output,
-    }));
-    results.push(...await Promise.all(batch));
+      proposalIndex: variationIndex + 1,
+    };
+    try {
+      return await provider.generate({
+        ...commonRequest,
+        prompt: prompts[variationIndex],
+        retryAttempt: 0,
+      });
+    } catch (error) {
+      if (!isRetryableContentPolicy(error)) throw error;
+      const retryPrompt = promptBuilder.buildSafetyNeutralRetry(
+        buildPromptInput(variationIndex),
+      );
+      return provider.generate({
+        ...commonRequest,
+        prompt: retryPrompt,
+        retryAttempt: 1,
+      });
+    }
+  };
+
+  const results = Array(EXPECTED_COUNT);
+  const failures = [];
+  for (let start = 0; start < EXPECTED_COUNT; start += CONCURRENCY) {
+    const indexes = [start, start + 1].filter((index) => index < EXPECTED_COUNT);
+    const settled = await Promise.allSettled(indexes.map(generateVariation));
+    settled.forEach((entry, offset) => {
+      const proposalIndex = indexes[offset] + 1;
+      if (entry.status === 'fulfilled') results[proposalIndex - 1] = entry.value;
+      else failures.push({ proposalIndex, error: entry.reason });
+    });
   }
-  if (results.length !== EXPECTED_COUNT || results.some((result) => !result.imageBase64)) {
-    throw new Error('INCOMPLETE_IMAGE_BATCH');
+  const successfulResults = results.filter((result) => result?.imageBase64);
+  if (failures.length > 0 || successfulResults.length !== EXPECTED_COUNT) {
+    throw new ImageTransformBatchError({ successfulResults, failures });
   }
   return {
     id: randomUUID(),

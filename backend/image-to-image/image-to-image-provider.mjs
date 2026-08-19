@@ -1,10 +1,20 @@
 export class ImageToImageProviderError extends Error {
-  constructor(message, { provider, status, code } = {}) {
+  constructor(message, {
+    provider, status, code, category, providerErrorType, invalidFields,
+    upstreamMessage, upstreamRequestId, proposalIndex, retryAttempt,
+  } = {}) {
     super(message);
     this.name = 'ImageToImageProviderError';
     this.provider = provider;
     this.status = status;
     this.code = code;
+    this.category = category;
+    this.providerErrorType = providerErrorType;
+    this.invalidFields = Object.freeze([...(invalidFields ?? [])]);
+    this.upstreamMessage = upstreamMessage;
+    this.upstreamRequestId = upstreamRequestId;
+    this.proposalIndex = proposalIndex;
+    this.retryAttempt = retryAttempt;
   }
 }
 

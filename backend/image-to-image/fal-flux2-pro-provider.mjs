@@ -16,11 +16,10 @@ const safeErrorFields = new Set([
   'safety_tolerance',
 ]);
 
-function providerError(message, { status, code }) {
+function providerError(message, fields) {
   return new ImageToImageProviderError(message, {
     provider: FAL_PROVIDER_NAME,
-    status,
-    code,
+    ...fields,
   });
 }
 
@@ -127,6 +126,20 @@ function safeToken(value) {
   return /^[A-Za-z0-9_.-]+$/.test(normalized) ? normalized : undefined;
 }
 
+function safeRequestId(value) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().slice(0, 128);
+  return /^[A-Za-z0-9_.:-]+$/.test(normalized) ? normalized : undefined;
+}
+
+function upstreamRequestId(response, payload) {
+  for (const name of ['x-fal-request-id', 'x-request-id', 'request-id']) {
+    const candidate = safeRequestId(response.headers.get(name));
+    if (candidate) return candidate;
+  }
+  return safeRequestId(payload?.request_id) ?? safeRequestId(payload?.requestId);
+}
+
 function safeUpstreamMessage(payload) {
   const details = Array.isArray(payload?.detail) ? payload.detail : [];
   const candidate = typeof payload?.detail === 'string' ? payload.detail
@@ -164,6 +177,7 @@ export function sanitizeFalUpstreamError(payload) {
 }
 
 export function categorizeFalUpstreamError({ status, sanitized }) {
+  if (sanitized?.providerErrorType === 'content_policy_violation') return 'content_policy';
   if (status === 401 || status === 403) return 'authentication';
   if (status === 429) return 'quota';
   if (status === 413) return 'dimension_or_size';
@@ -193,6 +207,7 @@ function logFalFailure(logger, diagnosticContext, startedAt, fields) {
     providerErrorType: fields.providerErrorType,
     invalidFields: fields.invalidFields ?? [],
     ...(fields.upstreamMessage ? { upstreamMessage: fields.upstreamMessage } : {}),
+    ...(fields.upstreamRequestId ? { upstreamRequestId: fields.upstreamRequestId } : {}),
     timestamp: new Date().toISOString(),
   });
 }
@@ -258,6 +273,8 @@ export function createFalFlux2ProImageToImageProvider({
         outputWidth: request.output.width,
         outputHeight: request.output.height,
         seedPresent: Number.isInteger(seed),
+        proposalIndex: Number.isInteger(request.proposalIndex) ? request.proposalIndex : null,
+        retryAttempt: Number.isInteger(request.retryAttempt) ? request.retryAttempt : 0,
       };
       const input = {
         prompt: request.prompt,
@@ -333,18 +350,26 @@ export function createFalFlux2ProImageToImageProvider({
       }
       if (!response.ok) {
         const sanitized = sanitizeFalUpstreamError(payload);
+        const category = categorizeFalUpstreamError({ status: response.status, sanitized });
+        const requestId = upstreamRequestId(response, payload);
         const providerErrorCode = response.status === 400 || response.status === 422
           ? 'INVALID_UPSTREAM_INPUT'
           : response.status === 429 ? 'RATE_LIMITED' : 'UPSTREAM_ERROR';
         logFalFailure(logger, diagnosticContext, providerStartedAt, {
           statusHttp: response.status,
           providerErrorCode,
-          category: categorizeFalUpstreamError({ status: response.status, sanitized }),
+          category,
+          upstreamRequestId: requestId,
           ...sanitized,
         });
         throw providerError('Falha no serviço fal.ai.', {
           status: response.status,
           code: providerErrorCode,
+          category,
+          upstreamRequestId: requestId,
+          proposalIndex: diagnosticContext.proposalIndex,
+          retryAttempt: diagnosticContext.retryAttempt,
+          ...sanitized,
         });
       }
 

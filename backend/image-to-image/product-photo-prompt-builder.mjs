@@ -46,7 +46,7 @@ const operationalDirections = {
   'HERO SET / PREMIUM STILL LIFE': 'Create a sophisticated full-set still life showing every observed item at once, preserving quantity and making each item identifiable on a dynamically selected premium set.',
   'LIFESTYLE / WORN IN USE': 'Create a new editorial ad with a person wearing the product correctly; use campaign framing and a scene unlike the reference photo.',
   'LIFESTYLE / HELD OR APPLIED': 'Create a new lifestyle ad showing credible handling or application; keep the product unobstructed and dominant.',
-  'LUXURY DISPLAY': 'Create a fully re-staged luxury still life without a model, using a new premium surface, set, composition, and lighting.',
+  'LUXURY DISPLAY': 'Create a premium commercial still life with refined studio staging.',
   'EXTREME MACRO': 'Create a significantly closer commercial macro focused on real finish, texture, material, color, reflections, and construction.',
   'CONCEPT CAMPAIGN': 'Create a sophisticated campaign key visual with a unique composition, not reference framing.',
   'PRODUCT HERO': 'Create a newly staged hero advertisement with the complete product dominant and a deliberate commercial composition.',
@@ -63,7 +63,23 @@ const operationalDirections = {
 
 function clip(value, maxLength) {
   const text = String(value).trim();
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1).trimEnd()}…`;
+  if (text.length <= maxLength) return text;
+  const candidate = text.slice(0, maxLength).trimEnd();
+  const sentenceBoundary = Math.max(
+    candidate.lastIndexOf('.'), candidate.lastIndexOf(';'), candidate.lastIndexOf(':'),
+  );
+  if (sentenceBoundary >= Math.floor(maxLength * 0.55)) {
+    return candidate.slice(0, sentenceBoundary + 1).trimEnd();
+  }
+  const wordBoundary = candidate.lastIndexOf(' ');
+  return (wordBoundary > 0 ? candidate.slice(0, wordBoundary) : candidate).trimEnd();
+}
+
+function safetyNeutralDirection(concept) {
+  return [
+    `Create a commercially appropriate ${concept.name.toLowerCase()} product photograph.`,
+    'Use a balanced product-focused composition with clear geometry and scale.',
+  ].join(' ');
 }
 
 function restrictiveMode(preservation) {
@@ -123,6 +139,10 @@ function visibilityDirection(visibilityIntent) {
 }
 
 export class ProductPhotoPromptBuilder {
+  buildSafetyNeutralRetry(input) {
+    return this.build({ ...input, safetyNeutral: true });
+  }
+
   build({
     prompt,
     preservation = {},
@@ -131,6 +151,7 @@ export class ProductPhotoPromptBuilder {
     concept,
     identitySpecification,
     fidelityPolicy,
+    safetyNeutral = false,
   }) {
     if (!plan?.understanding || !concept?.visibilityIntent) {
       throw new TypeError('A product understanding and planned concept are required.');
@@ -157,11 +178,21 @@ export class ProductPhotoPromptBuilder {
       physicalFidelity(preservation, policy),
       `USER BRIEF: ${userBrief}`,
       transformationDirection(preservation),
-      `CONCEPT: ${concept.name}. ${clip(operationalDirections[concept.name] ?? concept.objective, compact ? 68 : 120)} Intent: ${clip(concept.objective, compact ? 24 : 45)}; ${clip(objective, 55)}.`,
-      `INTERACTION: product${concept.humanPresent ? ' with supporting person' : ' alone'}; ${clip(concept.interaction, compact ? 34 : 58)}${compact ? '' : categoryInteraction}.`,
+      `CONCEPT: ${concept.name}. ${clip(safetyNeutral
+        ? safetyNeutralDirection(concept)
+        : operationalDirections[concept.name] ?? concept.objective, compact ? 68 : 120)} Intent: ${clip(concept.objective, compact ? 24 : 45)}; ${clip(objective, 55)}.`,
+      `INTERACTION: ${clip(safetyNeutral
+        ? concept.humanPresent
+          ? 'Natural commercial interaction that keeps the product clearly visible.'
+          : 'Product presented independently in a commercial still-life arrangement.'
+        : concept.interaction, compact ? 58 : 90)}${compact ? '' : categoryInteraction}.`,
       visibilityDirection(concept.visibilityIntent),
-      `COMPOSITION: ${clip(`${concept.cameraDistance}; ${concept.angle}; ${concept.lens}; ${concept.composition}`, compact ? 66 : 104)}.`,
-      `LIGHTING/DEPTH: ${clip(`${concept.lighting}; ${concept.depthOfField}`, compact ? 46 : 76)}.`,
+      `COMPOSITION: ${clip(safetyNeutral
+        ? 'Balanced product-focused commercial composition with clear geometry and scale.'
+        : `${concept.cameraDistance}; ${concept.angle}; ${concept.lens}; ${concept.composition}`, compact ? 66 : 104)}.`,
+      `LIGHTING/DEPTH: ${clip(safetyNeutral
+        ? 'Controlled studio lighting with clear product detail and natural depth.'
+        : `${concept.lighting}; ${concept.depthOfField}`, compact ? 46 : 76)}.`,
       compact
         ? null
         : `MATERIAL/SET: ${clip(plan.understanding.materialDirection, 54)}; ${clip(concept.environment, 44)}.`,

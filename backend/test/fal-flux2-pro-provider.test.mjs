@@ -22,10 +22,10 @@ function request(overrides = {}) {
   };
 }
 
-function jsonResponse(payload, { status = 200 } = {}) {
+function jsonResponse(payload, { status = 200, headers = {} } = {}) {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
   });
 }
 
@@ -68,6 +68,7 @@ test('envia autenticação e contrato oficial sem expor chave no resultado', asy
   assert.deepEqual(body.image_size, { width: 1024, height: 1280 });
   assert.equal(body.output_format, 'png');
   assert.equal(body.sync_mode, true);
+  assert.equal(body.enable_safety_checker, true);
   assert.equal(body.seed, 123);
   assert.equal(body.image_urls.length, 1);
   assert.match(body.image_urls[0], /^data:image\/jpeg;base64,/);
@@ -167,7 +168,38 @@ test('sanitiza erro HTTP do upstream', async () => {
   assert.doesNotMatch(serialized, /private product prompt|base64|SECRET|Authorization|FAL_KEY/);
 });
 
+test('preserva diagnóstico sanitizado de content policy no erro lançado', async () => {
+  const logs = [];
+  const provider = createFalFlux2ProImageToImageProvider({
+    apiKey: 'test',
+    logger: { warn: (event) => logs.push(event) },
+    fetchImpl: async () => jsonResponse({
+      detail: [{
+        loc: ['body', 'prompt'], type: 'content_policy_violation',
+        msg: 'The content was flagged by a content checker.',
+      }],
+    }, { status: 422, headers: { 'x-fal-request-id': 'fal-safe-id-1' } }),
+  });
+  await assert.rejects(provider.generate(request({
+    prompt: 'private prompt', proposalIndex: 2, retryAttempt: 1,
+  })), (error) => {
+    assert.equal(error.status, 422);
+    assert.equal(error.category, 'content_policy');
+    assert.equal(error.providerErrorType, 'content_policy_violation');
+    assert.deepEqual(error.invalidFields, ['body.prompt']);
+    assert.equal(error.upstreamRequestId, 'fal-safe-id-1');
+    assert.equal(error.proposalIndex, 2);
+    assert.equal(error.retryAttempt, 1);
+    return true;
+  });
+  assert.equal(logs[0].upstreamRequestId, 'fal-safe-id-1');
+  assert.doesNotMatch(JSON.stringify(logs), /private prompt|Authorization|base64/i);
+});
+
 test('categoriza erros HTTP fal.ai sem depender de payload bruto', () => {
+  assert.equal(categorizeFalUpstreamError({
+    status: 422, sanitized: { providerErrorType: 'content_policy_violation' },
+  }), 'content_policy');
   assert.equal(categorizeFalUpstreamError({ status: 401, sanitized: {} }), 'authentication');
   assert.equal(categorizeFalUpstreamError({ status: 429, sanitized: {} }), 'quota');
   assert.equal(categorizeFalUpstreamError({ status: 413, sanitized: {} }), 'dimension_or_size');
