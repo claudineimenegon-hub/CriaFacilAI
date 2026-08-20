@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import {
   categorizeImageToImageError,
   createSanitizedImageToImageTelemetry,
+  sanitizeLocalErrorType,
+  sanitizeLocalFailureStage,
   sanitizeProviderErrorCode,
 } from '../image-to-image/sanitized-error-telemetry.mjs';
 
@@ -19,6 +21,28 @@ test('classifica categorias técnicas do fluxo image-to-image', () => {
   assert.equal(categorizeImageToImageError({
     code: 'UPSTREAM_ERROR', status: 500, errorOrigin: 'local_pipeline', upstreamStatusHttp: null,
   }), 'internal_provider_error');
+});
+
+test('telemetria local usa somente tipo e estágio allowlisted', () => {
+  assert.equal(sanitizeLocalErrorType(new RangeError('sensitive prompt contents')), 'range_error');
+  assert.equal(sanitizeLocalErrorType(new TypeError('sensitive value')), 'type_error');
+  assert.equal(sanitizeLocalFailureStage('prompt_build'), 'prompt_build');
+  assert.equal(sanitizeLocalFailureStage('secret-stage'), undefined);
+
+  const lines = [];
+  const telemetry = createSanitizedImageToImageTelemetry({ write: (line) => lines.push(line) });
+  const event = telemetry.recordError({
+    requestId: 'local-id', provider: 'provider', model: 'model', status: 500,
+    code: 'UPSTREAM_ERROR', category: 'internal_provider_error',
+    errorOrigin: 'local_pipeline', failurePhase: 'local_pipeline',
+    localErrorType: 'range_error', localFailureStage: 'prompt_build',
+    startedAt: performance.now(), message: 'sensitive prompt contents',
+    stack: 'sensitive stack', prompt: 'sensitive prompt',
+  });
+
+  assert.equal(event.localErrorType, 'range_error');
+  assert.equal(event.localFailureStage, 'prompt_build');
+  assert.doesNotMatch(lines[0], /sensitive|stack|prompt contents/i);
 });
 
 test('código desconhecido não é registrado literalmente', () => {

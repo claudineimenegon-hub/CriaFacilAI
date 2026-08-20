@@ -18,6 +18,32 @@ const invalidInputCodes = new Set([
   '3003', '3006', '5004', 'INVALID_JSON', 'INVALID_UPSTREAM_INPUT',
 ]);
 
+const knownLocalErrorTypes = new Set([
+  'range_error', 'type_error', 'invalid_concept_plan', 'incomplete_concept_plan',
+  'prompt_build_error', 'unexpected_local_error',
+]);
+const knownLocalFailureStages = new Set([
+  'identity_specification', 'fidelity_constraints', 'concept_planning',
+  'fidelity_policy', 'prompt_build', 'creative_director_logging',
+  'provider_batch', 'batch_finalize',
+]);
+
+export function sanitizeLocalErrorType(error) {
+  if (knownLocalErrorTypes.has(error?.localErrorType)) return error.localErrorType;
+  if (error?.name === 'RangeError') return 'range_error';
+  if (error?.name === 'TypeError') return 'type_error';
+  if (error?.message === 'INCOMPLETE_CONCEPT_PLAN') return 'incomplete_concept_plan';
+  if (error?.message === 'CONCEPT_MUST_NOT_OVERRIDE_CANONICAL_IDENTITY') {
+    return 'invalid_concept_plan';
+  }
+  if (error?.localFailureStage === 'prompt_build') return 'prompt_build_error';
+  return 'unexpected_local_error';
+}
+
+export function sanitizeLocalFailureStage(value) {
+  return knownLocalFailureStages.has(value) ? value : undefined;
+}
+
 export function sanitizeProviderErrorCode(code) {
   const normalized = String(code ?? '').trim().toUpperCase();
   return knownProviderCodes.has(normalized) ? normalized : 'UNKNOWN_PROVIDER_ERROR';
@@ -84,6 +110,8 @@ export function createSanitizedImageToImageTelemetry({ write = console.error } =
       retryAttempt,
       errorOrigin,
       failurePhase,
+      localErrorType,
+      localFailureStage,
       upstreamStatusHttp,
       startedAt,
       timestamp = new Date(),
@@ -104,6 +132,8 @@ export function createSanitizedImageToImageTelemetry({ write = console.error } =
         ...(Number.isInteger(retryAttempt) ? { retryAttempt } : {}),
         ...(errorOrigin ? { errorOrigin } : {}),
         ...(failurePhase ? { failurePhase } : {}),
+        ...(knownLocalErrorTypes.has(localErrorType) ? { localErrorType } : {}),
+        ...(knownLocalFailureStages.has(localFailureStage) ? { localFailureStage } : {}),
         upstreamStatusHttp: Number.isInteger(upstreamStatusHttp) ? upstreamStatusHttp : null,
         latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
         timestamp: timestamp.toISOString(),

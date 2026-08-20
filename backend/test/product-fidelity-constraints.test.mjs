@@ -12,14 +12,14 @@ import { generateProductPhotoBatch } from '../image-to-image/image-transform-ser
 import { DeterministicProductIdentityAnalyzer } from './support/deterministic-product-identity-analyzer.mjs';
 
 function item({ id, type, typeState = 'known', quantity = 1, quantityState = 'known',
-  observedFeatures = [], completeness = 'complete' }) {
+  observedFeatures = [], ambiguousFeatures = [], completeness = 'complete' }) {
   return {
     id,
     functionalType: { state: typeState, value: typeState === 'unknown' ? null : type },
     quantity: { state: quantityState, value: quantityState === 'unknown' ? null : quantity },
     observationCompleteness: completeness,
     observedFeatures,
-    ambiguousFeatures: [],
+    ambiguousFeatures,
   };
 }
 
@@ -212,16 +212,110 @@ test('constraints prioritárias sobrevivem a brief longo e quatro direções con
   }
 });
 
-test('pipeline real entrega os mesmos item locks aos quatro prompts', async () => {
+test('orçamento inclui evidências inteiras por prioridade e marca omissões sem truncar', () => {
+  const richItems = Array.from({ length: 3 }, (_, itemIndex) => item({
+    id: `product-${itemIndex + 1}`,
+    type: 'premium accessory',
+    completeness: 'partial',
+    observedFeatures: Array.from({ length: 12 }, (_, featureIndex) => ({
+      id: `observed-${itemIndex}-${featureIndex}`,
+      name: featureIndex === 0 ? 'distinctive geometry' : `secondary feature ${featureIndex}`,
+      value: `COMPLETE_OBSERVED_${itemIndex}_${featureIndex} ${'visual detail '.repeat(5).trim()}`,
+    })),
+    ambiguousFeatures: Array.from({ length: 6 }, (_, featureIndex) => ({
+      id: `ambiguous-${itemIndex}-${featureIndex}`,
+      name: `hidden structure ${featureIndex}`,
+      visibility: 'hidden',
+      observedConstraint: null,
+      plausibleHypotheses: [`COMPLETE_HYPOTHESIS_${itemIndex}_${featureIndex} ${'continuation '.repeat(4).trim()}`],
+    })),
+  }));
+  const canonicalIdentity = identity({
+    items: richItems,
+    relationships: [{ type: 'set', memberIds: richItems.map(({ id }) => id), state: 'known' }],
+  });
+  const fidelityConstraints = compileProductFidelityConstraints(canonicalIdentity);
+  const plan = new ProductPhotoConceptPlanner().plan({
+    productCategory: 'general', prompt: 'Premium product campaign',
+    canonicalIdentity, fidelityConstraints,
+  });
+  const prompts = plan.concepts.map((concept) => new ProductPhotoPromptBuilder().build({
+    prompt: 'Premium product campaign', preservation: { preserveProduct: true },
+    plan, concept, identitySpecification: canonicalIdentity, fidelityConstraints,
+  }));
+
+  for (const prompt of prompts) {
+    assert.ok(prompt.length <= 2048);
+    assert.match(prompt, /ITEM LOCKS:/);
+    assert.match(prompt, /no merge, conversion, substitution, duplication/i);
+    assert.ok((prompt.match(/Additional canonical evidence omitted/g) ?? []).length <= 1);
+    assert.doesNotMatch(prompt, /\.\.\.|…/);
+    for (const partial of prompt.matchAll(/COMPLETE_(?:OBSERVED|HYPOTHESIS)_\d+_\d+/g)) {
+      assert.match(partial[0], /^COMPLETE_(?:OBSERVED|HYPOTHESIS)_\d+_\d+$/);
+    }
+  }
+  assert.ok(prompts.some((prompt) => /Additional canonical evidence omitted/.test(prompt)));
+});
+
+test('falha explicitamente quando somente o núcleo prioritário excede o limite', () => {
+  const canonicalIdentity = identity({
+    items: Array.from({ length: 16 }, (_, index) => item({
+      id: `product-${index}-${'x'.repeat(90)}`,
+      type: `functional-product-${index}-${'y'.repeat(90)}`,
+    })),
+  });
+  const fidelityConstraints = compileProductFidelityConstraints(canonicalIdentity);
+  const plan = new ProductPhotoConceptPlanner().plan({
+    productCategory: 'general', prompt: '', canonicalIdentity, fidelityConstraints,
+  });
+  assert.throws(() => new ProductPhotoPromptBuilder().build({
+    prompt: '', preservation: { preserveProduct: true }, plan, concept: plan.concepts[0],
+    identitySpecification: canonicalIdentity, fidelityConstraints,
+  }), /Prioritized product photo prompt exceeds maximum 2048/);
+});
+
+test('etapa local é anexada a TypeError anterior ao provider', async () => {
+  let providerCalls = 0;
+  await assert.rejects(generateProductPhotoBatch({
+    provider: { generate: async () => { providerCalls += 1; } },
+    assetStore: {
+      readImage: async () => ({ bytes: Buffer.from('image'), mimeType: 'image/png', metadata: {} }),
+    },
+    request: {
+      prompt: 'Campaign', inputAssetIds: ['asset-1'], quality: 'standard', aspectRatio: '1:1',
+      preservation: { preserveProduct: true }, parameters: { common: { productCategory: 'general' } },
+    },
+    conceptPlanner: { understand: () => { throw new TypeError('private detail'); } },
+    creativeDirectorLogger: undefined,
+  }), (error) => error.name === 'TypeError' && error.localFailureStage === 'concept_planning');
+  assert.equal(providerCalls, 0);
+});
+
+test('pipeline rico compacta quatro prompts e entrega a identidade completa ao Guard', async () => {
+  const richObserved = (itemIndex) => Array.from({ length: 12 }, (_, featureIndex) => ({
+    name: featureIndex === 0 ? 'observed material appearance' : `visible structure ${featureIndex}`,
+    value: `COMPLETE_PIPELINE_OBSERVED_${itemIndex}_${featureIndex} ${'stable detail '.repeat(4).trim()}`,
+  }));
+  const richAmbiguous = (itemIndex) => Array.from({ length: 6 }, (_, featureIndex) => ({
+    name: `hidden geometry ${featureIndex}`,
+    visibility: 'hidden',
+    observedConstraint: null,
+    plausibleHypotheses: [`COMPLETE_PIPELINE_HYPOTHESIS_${itemIndex}_${featureIndex}`],
+  }));
   const analysis = {
     state: 'known',
     items: [
-      item({ id: 'product-a', type: 'generic product', quantity: 1 }),
-      item({ id: 'product-b', type: 'generic accessory', quantity: 2 }),
+      item({ id: 'product-a', type: 'generic product', quantity: 1,
+        completeness: 'partial', observedFeatures: richObserved(0), ambiguousFeatures: richAmbiguous(0) }),
+      item({ id: 'product-b', type: 'generic accessory', quantity: 2,
+        completeness: 'partial', observedFeatures: richObserved(1), ambiguousFeatures: richAmbiguous(1) }),
+      item({ id: 'product-c', type: 'generic container', quantity: 1,
+        completeness: 'partial', observedFeatures: richObserved(2), ambiguousFeatures: richAmbiguous(2) }),
     ],
-    relationships: [{ type: 'set', memberIds: ['product-a', 'product-b'], state: 'known' }],
+    relationships: [{ type: 'set', memberIds: ['product-a', 'product-b', 'product-c'], state: 'known' }],
   };
   const prompts = [];
+  const guardIdentities = [];
   await generateProductPhotoBatch({
     provider: {
       generate: async ({ prompt }) => {
@@ -238,13 +332,29 @@ test('pipeline real entrega os mesmos item locks aos quatro prompts', async () =
       parameters: { common: { productCategory: 'general' } },
     },
     productIdentityAnalyzer: new DeterministicProductIdentityAnalyzer({ result: analysis }),
+    productFidelityGuard: { inspect: async ({ canonicalIdentity }) => {
+      guardIdentities.push(canonicalIdentity);
+      return { verdict: 'pass', violations: [] };
+    } },
     creativeDirectorLogger: undefined,
   });
   assert.equal(prompts.length, 4);
+  assert.equal(guardIdentities.length, 4);
+  assert.ok(guardIdentities.every((entry) => entry === guardIdentities[0]));
+  assert.equal(guardIdentities[0].sourceInventory.items.length, 3);
+  assert.equal(guardIdentities[0].sourceInventory.items[0].observedFeatures.length, 12);
+  assert.equal(guardIdentities[0].sourceInventory.items[0].ambiguousFeatures.length, 6);
   const itemLockLines = prompts.map((prompt) =>
     prompt.split('\n').find((line) => line.startsWith('ITEM LOCKS:')));
   assert.equal(new Set(itemLockLines).size, 1);
-  assert.match(itemLockLines[0], /product-a=1xgeneric product; product-b=2xgeneric accessory/);
+  assert.match(itemLockLines[0], /product-a=1xgeneric product; product-b=2xgeneric accessory; product-c=1xgeneric container/);
+  for (const prompt of prompts) {
+    assert.ok(prompt.length <= 2048);
+    assert.match(prompt, /RELATIONSHIP LOCKS: set\(product-a\+product-b\+product-c\)/);
+    assert.match(prompt, /VISIBILITY INTENT\/LOCK/);
+    assert.match(prompt, /SCALE LOCK:/);
+    assert.match(prompt, /OBSERVED MATERIAL APPEARANCE:/);
+  }
 });
 
 test('arquitetura global preserva tipos genéricos sem regras de joias', () => {

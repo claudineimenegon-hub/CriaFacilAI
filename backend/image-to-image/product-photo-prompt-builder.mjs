@@ -11,6 +11,9 @@ import {
 
 const MAX_PROMPT_LENGTH = 2048;
 const USER_BRIEF_BUDGET = 100;
+const OMITTED_EVIDENCE_MARKER =
+  'Additional canonical evidence omitted for prompt size; canonical identity remains authoritative.';
+const identityPriorityPattern = /\b(function|functional|structure|structural|geometry|geometric|shape|silhouette|distinctive|detail|construction|material|finish|texture|color|stone|component|pattern|proportion|tipo|fun[cç][aã]o|estrutura|geometr|forma|silhueta|distint|detalhe|constru[cç][aã]o|material|acabamento|textura|cor|pedra|componente|padr[aã]o|propor[cç][aã]o)\b/i;
 
 const objectiveDirections = {
   'Estúdio Premium': 'disciplined premium studio campaign treatment',
@@ -74,7 +77,7 @@ function clip(value, maxLength) {
     return candidate.slice(0, sentenceBoundary + 1).trimEnd();
   }
   const wordBoundary = candidate.lastIndexOf(' ');
-  return (wordBoundary > 0 ? candidate.slice(0, wordBoundary) : candidate).trimEnd();
+  return wordBoundary > 0 ? candidate.slice(0, wordBoundary).trimEnd() : '';
 }
 
 function safetyNeutralDirection(concept) {
@@ -127,20 +130,84 @@ function physicalFidelity(preservation, policy) {
   return `FIDELITY (BEST EFFORT): same product—${requested}; no redesign.${category}`;
 }
 
-function identityEvidenceSections(identity, constraints) {
+function identityEvidenceCandidates(identity, constraints, visibilityIntent) {
   const materialIds = new Set(constraints.materialAppearance.map((feature) =>
     `${feature.itemId}:${feature.featureId}`));
-  const observed = identity.sourceInventory.items.flatMap((item) => item.observedFeatures
-    .filter((feature) => !materialIds.has(`${item.id}:${feature.id}`))
-    .map((feature) => `${item.id}.${feature.name}=${feature.value}`));
-  const hypotheses = identity.sourceInventory.items.flatMap((item) => item.ambiguousFeatures
-    .map((feature) => `${item.id}.${feature.name}=${feature.canonicalHypothesis.value}`));
+  const selectedIds = new Set((visibilityIntent.selectedItems ?? []).map(({ itemId }) => itemId));
+  const observed = identity.sourceInventory.items.flatMap((item, itemIndex) =>
+    item.observedFeatures
+      .filter((feature) => !materialIds.has(`${item.id}:${feature.id}`))
+      .map((feature, featureIndex) => ({
+        text: `${item.id}.${feature.name}=${feature.value}`,
+        selected: selectedIds.has(item.id),
+        identityPriority: identityPriorityPattern.test(`${feature.name} ${feature.value}`),
+        itemIndex,
+        featureIndex,
+      })))
+    .sort((left, right) =>
+      Number(right.selected) - Number(left.selected) ||
+      Number(right.identityPriority) - Number(left.identityPriority) ||
+      left.text.length - right.text.length ||
+      left.itemIndex - right.itemIndex || left.featureIndex - right.featureIndex);
+  const hypotheses = identity.sourceInventory.items.flatMap((item, itemIndex) =>
+    item.ambiguousFeatures.map((feature, featureIndex) => ({
+      text: `${item.id}.${feature.name}=${feature.canonicalHypothesis.value}`,
+      selected: selectedIds.has(item.id),
+      itemIndex,
+      featureIndex,
+    })))
+    .sort((left, right) =>
+      Number(right.selected) - Number(left.selected) ||
+      left.text.length - right.text.length ||
+      left.itemIndex - right.itemIndex || left.featureIndex - right.featureIndex);
+  return { observed, hypotheses };
+}
+
+function evidenceSections(observed, hypotheses, omitted) {
   return [
-    observed.length > 0 ? `OBSERVED IDENTITY: ${observed.join('; ')}.` : null,
+    observed.length > 0 ? `OBSERVED IDENTITY: ${observed.map(({ text }) => text).join('; ')}.` : null,
     hypotheses.length > 0
-      ? `CANONICAL HIDDEN (UNCERTAIN; SHARED): ${hypotheses.join('; ')}. Do not reinterpret.`
+      ? `CANONICAL HIDDEN (UNCERTAIN; SHARED): ${hypotheses.map(({ text }) => text).join('; ')}. Do not reinterpret.`
       : null,
+    omitted ? OMITTED_EVIDENCE_MARKER : null,
   ].filter(Boolean);
+}
+
+function budgetPromptEvidence({ beforeEvidence, afterEvidence, observed, hypotheses }) {
+  const compose = (selectedObserved, selectedHypotheses, omitted = false) => [
+    ...beforeEvidence,
+    ...evidenceSections(selectedObserved, selectedHypotheses, omitted),
+    ...afterEvidence,
+  ].join('\n');
+  const basePrompt = compose([], []);
+  if (basePrompt.length > MAX_PROMPT_LENGTH) {
+    throw new RangeError(
+      `Prioritized product photo prompt exceeds maximum ${MAX_PROMPT_LENGTH}.`,
+    );
+  }
+  const selectedObserved = [];
+  const selectedHypotheses = [];
+  for (const candidate of observed) {
+    if (compose([...selectedObserved, candidate], selectedHypotheses).length <= MAX_PROMPT_LENGTH) {
+      selectedObserved.push(candidate);
+    }
+  }
+  for (const candidate of hypotheses) {
+    if (compose(selectedObserved, [...selectedHypotheses, candidate]).length <= MAX_PROMPT_LENGTH) {
+      selectedHypotheses.push(candidate);
+    }
+  }
+  const omitted = selectedObserved.length < observed.length ||
+    selectedHypotheses.length < hypotheses.length;
+  if (omitted) {
+    while (compose(selectedObserved, selectedHypotheses, true).length > MAX_PROMPT_LENGTH &&
+        (selectedHypotheses.length > 0 || selectedObserved.length > 0)) {
+      if (selectedHypotheses.length > 0) selectedHypotheses.pop();
+      else selectedObserved.pop();
+    }
+  }
+  const withMarker = omitted && compose(selectedObserved, selectedHypotheses, true).length <= MAX_PROMPT_LENGTH;
+  return compose(selectedObserved, selectedHypotheses, withMarker);
 }
 
 export class ProductPhotoPromptBuilder {
@@ -182,14 +249,15 @@ export class ProductPhotoPromptBuilder {
     const categoryInteraction = category === 'jewelry'
       ? ''
       : `; ${clip(categoryPlacement[category] ?? categoryPlacement.general, 75)}`;
-    const sections = [
+    const beforeEvidence = [
       'REFERENCE: INPUT IMAGE 0 defines the product.',
       ...summarizeProductFidelityConstraints(constraints, concept.visibilityIntent, {
         contextual: concept.humanPresent || concept.visibilityIntent.mode === 'contextual_use',
       }),
-      ...identityEvidenceSections(identity, constraints),
+    ];
+    const afterEvidence = [
       physicalFidelity(preservation, policy),
-      `USER BRIEF: ${userBrief}`,
+      userBrief ? `USER BRIEF: ${userBrief}` : null,
       transformationDirection(preservation),
       `CONCEPT: ${concept.name}. ${clip(safetyNeutral
         ? safetyNeutralDirection(concept)
@@ -217,7 +285,13 @@ export class ProductPhotoPromptBuilder {
         : 'QUALITY: sharp commercial photo; dimensional light, controlled highlights; no washed-out/plastic/CGI look.',
       globalConstraints(plan.understanding),
     ].filter(Boolean);
-    const finalPrompt = sections.join('\n');
+    const candidates = identityEvidenceCandidates(identity, constraints, concept.visibilityIntent);
+    const finalPrompt = budgetPromptEvidence({
+      beforeEvidence,
+      afterEvidence,
+      observed: candidates.observed,
+      hypotheses: candidates.hypotheses,
+    });
     if (finalPrompt.length > MAX_PROMPT_LENGTH) {
       throw new RangeError(`Product photo prompt has ${finalPrompt.length} characters; maximum is ${MAX_PROMPT_LENGTH}.`);
     }
@@ -227,3 +301,4 @@ export class ProductPhotoPromptBuilder {
 
 export const PRODUCT_PHOTO_PROMPT_LIMIT = MAX_PROMPT_LENGTH;
 export const PRODUCT_PHOTO_USER_BRIEF_BUDGET = USER_BRIEF_BUDGET;
+export const PRODUCT_PHOTO_OMITTED_EVIDENCE_MARKER = OMITTED_EVIDENCE_MARKER;

@@ -23,6 +23,17 @@ export const PRODUCT_PHOTO_SEEDS = Object.freeze([104729, 130363, 155921, 180503
 const supportedMimeTypes = new Set(['image/png', 'image/jpeg']);
 const defaultCreativeDirectorLogger = process.env.NODE_TEST_CONTEXT ? undefined : console;
 
+function withLocalFailureStage(stage, operation) {
+  try {
+    return operation();
+  } catch (error) {
+    if (error && typeof error === 'object' && !error.localFailureStage) {
+      error.localFailureStage = stage;
+    }
+    throw error;
+  }
+}
+
 export class ImageTransformValidationError extends Error {
   constructor(message, { code, status = 400 } = {}) {
     super(message);
@@ -97,7 +108,9 @@ export async function generateProductPhotoBatch({
     artisticDirection: request.parameters?.common?.artisticDirection,
     preservation: request.preservation,
   };
-  const understanding = conceptPlanner.understand(planningInput);
+  const understanding = withLocalFailureStage(
+    'concept_planning', () => conceptPlanner.understand(planningInput),
+  );
   let analyzedSourceInventory;
   try {
     const analyzerInputs = Object.freeze(inputs.map((input) => Object.freeze({
@@ -137,39 +150,45 @@ export async function generateProductPhotoBatch({
       );
     }
   }
-  const identitySpecification = createProductIdentitySpecification({
-    category: understanding.category,
-    sourceInventory: analyzedSourceInventory,
-    preservation: request.preservation,
+  const identitySpecification = withLocalFailureStage('identity_specification', () =>
+    createProductIdentitySpecification({
+      category: understanding.category,
+      sourceInventory: analyzedSourceInventory,
+      preservation: request.preservation,
+    }));
+  const fidelityConstraints = withLocalFailureStage(
+    'fidelity_constraints', () => compileProductFidelityConstraints(identitySpecification),
+  );
+  const plan = withLocalFailureStage('concept_planning', () => {
+    const planned = conceptPlanner.plan({
+      ...planningInput,
+      canonicalIdentity: identitySpecification,
+      fidelityConstraints,
+    });
+    if (planned.concepts.length !== EXPECTED_COUNT) throw new Error('INCOMPLETE_CONCEPT_PLAN');
+    if (planned.concepts.some((concept) =>
+      Object.hasOwn(concept, 'productIdentity') || Object.hasOwn(concept, 'canonicalIdentity'))) {
+      throw new Error('CONCEPT_MUST_NOT_OVERRIDE_CANONICAL_IDENTITY');
+    }
+    return planned;
   });
-  const fidelityConstraints = compileProductFidelityConstraints(identitySpecification);
-  const plan = conceptPlanner.plan({
-    ...planningInput,
-    canonicalIdentity: identitySpecification,
-    fidelityConstraints,
-  });
-  if (plan.concepts.length !== EXPECTED_COUNT) {
-    throw new Error('INCOMPLETE_CONCEPT_PLAN');
-  }
-  if (plan.concepts.some((concept) =>
-    Object.hasOwn(concept, 'productIdentity') || Object.hasOwn(concept, 'canonicalIdentity'))) {
-    throw new Error('CONCEPT_MUST_NOT_OVERRIDE_CANONICAL_IDENTITY');
-  }
-  const fidelityPolicy = createProductFidelityPolicy({
-    category: plan.understanding.category,
-    constraints: fidelityConstraints,
-  });
-  const prompts = plan.concepts.map((concept) => promptBuilder.build({
-    prompt: request.prompt,
-    preservation: request.preservation,
-    artisticDirection: request.parameters?.common?.artisticDirection,
-    plan,
-    concept,
-    identitySpecification,
-    fidelityPolicy,
-    fidelityConstraints,
-  }));
-  plan.concepts.forEach((concept, index) => {
+  const fidelityPolicy = withLocalFailureStage('fidelity_policy', () =>
+    createProductFidelityPolicy({
+      category: plan.understanding.category,
+      constraints: fidelityConstraints,
+    }));
+  const prompts = withLocalFailureStage('prompt_build', () =>
+    plan.concepts.map((concept) => promptBuilder.build({
+      prompt: request.prompt,
+      preservation: request.preservation,
+      artisticDirection: request.parameters?.common?.artisticDirection,
+      plan,
+      concept,
+      identitySpecification,
+      fidelityPolicy,
+      fidelityConstraints,
+    })));
+  withLocalFailureStage('creative_director_logging', () => plan.concepts.forEach((concept, index) => {
     creativeDirectorLogger?.info?.([
       `[CreativeDirector] Proposal ${index + 1}`,
       `concept: ${concept.name}`,
@@ -184,7 +203,7 @@ export async function generateProductPhotoBatch({
       `lighting: ${concept.lighting}`,
       `finalPrompt: ${prompts[index]}`,
     ].join('\n'));
-  });
+  }));
 
   const buildPromptInput = (variationIndex) => ({
     prompt: request.prompt,
@@ -278,17 +297,19 @@ export async function generateProductPhotoBatch({
       else failures.push({ proposalIndex, error: entry.reason });
     });
   }
-  const successfulResults = results.filter((result) => result?.imageBase64);
-  if (failures.length > 0 || successfulResults.length !== EXPECTED_COUNT) {
-    throw new ImageTransformBatchError({ successfulResults, failures });
-  }
-  return {
-    id: randomUUID(),
-    expectedCount: EXPECTED_COUNT,
-    status: 'completed',
-    imagesBase64: results.map((result) => result.imageBase64),
-    variationStrategy: 'adaptive-product-photo-concept-planning-v2',
-    quality: request.quality,
-    preservationSupport: 'best_effort',
-  };
+  return withLocalFailureStage('batch_finalize', () => {
+    const successfulResults = results.filter((result) => result?.imageBase64);
+    if (failures.length > 0 || successfulResults.length !== EXPECTED_COUNT) {
+      throw new ImageTransformBatchError({ successfulResults, failures });
+    }
+    return {
+      id: randomUUID(),
+      expectedCount: EXPECTED_COUNT,
+      status: 'completed',
+      imagesBase64: results.map((result) => result.imageBase64),
+      variationStrategy: 'adaptive-product-photo-concept-planning-v2',
+      quality: request.quality,
+      preservationSupport: 'best_effort',
+    };
+  });
 }

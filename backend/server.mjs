@@ -12,6 +12,8 @@ import { ImageToImageProviderError } from './image-to-image/image-to-image-provi
 import {
   categorizeImageToImageError,
   createSanitizedImageToImageTelemetry,
+  sanitizeLocalErrorType,
+  sanitizeLocalFailureStage,
   sanitizeProviderErrorCode,
 } from './image-to-image/sanitized-error-telemetry.mjs';
 import {
@@ -235,7 +237,7 @@ export function createServer({
       const recordTransformError = ({
         status, code, validation = false, category, providerErrorType,
         invalidFields, upstreamMessage, upstreamRequestId, proposalIndex, retryAttempt,
-        errorOrigin, failurePhase, upstreamStatusHttp,
+        errorOrigin, failurePhase, localErrorType, localFailureStage, upstreamStatusHttp,
       }) => {
         const sanitizedCode = validation
           ? String(code ?? 'INVALID_INPUT').slice(0, 64)
@@ -261,6 +263,8 @@ export function createServer({
           retryAttempt,
           errorOrigin,
           failurePhase,
+          localErrorType,
+          localFailureStage,
           upstreamStatusHttp,
           startedAt,
         });
@@ -359,6 +363,8 @@ export function createServer({
           code: 'UPSTREAM_ERROR',
           errorOrigin: 'local_pipeline',
           failurePhase: 'local_pipeline',
+          localErrorType: sanitizeLocalErrorType(error),
+          localFailureStage: sanitizeLocalFailureStage(error?.localFailureStage),
           upstreamStatusHttp: null,
         });
         return sendJson(response, 500, { error: 'Não foi possível transformar a imagem.' }, corsOrigin);
