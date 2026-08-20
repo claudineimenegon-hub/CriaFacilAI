@@ -5,6 +5,12 @@ import { createProductIdentitySpecification } from './product-identity-spec.mjs'
 import { createProductFidelityPolicy } from './product-fidelity-policy.mjs';
 import { compileProductFidelityConstraints } from './product-fidelity-constraints.mjs';
 import {
+  inspectProductFidelitySafely,
+  ProductFidelityGuardFailureError,
+  UnknownProductFidelityGuard,
+} from './product-fidelity-guard.mjs';
+import { buildProductFidelityRepairBlock } from './product-fidelity-repair.mjs';
+import {
   UnknownProductIdentityAnalyzer,
   unknownProductIdentityAnalysis,
   validateProductIdentityAnalysis,
@@ -63,6 +69,7 @@ export async function generateProductPhotoBatch({
   promptBuilder = new ProductPhotoPromptBuilder(),
   conceptPlanner = new ProductPhotoConceptPlanner(),
   productIdentityAnalyzer = new UnknownProductIdentityAnalyzer(),
+  productFidelityGuard = new UnknownProductFidelityGuard(),
   creativeDirectorLogger = defaultCreativeDirectorLogger,
 }) {
   const inputs = [];
@@ -207,23 +214,57 @@ export async function generateProductPhotoBatch({
       output,
       proposalIndex: variationIndex + 1,
     };
-    try {
-      return await provider.generate({
-        ...commonRequest,
-        prompt: prompts[variationIndex],
-        retryAttempt: 0,
+    const generateWithProviderRetry = async ({ prompt, repairBlock = '', repairAttempt }) => {
+      try {
+        return await provider.generate({
+          ...commonRequest,
+          prompt,
+          retryAttempt: 0,
+          repairAttempt,
+        });
+      } catch (error) {
+        if (!isRetryableContentPolicy(error)) throw error;
+        const neutralPrompt = promptBuilder.buildSafetyNeutralRetry(
+          buildPromptInput(variationIndex),
+        );
+        return provider.generate({
+          ...commonRequest,
+          prompt: repairBlock ? `${neutralPrompt}\n${repairBlock}` : neutralPrompt,
+          retryAttempt: 1,
+          repairAttempt,
+        });
+      }
+    };
+    const inspect = (generatedImage, guardAttempt, repairAttempt) =>
+      inspectProductFidelitySafely(productFidelityGuard, {
+        sourceInputs: inputs,
+        generatedImage,
+        canonicalIdentity: identitySpecification,
+        fidelityConstraints,
+        visibilityIntent: plan.concepts[variationIndex].visibilityIntent,
+        proposalIndex: variationIndex + 1,
+        guardAttempt,
+        repairAttempt,
       });
-    } catch (error) {
-      if (!isRetryableContentPolicy(error)) throw error;
-      const retryPrompt = promptBuilder.buildSafetyNeutralRetry(
-        buildPromptInput(variationIndex),
-      );
-      return provider.generate({
-        ...commonRequest,
-        prompt: retryPrompt,
-        retryAttempt: 1,
-      });
-    }
+
+    const initial = await generateWithProviderRetry({
+      prompt: prompts[variationIndex], repairAttempt: 0,
+    });
+    const firstGuard = await inspect(initial, 0, 0);
+    if (firstGuard.verdict !== 'fail') return initial;
+
+    const repairBlock = buildProductFidelityRepairBlock(firstGuard);
+    const repaired = await generateWithProviderRetry({
+      prompt: `${prompts[variationIndex]}\n${repairBlock}`,
+      repairBlock,
+      repairAttempt: 1,
+    });
+    const secondGuard = await inspect(repaired, 1, 1);
+    if (secondGuard.verdict !== 'fail') return repaired;
+    throw new ProductFidelityGuardFailureError({
+      proposalIndex: variationIndex + 1,
+      result: secondGuard,
+    });
   };
 
   const results = Array(EXPECTED_COUNT);

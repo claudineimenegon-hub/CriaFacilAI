@@ -7,6 +7,7 @@ import {
 } from './assets/temporary-asset-store.mjs';
 import { createImageToImageProvider } from './image-to-image/index.mjs';
 import { createProductIdentityAnalyzer } from './image-to-image/product-identity-analyzer-factory.mjs';
+import { createProductFidelityGuard } from './image-to-image/product-fidelity-guard-factory.mjs';
 import { ImageToImageProviderError } from './image-to-image/image-to-image-provider.mjs';
 import {
   categorizeImageToImageError,
@@ -179,6 +180,7 @@ export function createServer({
   assetStore = createTemporaryAssetStore(),
   imageToImageTelemetry = createSanitizedImageToImageTelemetry(),
   productIdentityAnalyzer = createProductIdentityAnalyzer(),
+  productFidelityGuard = createProductFidelityGuard(),
 } = {}) {
   return http.createServer(async (request, response) => {
     const origin = request.headers.origin;
@@ -280,6 +282,7 @@ export function createServer({
           assetStore,
           request: transformRequest,
           productIdentityAnalyzer,
+          productFidelityGuard,
         });
         recordTransformPhase('completed', 200);
         return sendJson(response, 200, { batch }, corsOrigin);

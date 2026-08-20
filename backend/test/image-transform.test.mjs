@@ -318,3 +318,140 @@ test('MIME armazenado inválido é rejeitado antes do provedor', async () => {
   );
   assert.equal(called, false);
 });
+
+function knownAnalyzer() {
+  return {
+    analyze: async () => ({
+      state: 'known',
+      items: [{
+        id: 'item-1', functionalType: { state: 'known', value: 'bottle' },
+        quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+        observedFeatures: [], ambiguousFeatures: [],
+      }],
+      relationships: [],
+    }),
+  };
+}
+
+test('Fidelity Guard PASS e UNCERTAIN não regeneram', async (t) => {
+  for (const verdict of ['pass', 'uncertain']) {
+    await t.test(verdict, async () => {
+      let providerCalls = 0;
+      let guardCalls = 0;
+      const batch = await generateProductPhotoBatch({
+        provider: { generate: async () => {
+          providerCalls += 1;
+          return { imageBase64, mimeType: 'image/png' };
+        } },
+        productFidelityGuard: { inspect: async () => {
+          guardCalls += 1;
+          return { verdict, violations: [] };
+        } },
+        productIdentityAnalyzer: knownAnalyzer(),
+        assetStore: assetStore(), request: request(), creativeDirectorLogger: undefined,
+      });
+      assert.equal(batch.imagesBase64.length, 4);
+      assert.equal(providerCalls, 4);
+      assert.equal(guardCalls, 4);
+    });
+  }
+});
+
+test('FAIL high regenera somente a proposal, preserva fonte, seed, dimensões e fatos', async () => {
+  const providerCalls = [];
+  const guardCalls = [];
+  const guardAttempts = new Map();
+  const provider = { generate: async (entry) => {
+    providerCalls.push(entry);
+    return { imageBase64: `${imageBase64}${entry.proposalIndex}${entry.repairAttempt}`, mimeType: 'image/png' };
+  } };
+  const guard = { inspect: async (entry) => {
+    guardCalls.push(entry);
+    const attempt = guardAttempts.get(entry.proposalIndex) ?? 0;
+    guardAttempts.set(entry.proposalIndex, attempt + 1);
+    return entry.proposalIndex === 2 && attempt === 0
+      ? { verdict: 'fail', violations: [{ code: 'unexpected_item', itemId: null, confidence: 'high' }] }
+      : { verdict: 'pass', violations: [] };
+  } };
+  const batch = await generateProductPhotoBatch({
+    provider, productFidelityGuard: guard, productIdentityAnalyzer: knownAnalyzer(),
+    assetStore: assetStore(), request: request(), creativeDirectorLogger: undefined,
+  });
+  const proposalTwo = providerCalls.filter(({ proposalIndex }) => proposalIndex === 2);
+  const proposalTwoGuards = guardCalls.filter(({ proposalIndex }) => proposalIndex === 2);
+
+  assert.equal(batch.imagesBase64.length, 4);
+  assert.equal(providerCalls.length, 5);
+  assert.equal(proposalTwo.length, 2);
+  assert.deepEqual(proposalTwo.map(({ repairAttempt }) => repairAttempt), [0, 1]);
+  assert.deepEqual(proposalTwo.map(({ retryAttempt }) => retryAttempt), [0, 0]);
+  assert.equal(proposalTwo[0].parameters.provider.seed, proposalTwo[1].parameters.provider.seed);
+  assert.deepEqual(proposalTwo[0].output, proposalTwo[1].output);
+  assert.strictEqual(proposalTwo[0].inputs, proposalTwo[1].inputs);
+  assert.match(proposalTwo[1].prompt, /FIDELITY REPAIR|Remove every product-like object/);
+  assert.deepEqual(proposalTwoGuards.map(({ guardAttempt }) => guardAttempt), [0, 1]);
+  assert.deepEqual(proposalTwoGuards.map(({ repairAttempt }) => repairAttempt), [0, 1]);
+  assert.strictEqual(proposalTwoGuards[0].canonicalIdentity, proposalTwoGuards[1].canonicalIdentity);
+  assert.strictEqual(proposalTwoGuards[0].fidelityConstraints, proposalTwoGuards[1].fidelityConstraints);
+  assert.strictEqual(proposalTwoGuards[0].visibilityIntent, proposalTwoGuards[1].visibilityIntent);
+  assert.strictEqual(proposalTwoGuards[0].sourceInputs, proposalTwoGuards[1].sourceInputs);
+  assert.notStrictEqual(proposalTwoGuards[1].generatedImage, proposalTwoGuards[0].generatedImage);
+});
+
+test('segundo FAIL encerra a proposal sem terceiro ciclo e preserva successes', async () => {
+  const providerCalls = [];
+  const guardCalls = [];
+  await assert.rejects(generateProductPhotoBatch({
+    provider: { generate: async (entry) => {
+      providerCalls.push(entry);
+      return { imageBase64, mimeType: 'image/png' };
+    } },
+    productFidelityGuard: { inspect: async (entry) => {
+      guardCalls.push(entry);
+      return entry.proposalIndex === 4
+        ? { verdict: 'fail', violations: [{ code: 'count_mismatch', itemId: 'item-1', confidence: 'high' }] }
+        : { verdict: 'pass', violations: [] };
+    } },
+    productIdentityAnalyzer: knownAnalyzer(), assetStore: assetStore(),
+    request: request(), creativeDirectorLogger: undefined,
+  }), (error) => {
+    assert.ok(error instanceof ImageTransformBatchError);
+    assert.equal(error.successfulResults.length, 3);
+    assert.equal(error.failures[0].proposalIndex, 4);
+    assert.equal(error.failures[0].error.code, 'PRODUCT_FIDELITY_GUARD_REJECTED');
+    return true;
+  });
+  assert.equal(providerCalls.filter(({ proposalIndex }) => proposalIndex === 4).length, 2);
+  assert.equal(guardCalls.filter(({ proposalIndex }) => proposalIndex === 4).length, 2);
+  assert.equal(providerCalls.filter(({ proposalIndex }) => proposalIndex !== 4).length, 3);
+});
+
+test('content-policy retry e fidelity repair mantêm contadores independentes', async () => {
+  const calls = [];
+  let firstGuard = true;
+  const batch = await generateProductPhotoBatch({
+    provider: { generate: async (entry) => {
+      calls.push(entry);
+      if (entry.proposalIndex === 2 && entry.repairAttempt === 0 && entry.retryAttempt === 0) {
+        throw policyError();
+      }
+      return { imageBase64, mimeType: 'image/png' };
+    } },
+    productFidelityGuard: { inspect: async (entry) => {
+      if (entry.proposalIndex === 2 && firstGuard) {
+        firstGuard = false;
+        return { verdict: 'fail', violations: [{ code: 'count_mismatch', itemId: 'item-1', confidence: 'high' }] };
+      }
+      return { verdict: 'pass', violations: [] };
+    } },
+    productIdentityAnalyzer: knownAnalyzer(), assetStore: assetStore(),
+    request: request(), creativeDirectorLogger: undefined,
+  });
+  assert.equal(batch.imagesBase64.length, 4);
+  assert.deepEqual(calls.filter(({ proposalIndex }) => proposalIndex === 2)
+    .map(({ retryAttempt, repairAttempt }) => ({ retryAttempt, repairAttempt })), [
+    { retryAttempt: 0, repairAttempt: 0 },
+    { retryAttempt: 1, repairAttempt: 0 },
+    { retryAttempt: 0, repairAttempt: 1 },
+  ]);
+});
