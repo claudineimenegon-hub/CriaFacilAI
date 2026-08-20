@@ -357,6 +357,73 @@ test('Fidelity Guard PASS e UNCERTAIN não regeneram', async (t) => {
   }
 });
 
+test('fallback técnico repete somente a inspeção uma vez e mantém geração imutável', async () => {
+  const providerCalls = [];
+  const guardCalls = [];
+  const batch = await generateProductPhotoBatch({
+    provider: { generate: async (entry) => {
+      providerCalls.push(entry);
+      return { imageBase64, mimeType: 'image/png' };
+    } },
+    productFidelityGuard: { inspect: async (entry) => {
+      guardCalls.push(entry);
+      return {
+        verdict: 'uncertain', violations: [], fallback: true,
+        fallbackReason: 'invalid_guard_result', validationReason: 'invalid_item_id',
+      };
+    } },
+    productIdentityAnalyzer: knownAnalyzer(), assetStore: assetStore(),
+    request: request(), creativeDirectorLogger: undefined,
+  });
+  assert.equal(batch.imagesBase64.length, 4);
+  assert.equal(providerCalls.length, 4);
+  assert.equal(guardCalls.length, 8);
+  for (let proposalIndex = 1; proposalIndex <= 4; proposalIndex += 1) {
+    const inspections = guardCalls.filter((entry) => entry.proposalIndex === proposalIndex);
+    assert.deepEqual(inspections.map(({ inspectionRetryAttempt }) => inspectionRetryAttempt), [0, 1]);
+    assert.deepEqual(inspections.map(({ guardAttempt }) => guardAttempt), [0, 0]);
+    assert.strictEqual(inspections[0].generatedImage, inspections[1].generatedImage);
+    assert.strictEqual(inspections[0].canonicalIdentity, inspections[1].canonicalIdentity);
+    assert.strictEqual(inspections[0].visibilityIntent, inspections[1].visibilityIntent);
+    assert.equal(providerCalls.find((entry) => entry.proposalIndex === proposalIndex).repairAttempt, 0);
+  }
+});
+
+test('FAIL após retry técnico segue repair e Guard pós-repair também limita retry', async () => {
+  const providerCalls = [];
+  const guardCalls = [];
+  const counters = new Map();
+  const batch = await generateProductPhotoBatch({
+    provider: { generate: async (entry) => {
+      providerCalls.push(entry);
+      return { imageBase64: `${imageBase64}${entry.repairAttempt}`, mimeType: 'image/png' };
+    } },
+    productFidelityGuard: { inspect: async (entry) => {
+      guardCalls.push(entry);
+      if (entry.proposalIndex !== 2) return { verdict: 'pass', violations: [] };
+      const key = `${entry.repairAttempt}:${entry.inspectionRetryAttempt}`;
+      counters.set(key, (counters.get(key) ?? 0) + 1);
+      if (entry.repairAttempt === 0 && entry.inspectionRetryAttempt === 1) {
+        return { verdict: 'fail', violations: [{ code: 'unexpected_item', itemId: null, confidence: 'high' }] };
+      }
+      return { verdict: 'uncertain', violations: [], fallback: true, fallbackReason: 'invalid_result_json' };
+    } },
+    productIdentityAnalyzer: knownAnalyzer(), assetStore: assetStore(),
+    request: request(), creativeDirectorLogger: undefined,
+  });
+  assert.equal(batch.imagesBase64.length, 4);
+  assert.equal(providerCalls.filter(({ proposalIndex }) => proposalIndex === 2).length, 2);
+  assert.deepEqual(guardCalls.filter(({ proposalIndex }) => proposalIndex === 2)
+    .map(({ guardAttempt, repairAttempt, inspectionRetryAttempt }) => ({
+      guardAttempt, repairAttempt, inspectionRetryAttempt,
+    })), [
+    { guardAttempt: 0, repairAttempt: 0, inspectionRetryAttempt: 0 },
+    { guardAttempt: 0, repairAttempt: 0, inspectionRetryAttempt: 1 },
+    { guardAttempt: 1, repairAttempt: 1, inspectionRetryAttempt: 0 },
+    { guardAttempt: 1, repairAttempt: 1, inspectionRetryAttempt: 1 },
+  ]);
+});
+
 test('FAIL high regenera somente a proposal, preserva fonte, seed, dimensões e fatos', async () => {
   const providerCalls = [];
   const guardCalls = [];

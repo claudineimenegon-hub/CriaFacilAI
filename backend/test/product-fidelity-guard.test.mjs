@@ -32,7 +32,8 @@ const validViolations = [
 test('valida PASS, FAIL e UNCERTAIN conservadores', () => {
   const canonical = identity();
   assert.deepEqual(validateProductFidelityGuardResult({ verdict: 'pass', violations: [] }, canonical), {
-    verdict: 'pass', violations: [],
+    verdict: 'pass', violations: [], fallback: false, fallbackReason: null,
+    validationReason: null, verificationStatus: 'verified',
   });
   assert.equal(validateProductFidelityGuardResult({
     verdict: 'fail', violations: validViolations,
@@ -131,7 +132,35 @@ test('falha técnica do Guard vira UNCERTAIN sem regeneração implícita', asyn
   const result = await inspectProductFidelitySafely({ inspect: async () => { throw new Error('technical'); } }, {
     canonicalIdentity: identity(),
   });
-  assert.deepEqual(result, { verdict: 'uncertain', violations: [] });
+  assert.deepEqual(result, {
+    verdict: 'uncertain', violations: [], fallback: true,
+    fallbackReason: 'invalid_guard_result', validationReason: null,
+    verificationStatus: 'technical_fallback',
+  });
+});
+
+test('normaliza apenas caixa/espaço inequívocos e classifica rejeições locais', () => {
+  const canonical = identity();
+  const normalized = validateProductFidelityGuardResult({
+    verdict: ' FAIL ',
+    violations: [{ code: ' TYPE_MISMATCH ', itemId: ' ring ', confidence: ' HIGH ' }],
+  }, canonical, {
+    fidelityConstraints: compileProductFidelityConstraints(canonical),
+    visibilityExpectation: { requiredVisibleItems: [{ itemId: 'ring', quantity: 1, quantityState: 'known' }] },
+  });
+  assert.equal(normalized.verdict, 'fail');
+  assert.deepEqual(normalized.violations[0], {
+    code: 'type_mismatch', itemId: 'ring', confidence: 'high',
+  });
+  for (const [value, reason] of [
+    [{ verdict: 'fail', violations: [{ code: 'type_mismatch', itemId: 'missing', confidence: 'high' }] }, 'invalid_item_id'],
+    [{ verdict: 'fail', violations: [{ code: 'type_mismatch', itemId: null, confidence: 'high' }] }, 'null_item_id_not_allowed'],
+    [{ verdict: 'pass', violations: validViolations }, 'invalid_verdict_violation_combination'],
+    [{ verdict: 'fail', violations: [{ code: 'count_mismatch', itemId: 'ring', confidence: 'medium' }] }, 'invalid_confidence_combination'],
+  ]) {
+    assert.throws(() => validateProductFidelityGuardResult(value, canonical),
+      (error) => error.validationReason === reason);
+  }
 });
 
 test('não aceita FAIL de material, relação ou escala sem evidência aplicável', async () => {

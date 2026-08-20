@@ -31,14 +31,18 @@ export class ProductFidelityGuardFailureError extends Error {
   }
 }
 
-function fail(message) {
-  throw new ProductFidelityGuardValidationError(message);
+function fail(message, validationReason = 'invalid_result_shape') {
+  const error = new ProductFidelityGuardValidationError(message);
+  error.validationReason = validationReason;
+  throw error;
 }
 
 function assertPlainObject(value, path, keys) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${path} must be an object.`);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    fail(`${path} must be an object.`, 'invalid_result_shape');
+  }
   const unexpected = Object.keys(value).find((key) => !keys.includes(key));
-  if (unexpected) fail(`${path}.${unexpected} is not allowed.`);
+  if (unexpected) fail(`${path}.${unexpected} is not allowed.`, 'extra_property');
 }
 
 function assertApplicableViolation(violation, context, path) {
@@ -49,30 +53,45 @@ function assertApplicableViolation(violation, context, path) {
   const requiredItem = (expectation.requiredVisibleItems ?? [])
     .find(({ itemId }) => itemId === violation.itemId);
   if (violation.code === 'type_mismatch' && itemLock?.functionalType?.state !== 'known') {
-    fail(`${path}.code is not applicable without a known type.`);
+    fail(`${path}.code is not applicable without a known type.`, 'violation_not_applicable');
   }
   if (violation.code === 'count_mismatch' &&
       (!requiredItem || requiredItem.quantityState !== 'known' || !Number.isInteger(requiredItem.quantity))) {
-    fail(`${path}.code is not applicable without a known required quantity.`);
+    fail(`${path}.code is not applicable without a known required quantity.`, 'violation_not_applicable');
   }
   if (violation.code === 'relationship_violation' &&
       (expectation.relationshipRequirements ?? []).length === 0) {
-    fail(`${path}.code is not applicable without a known required relationship.`);
+    fail(`${path}.code is not applicable without a known required relationship.`, 'violation_not_applicable');
   }
   if (violation.code === 'unexpected_item' && expectation.forbiddenNonCanonicalItems !== true) {
-    fail(`${path}.code is not applicable to unknown inventory.`);
+    fail(`${path}.code is not applicable to unknown inventory.`, 'violation_not_applicable');
   }
   if (violation.code === 'structural_mutation' &&
       constraints.globalLocks?.crossItemMutationForbidden !== true) {
-    fail(`${path}.code is not applicable without a structural lock.`);
+    fail(`${path}.code is not applicable without a structural lock.`, 'violation_not_applicable');
   }
   if (violation.code === 'contextual_scale' && expectation.visibilityStrictness !== 'contextual') {
-    fail(`${path}.code is not applicable without contextual scale evidence.`);
+    fail(`${path}.code is not applicable without contextual scale evidence.`, 'violation_not_applicable');
   }
   if (violation.code === 'material_appearance' &&
       !(constraints.materialAppearance ?? []).some(({ itemId }) => itemId === violation.itemId)) {
-    fail(`${path}.code is not applicable without observed material evidence.`);
+    fail(`${path}.code is not applicable without observed material evidence.`, 'violation_not_applicable');
   }
+}
+
+function normalizedEnum(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : value;
+}
+
+function verifiedResult(verdict, violations) {
+  return Object.freeze({
+    verdict,
+    violations,
+    fallback: false,
+    fallbackReason: null,
+    validationReason: null,
+    verificationStatus: verdict === 'uncertain' ? 'model_uncertain' : 'verified',
+  });
 }
 
 export function validateProductFidelityGuardResult(value, canonicalIdentity, context) {
@@ -82,35 +101,47 @@ export function validateProductFidelityGuardResult(value, canonicalIdentity, con
   } catch {
     fail('Guard result must be JSON serializable.');
   }
-  if (bytes > MAX_RESULT_BYTES) fail('Guard result exceeds the safe limit.');
+  if (bytes > MAX_RESULT_BYTES) fail('Guard result exceeds the safe limit.', 'response_size_limit');
   assertPlainObject(value, 'guardResult', ['verdict', 'violations']);
-  if (!verdicts.has(value.verdict)) fail('guardResult.verdict is invalid.');
+  const verdict = normalizedEnum(value.verdict);
+  if (!verdicts.has(verdict)) fail('guardResult.verdict is invalid.', 'invalid_verdict');
   if (!Array.isArray(value.violations) || value.violations.length > MAX_VIOLATIONS) {
-    fail('guardResult.violations is invalid.');
+    fail('guardResult.violations is invalid.', 'invalid_result_shape');
   }
   const itemIds = new Set((canonicalIdentity?.sourceInventory?.items ?? []).map(({ id }) => id));
   const violations = Object.freeze(value.violations.map((violation, index) => {
     const path = `guardResult.violations[${index}]`;
     assertPlainObject(violation, path, ['code', 'itemId', 'confidence']);
-    if (!violationCodes.has(violation.code)) fail(`${path}.code is invalid.`);
-    if (!confidenceValues.has(violation.confidence)) fail(`${path}.confidence is invalid.`);
-    if (violation.itemId !== null &&
-        (typeof violation.itemId !== 'string' || !itemIds.has(violation.itemId))) {
-      fail(`${path}.itemId is invalid.`);
+    const code = normalizedEnum(violation.code);
+    const confidence = normalizedEnum(violation.confidence);
+    const itemId = typeof violation.itemId === 'string' ? violation.itemId.trim() : violation.itemId;
+    if (!violationCodes.has(code)) fail(`${path}.code is invalid.`, 'invalid_violation_code');
+    if (!confidenceValues.has(confidence)) fail(`${path}.confidence is invalid.`, 'invalid_confidence');
+    if (itemId === null && code !== 'unexpected_item') {
+      fail(`${path}.itemId cannot be null for this violation.`, 'null_item_id_not_allowed');
+    }
+    if (itemId !== null && (typeof itemId !== 'string' || !itemIds.has(itemId))) {
+      fail(`${path}.itemId is invalid.`, 'invalid_item_id');
     }
     const normalized = Object.freeze({
-      code: violation.code,
-      itemId: violation.itemId,
-      confidence: violation.confidence,
+      code,
+      itemId,
+      confidence,
     });
     assertApplicableViolation(normalized, context, path);
     return normalized;
   }));
   const hasHigh = violations.some(({ confidence }) => confidence === 'high');
-  if (value.verdict === 'pass' && violations.length > 0) fail('PASS cannot contain violations.');
-  if (value.verdict === 'fail' && !hasHigh) fail('FAIL requires a high-confidence violation.');
-  if (value.verdict === 'uncertain' && hasHigh) fail('UNCERTAIN cannot contain high-confidence violations.');
-  return Object.freeze({ verdict: value.verdict, violations });
+  if (verdict === 'pass' && violations.length > 0) {
+    fail('PASS cannot contain violations.', 'invalid_verdict_violation_combination');
+  }
+  if (verdict === 'fail' && !hasHigh) {
+    fail('FAIL requires a high-confidence violation.', 'invalid_confidence_combination');
+  }
+  if (verdict === 'uncertain' && hasHigh) {
+    fail('UNCERTAIN cannot contain high-confidence violations.', 'invalid_confidence_combination');
+  }
+  return verifiedResult(verdict, violations);
 }
 
 function selectedMap(visibilityIntent) {
@@ -160,19 +191,49 @@ export function compileVisibilityExpectation({
   });
 }
 
-export function uncertainProductFidelityResult() {
-  return Object.freeze({ verdict: 'uncertain', violations: Object.freeze([]) });
+export function uncertainProductFidelityResult({
+  fallback = false,
+  fallbackReason = null,
+  validationReason = null,
+  verificationStatus = fallback ? 'technical_fallback' : 'model_uncertain',
+} = {}) {
+  return Object.freeze({
+    verdict: 'uncertain',
+    violations: Object.freeze([]),
+    fallback,
+    fallbackReason,
+    validationReason,
+    verificationStatus,
+  });
 }
 
 export async function inspectProductFidelitySafely(guard, input) {
   try {
     const visibilityExpectation = compileVisibilityExpectation(input);
-    return validateProductFidelityGuardResult(await guard.inspect(input), input.canonicalIdentity, {
+    const inspected = await guard.inspect(input);
+    const validated = validateProductFidelityGuardResult({
+      verdict: inspected?.verdict,
+      violations: inspected?.violations,
+    }, input.canonicalIdentity, {
       fidelityConstraints: input.fidelityConstraints,
       visibilityExpectation,
     });
-  } catch {
-    return uncertainProductFidelityResult();
+    if (inspected?.fallback === true) {
+      return uncertainProductFidelityResult({
+        fallback: true,
+        fallbackReason: inspected.fallbackReason ?? 'unexpected_error',
+        validationReason: inspected.validationReason ?? null,
+        verificationStatus: input.inspectionRetryAttempt === 1
+          ? 'unverified' : 'technical_fallback',
+      });
+    }
+    return validated;
+  } catch (error) {
+    return uncertainProductFidelityResult({
+      fallback: true,
+      fallbackReason: 'invalid_guard_result',
+      validationReason: error?.validationReason ?? null,
+    });
   }
 }
 
@@ -184,7 +245,7 @@ export class ProductFidelityGuard {
 
 export class UnknownProductFidelityGuard extends ProductFidelityGuard {
   async inspect() {
-    return uncertainProductFidelityResult();
+    return uncertainProductFidelityResult({ fallback: true, fallbackReason: 'not_configured' });
   }
 }
 

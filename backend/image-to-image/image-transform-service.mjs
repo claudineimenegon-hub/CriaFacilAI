@@ -254,7 +254,7 @@ export async function generateProductPhotoBatch({
         });
       }
     };
-    const inspect = (generatedImage, guardAttempt, repairAttempt) =>
+    const inspect = (generatedImage, guardAttempt, repairAttempt, inspectionRetryAttempt = 0) =>
       inspectProductFidelitySafely(productFidelityGuard, {
         sourceInputs: inputs,
         generatedImage,
@@ -263,13 +263,20 @@ export async function generateProductPhotoBatch({
         visibilityIntent: plan.concepts[variationIndex].visibilityIntent,
         proposalIndex: variationIndex + 1,
         guardAttempt,
+        inspectionRetryAttempt,
         repairAttempt,
       });
+
+    const inspectWithTechnicalRetry = async (generatedImage, guardAttempt, repairAttempt) => {
+      const first = await inspect(generatedImage, guardAttempt, repairAttempt, 0);
+      if (!(first.verdict === 'uncertain' && first.fallback === true)) return first;
+      return inspect(generatedImage, guardAttempt, repairAttempt, 1);
+    };
 
     const initial = await generateWithProviderRetry({
       prompt: prompts[variationIndex], repairAttempt: 0,
     });
-    const firstGuard = await inspect(initial, 0, 0);
+    const firstGuard = await inspectWithTechnicalRetry(initial, 0, 0);
     if (firstGuard.verdict !== 'fail') return initial;
 
     const repairBlock = buildProductFidelityRepairBlock(firstGuard);
@@ -278,7 +285,7 @@ export async function generateProductPhotoBatch({
       repairBlock,
       repairAttempt: 1,
     });
-    const secondGuard = await inspect(repaired, 1, 1);
+    const secondGuard = await inspectWithTechnicalRetry(repaired, 1, 1);
     if (secondGuard.verdict !== 'fail') return repaired;
     throw new ProductFidelityGuardFailureError({
       proposalIndex: variationIndex + 1,

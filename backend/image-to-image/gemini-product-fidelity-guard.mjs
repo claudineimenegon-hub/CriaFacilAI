@@ -42,8 +42,29 @@ const instruction = [
   'Insufficient visual evidence, occlusion, crop, macro framing, uncertain relationships, unknown quantities, or unverifiable material/scale require uncertain rather than fail.',
   'Only a high-confidence contradiction of a known applicable expectation may be fail.',
   'Props, displays, pedestals, boxes, and scenery are not unexpected products unless clearly product-like and noncanonical.',
+  'Before deciding: (1) identify every product-like object in the generated image; (2) map each visible object to an exact canonical itemId when possible; (3) compare visible quantities with visibilityExpectation; (4) detect product-like objects that cannot map to canonical inventory; (5) compare every known functionalType; (6) verify required relationships.',
+  'Copy itemId exactly from canonicalItems. Never use a descriptive name or functionalType as itemId and never invent an ID. Use itemId null only for unexpected_item when a noncanonical object has no canonical ID.',
+  'A known canonical functionalType visibly appearing as another functional type is type_mismatch. Features or structures merged or transferred between canonical items are structural_mutation. A product-like object with no canonical match is unexpected_item. Applicable codes may coexist.',
+  'When visibilityStrictness is contextual and the generated image visibly places a product on or beside anatomy such as a finger, hand, ear, neck, foot, face, or body, use that anatomy as a valid scale reference even when the source image has no body. Clearly implausible oversizing or undersizing is high-confidence contextual_scale. Macro framing without reliable anatomy or environmental scale remains uncertain.',
+  'Allowed verdict values are pass, fail, uncertain. Allowed confidence values are high, medium, low. Allowed violation codes are type_mismatch, count_mismatch, relationship_violation, unexpected_item, structural_mutation, contextual_scale, material_appearance.',
   'Return only the requested JSON.',
 ].join(' ');
+
+function technicalResult(fallbackReason, validationReason, input) {
+  return uncertainProductFidelityResult({
+    fallback: true,
+    fallbackReason,
+    validationReason,
+    verificationStatus: input?.inspectionRetryAttempt === 1 ? 'unverified' : 'technical_fallback',
+  });
+}
+
+function taggedError(fallbackReason, validationReason) {
+  const error = new Error('PRODUCT_FIDELITY_GUARD_DIAGNOSTIC');
+  error.fallbackReason = fallbackReason;
+  error.validationReason = validationReason ?? null;
+  return error;
+}
 
 function responseText(payload) {
   const parts = payload?.candidates?.[0]?.content?.parts;
@@ -106,12 +127,18 @@ export class GeminiProductFidelityGuard extends ProductFidelityGuard {
     const startedAt = performance.now();
     let statusHttp = null;
     let fallback = true;
-    let result = uncertainProductFidelityResult();
+    let result = technicalResult('unexpected_error', null, input);
     try {
-      if (!this.isConfigured) throw new Error('PRODUCT_FIDELITY_GUARD_NOT_CONFIGURED');
+      if (!this.isConfigured) throw taggedError('not_configured');
       const visibilityExpectation = compileVisibilityExpectation(input);
-      const preparedSources = await this.prepareInputs(input.sourceInputs);
-      const preparedGenerated = await this.prepareInputs([generatedInput(input.generatedImage)]);
+      let preparedSources;
+      let preparedGenerated;
+      try {
+        preparedSources = await this.prepareInputs(input.sourceInputs);
+        preparedGenerated = await this.prepareInputs([generatedInput(input.generatedImage)]);
+      } catch {
+        throw taggedError('input_preparation');
+      }
       const facts = guardFacts({ ...input, visibilityExpectation });
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -145,22 +172,50 @@ export class GeminiProductFidelityGuard extends ProductFidelityGuard {
             signal: controller.signal,
           },
         );
+      } catch (error) {
+        throw taggedError(error?.name === 'AbortError' ? 'timeout' : 'network_error');
       } finally {
         clearTimeout(timeout);
       }
       statusHttp = response.status;
-      const raw = await response.text();
-      if (Buffer.byteLength(raw, 'utf8') > MAX_HTTP_RESPONSE_BYTES || !response.ok) {
-        throw new Error('PRODUCT_FIDELITY_GUARD_UPSTREAM_ERROR');
+      let raw;
+      try {
+        raw = await response.text();
+      } catch {
+        throw taggedError('response_read_error');
       }
-      const payload = JSON.parse(raw);
-      result = validateProductFidelityGuardResult(
-        JSON.parse(responseText(payload)), input.canonicalIdentity,
-        { fidelityConstraints: input.fidelityConstraints, visibilityExpectation },
-      );
+      if (Buffer.byteLength(raw, 'utf8') > MAX_HTTP_RESPONSE_BYTES) {
+        throw taggedError('response_too_large');
+      }
+      if (!response.ok) throw taggedError('upstream_http');
+      let payload;
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        throw taggedError('invalid_envelope_json');
+      }
+      const text = responseText(payload);
+      if (typeof text !== 'string') throw taggedError('missing_response_text');
+      let parsedResult;
+      try {
+        parsedResult = JSON.parse(text);
+      } catch {
+        throw taggedError('invalid_result_json');
+      }
+      try {
+        result = validateProductFidelityGuardResult(
+          parsedResult, input.canonicalIdentity,
+          { fidelityConstraints: input.fidelityConstraints, visibilityExpectation },
+        );
+      } catch (error) {
+        throw taggedError('invalid_guard_result', error?.validationReason);
+      }
       fallback = false;
       return result;
-    } catch {
+    } catch (error) {
+      result = technicalResult(
+        error?.fallbackReason ?? 'unexpected_error', error?.validationReason ?? null, input,
+      );
       return result;
     } finally {
       this.logger?.info?.({
@@ -169,12 +224,17 @@ export class GeminiProductFidelityGuard extends ProductFidelityGuard {
         model: this.model,
         proposalIndex: Number.isInteger(input.proposalIndex) ? input.proposalIndex : null,
         guardAttempt: Number.isInteger(input.guardAttempt) ? input.guardAttempt : 0,
+        inspectionRetryAttempt: Number.isInteger(input.inspectionRetryAttempt)
+          ? input.inspectionRetryAttempt : 0,
         verdict: result.verdict,
         violationCodes: result.violations.map(({ code }) => code),
         repairAttempt: Number.isInteger(input.repairAttempt) ? input.repairAttempt : 0,
         statusHttp,
         latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-        fallback,
+        fallback: result.fallback ?? fallback,
+        fallbackReason: result.fallbackReason ?? null,
+        validationReason: result.validationReason ?? null,
+        verificationStatus: result.verificationStatus,
       });
     }
   }

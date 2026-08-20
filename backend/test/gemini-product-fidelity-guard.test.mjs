@@ -74,10 +74,50 @@ test('Gemini Guard envia duas classes de imagem e schema simples sem prompt cria
     GEMINI_PRODUCT_FIDELITY_GUARD_SCHEMA);
   assert.equal(parts.filter((part) => part.inlineData).length, 2);
   assert.match(parts[0].text, /Canonical identity is fact|FIDELITY FACTS/);
+  assert.match(parts[0].text, /identify every product-like object|Copy itemId exactly/);
+  assert.match(parts[0].text, /another functional type is type_mismatch|structural_mutation/);
+  assert.match(parts[0].text, /anatomy.*valid scale reference|contextual_scale/i);
   assert.doesNotMatch(parts[0].text, /finalPrompt|private creative prompt/);
   assert.deepEqual(logs[0].violationCodes, []);
   assert.equal(logs[0].fallback, false);
   assert.doesNotMatch(JSON.stringify(logs), /test-secret|base64|data:image|inlineData|prompt/i);
+});
+
+test('distingue model uncertain de fallbacks HTTP 200 sanitizados', async (t) => {
+  await t.test('model uncertain válido', async () => {
+    const guard = new GeminiProductFidelityGuard({
+      apiKey: 'test', prepareInputs: async (images) => images,
+      fetchImpl: async () => geminiResponse({ verdict: 'uncertain', violations: [] }),
+    });
+    const result = await guard.inspect(input());
+    assert.equal(result.fallback, false);
+    assert.equal(result.verificationStatus, 'model_uncertain');
+  });
+  for (const scenario of [
+    ['invalid_envelope_json', async () => new Response('{', { status: 200 })],
+    ['missing_response_text', async () => new Response(JSON.stringify({ candidates: [] }), { status: 200 })],
+    ['invalid_result_json', async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: '{' }] } }],
+    }), { status: 200 })],
+    ['invalid_guard_result', async () => geminiResponse({
+      verdict: 'fail', violations: [{ code: 'type_mismatch', itemId: 'invented', confidence: 'high' }],
+    })],
+  ]) {
+    await t.test(scenario[0], async () => {
+      const logs = [];
+      const guard = new GeminiProductFidelityGuard({
+        apiKey: 'test', prepareInputs: async (images) => images,
+        fetchImpl: scenario[1], logger: { info: (event) => logs.push(event) },
+      });
+      const result = await guard.inspect(input());
+      assert.equal(result.fallback, true);
+      assert.equal(result.fallbackReason, scenario[0]);
+      if (scenario[0] === 'invalid_guard_result') {
+        assert.equal(result.validationReason, 'invalid_item_id');
+      }
+      assert.doesNotMatch(JSON.stringify(logs), /inlineData|base64|test-secret|FIDELITY FACTS/i);
+    });
+  }
 });
 
 test('aceita somente violações objetivas simuladas e preserva high confidence', async () => {
