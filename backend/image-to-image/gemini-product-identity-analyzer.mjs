@@ -9,59 +9,74 @@ export const GEMINI_GENERATE_CONTENT_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_HTTP_RESPONSE_BYTES = 128 * 1024;
+const STATES = ['known', 'uncertain', 'unknown'];
+const COMPLETENESS_VALUES = ['complete', 'partial', 'unknown'];
+const VISIBILITY_VALUES = ['partial', 'hidden'];
+const TOKEN_CHARACTERS = 120;
 
-// The remote schema intentionally describes only the response shape. Strict
-// limits and invariants are enforced after parsing by validateProductIdentityAnalysis.
-const stateSchema = { type: 'string' };
-const nullableString = { type: ['string', 'null'] };
+// Keep the provider-facing shape aligned with the local validator. Cross-field
+// invariants (for example relationship membership) remain locally authoritative.
+const tokenString = { type: 'string', minLength: 1, maxLength: TOKEN_CHARACTERS };
+const optionalTokenString = { type: ['string', 'null'], maxLength: TOKEN_CHARACTERS };
+const stateSchema = { type: 'string', enum: STATES };
 const evidenceStringSchema = {
   type: 'object',
-  properties: { state: stateSchema, value: nullableString },
+  additionalProperties: false,
+  properties: { state: stateSchema, value: optionalTokenString },
   required: ['state', 'value'],
 };
 const evidenceQuantitySchema = {
   type: 'object',
+  additionalProperties: false,
   properties: {
     state: stateSchema,
-    value: { type: ['integer', 'null'] },
+    value: { type: ['integer', 'null'], minimum: 1, maximum: 1000 },
   },
   required: ['state', 'value'],
 };
 
 export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
   type: 'object',
+  additionalProperties: false,
   properties: {
     state: stateSchema,
     items: {
       type: 'array',
+      maxItems: 16,
       items: {
         type: 'object',
+        additionalProperties: false,
         properties: {
-          id: { type: 'string' },
+          id: tokenString,
           functionalType: evidenceStringSchema,
           quantity: evidenceQuantitySchema,
-          observationCompleteness: { type: 'string' },
+          observationCompleteness: { type: 'string', enum: COMPLETENESS_VALUES },
           observedFeatures: {
             type: 'array',
+            maxItems: 16,
             items: {
               type: 'object',
+              additionalProperties: false,
               properties: {
-                id: { type: 'string' }, name: { type: 'string' }, value: { type: 'string' },
+                id: tokenString, name: tokenString, value: tokenString,
               },
               required: ['name', 'value'],
             },
           },
           ambiguousFeatures: {
             type: 'array',
+            maxItems: 12,
             items: {
               type: 'object',
+              additionalProperties: false,
               properties: {
-                id: { type: 'string' }, name: { type: 'string' },
-                visibility: { type: 'string' },
-                observedConstraint: nullableString,
+                id: tokenString, name: tokenString,
+                visibility: { type: 'string', enum: VISIBILITY_VALUES },
+                observedConstraint: optionalTokenString,
                 plausibleHypotheses: {
                   type: 'array',
-                  items: { type: 'string' },
+                  maxItems: 4,
+                  items: tokenString,
                 },
               },
               required: [
@@ -78,11 +93,13 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
     },
     relationships: {
       type: 'array',
+      maxItems: 16,
       items: {
         type: 'object',
+        additionalProperties: false,
         properties: {
-          type: { type: 'string' },
-          memberIds: { type: 'array', items: { type: 'string' } },
+          type: tokenString,
+          memberIds: { type: 'array', minItems: 1, maxItems: 16, items: tokenString },
           state: stateSchema,
         },
         required: ['type', 'memberIds', 'state'],
@@ -124,6 +141,29 @@ function responseText(payload) {
   const parts = payload?.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts)) return undefined;
   return parts.find((part) => typeof part?.text === 'string')?.text;
+}
+
+function parseStructuredAnalysis(text) {
+  if (typeof text !== 'string') throw new SyntaxError('Missing structured output.');
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return JSON.parse(fenced ? fenced[1] : trimmed);
+}
+
+function validationDiagnostics(error) {
+  if (error?.code !== 'INVALID_PRODUCT_IDENTITY_ANALYSIS') return {};
+  const message = typeof error.message === 'string' ? error.message : '';
+  let validationReason = 'other_allowlisted_reason';
+  if (/is not allowed/.test(message)) validationReason = 'additional_property';
+  else if (/Item IDs must be unique/.test(message)) validationReason = 'duplicate_item_id';
+  else if (/references an unknown item|memberIds is invalid/.test(message)) {
+    validationReason = 'invalid_relationship';
+  } else if (/quantity.*integer|quantity.*value/.test(message)) validationReason = 'invalid_quantity';
+  else if (/state is invalid|observationCompleteness is invalid|visibility is invalid/.test(message)) {
+    validationReason = 'invalid_enum';
+  } else if (/unknown|Unknown analysis/.test(message)) validationReason = 'invalid_unknown_value';
+  else if (/must be|is required|is invalid/.test(message)) validationReason = 'invalid_structure';
+  return { validationStage: 'schema_validation', validationReason };
 }
 
 function safeDiagnosticText(value, maxLength = 240) {
@@ -271,7 +311,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
       let analysis;
       try {
         payload = JSON.parse(rawResponse);
-        analysis = JSON.parse(responseText(payload));
+        analysis = parseStructuredAnalysis(responseText(payload));
       } catch {
         throw new GeminiProductIdentityAnalyzerError(
           'GEMINI_INVALID_JSON', 'Product identity provider returned invalid JSON.',
@@ -305,6 +345,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
       normalizedError.provider = 'gemini';
       normalizedError.model = this.model;
       normalizedError.latencyMs = Math.max(0, Math.round(performance.now() - startedAt));
+      Object.assign(normalizedError, validationDiagnostics(normalizedError));
       terminalError = normalizedError;
       throw normalizedError;
     } finally {
@@ -322,6 +363,10 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         items: outcome.items ?? 0,
         relationships: outcome.relationships ?? 0,
         fallback: outcome.fallback,
+        ...(terminalError?.validationStage
+          ? { validationStage: terminalError.validationStage } : {}),
+        ...(terminalError?.validationReason
+          ? { validationReason: terminalError.validationReason } : {}),
         ...(terminalError?.upstreamMessage
           ? { upstreamMessage: terminalError.upstreamMessage } : {}),
         ...(terminalError?.upstreamStatus

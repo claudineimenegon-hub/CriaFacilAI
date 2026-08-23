@@ -155,7 +155,7 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   assert.deepEqual(Object.keys(body.generationConfig), ['responseFormat']);
 });
 
-test('schema remoto simplificado preserva cobertura semântica sem duplicar validações locais', () => {
+test('schema remoto preserva cobertura semântica e espelha restrições locais', () => {
   assert.deepEqual(semanticPropertyPaths(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA), [
     'items',
     'items[].ambiguousFeatures',
@@ -182,7 +182,86 @@ test('schema remoto simplificado preserva cobertura semântica sem duplicar vali
     'relationships[].type',
     'state',
   ]);
-  assert.deepEqual(collectRestrictionKeys(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA), []);
+  assert.deepEqual(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.state.enum,
+    ['known', 'uncertain', 'unknown']);
+  assert.equal(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.additionalProperties, false);
+  const item = GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.items.items;
+  assert.equal(item.additionalProperties, false);
+  assert.deepEqual(item.properties.observationCompleteness.enum,
+    ['complete', 'partial', 'unknown']);
+  assert.deepEqual(item.properties.ambiguousFeatures.items.properties.visibility.enum,
+    ['partial', 'hidden']);
+  assert.equal(item.properties.quantity.properties.value.type[0], 'integer');
+  assert.equal(item.properties.quantity.properties.value.minimum, 1);
+  assert.equal(item.properties.quantity.properties.value.maximum, 1000);
+  assert.equal(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.items.maxItems, 16);
+  assert.ok(collectRestrictionKeys(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA)
+    .includes('$.additionalProperties'));
+});
+
+test('aceita JSON estruturado cercado somente por code fence JSON', async () => {
+  const analysis = { state: 'known', items: [genericItem()], relationships: [] };
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => geminiResponse(null, {
+      rawText: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: `\`\`\`json\n${JSON.stringify(analysis)}\n\`\`\`` }] } }],
+      }),
+    }),
+  });
+  assert.equal((await analyzer.analyze(analyzerInput())).items.length, 1);
+});
+
+test('telemetria classifica validações locais sem incluir conteúdo da resposta', async (t) => {
+  const scenarios = [
+    {
+      name: 'quantidade inválida',
+      mutate: (analysis) => { analysis.items[0].quantity.value = 0; },
+      reason: 'invalid_quantity',
+    },
+    {
+      name: 'ID duplicado',
+      mutate: (analysis) => { analysis.items.push(genericItem()); },
+      reason: 'duplicate_item_id',
+    },
+    {
+      name: 'relacionamento inválido',
+      mutate: (analysis) => {
+        analysis.relationships.push({ type: 'set', memberIds: ['missing'], state: 'known' });
+      },
+      reason: 'invalid_relationship',
+    },
+    {
+      name: 'unknown com valor',
+      mutate: (analysis) => {
+        analysis.items[0].functionalType = { state: 'unknown', value: 'forbidden-value' };
+      },
+      reason: 'invalid_unknown_value',
+    },
+    {
+      name: 'campo extra',
+      mutate: (analysis) => { analysis.items[0].unexpected = 'private-response-content'; },
+      reason: 'additional_property',
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const analysis = { state: 'known', items: [genericItem()], relationships: [] };
+      scenario.mutate(analysis);
+      const events = [];
+      const analyzer = new GeminiProductIdentityAnalyzer({
+        apiKey,
+        fetchImpl: async () => geminiResponse(analysis),
+        logger: { info: (event) => events.push(event) },
+      });
+      await assert.rejects(analyzer.analyze(analyzerInput()), {
+        code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS',
+      });
+      assert.equal(events[0].validationStage, 'schema_validation');
+      assert.equal(events[0].validationReason, scenario.reason);
+      assert.doesNotMatch(JSON.stringify(events[0]), /forbidden-value|private-response-content/);
+    });
+  }
 });
 
 test('aceita structured output com múltiplos itens, relações e evidências', async () => {
