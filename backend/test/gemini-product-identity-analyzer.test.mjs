@@ -85,7 +85,8 @@ function collectRestrictionKeys(value, path = '$') {
   const restrictions = [];
   for (const [key, entry] of Object.entries(value)) {
     const entryPath = `${path}.${key}`;
-    if (['maxItems', 'minItems', 'minimum', 'maximum', 'additionalProperties', 'enum']
+    if (['maxItems', 'minItems', 'minLength', 'maxLength', 'minimum', 'maximum',
+      'additionalProperties', 'enum']
       .includes(key)) restrictions.push(entryPath);
     restrictions.push(...collectRestrictionKeys(entry, entryPath));
   }
@@ -155,7 +156,7 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   assert.deepEqual(Object.keys(body.generationConfig), ['responseFormat']);
 });
 
-test('schema remoto preserva cobertura semântica e espelha restrições locais', () => {
+test('schema remoto usa somente o subconjunto estrutural aceito pelo Gemini', () => {
   assert.deepEqual(semanticPropertyPaths(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA), [
     'items',
     'items[].ambiguousFeatures',
@@ -182,21 +183,20 @@ test('schema remoto preserva cobertura semântica e espelha restrições locais'
     'relationships[].type',
     'state',
   ]);
-  assert.deepEqual(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.state.enum,
-    ['known', 'uncertain', 'unknown']);
-  assert.equal(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.additionalProperties, false);
   const item = GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.items.items;
-  assert.equal(item.additionalProperties, false);
-  assert.deepEqual(item.properties.observationCompleteness.enum,
-    ['complete', 'partial', 'unknown']);
-  assert.deepEqual(item.properties.ambiguousFeatures.items.properties.visibility.enum,
-    ['partial', 'hidden']);
-  assert.equal(item.properties.quantity.properties.value.type[0], 'integer');
-  assert.equal(item.properties.quantity.properties.value.minimum, 1);
-  assert.equal(item.properties.quantity.properties.value.maximum, 1000);
-  assert.equal(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.items.maxItems, 16);
-  assert.ok(collectRestrictionKeys(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA)
-    .includes('$.additionalProperties'));
+  assert.deepEqual(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.required,
+    ['state', 'items', 'relationships']);
+  assert.deepEqual(item.required, [
+    'id', 'functionalType', 'quantity', 'observationCompleteness',
+    'observedFeatures', 'ambiguousFeatures',
+  ]);
+  assert.equal(item.properties.quantity.properties.value.type, 'integer');
+  assert.equal(item.properties.quantity.properties.value.nullable, true);
+  assert.equal(item.properties.functionalType.properties.value.type, 'string');
+  assert.equal(item.properties.functionalType.properties.value.nullable, true);
+  assert.deepEqual(collectRestrictionKeys(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA), []);
+  assert.doesNotMatch(JSON.stringify(GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA),
+    /"type":\s*\[/);
 });
 
 test('aceita JSON estruturado cercado somente por code fence JSON', async () => {
@@ -447,13 +447,18 @@ test('converte timeout, erro de rede e erro HTTP em erros sanitizados', async ()
   await assert.rejects(networkAnalyzer.analyze(analyzerInput()), (error) =>
     error.code === 'GEMINI_NETWORK_ERROR' && !error.message.includes('sensitive'));
 
+  let httpCalls = 0;
   const httpAnalyzer = new GeminiProductIdentityAnalyzer({
-    apiKey, fetchImpl: async () => geminiResponse(null, {
-      status: 429, rawText: 'upstream response with sensitive internals',
-    }),
+    apiKey, fetchImpl: async () => {
+      httpCalls += 1;
+      return geminiResponse(null, {
+        status: 400, rawText: 'upstream response with sensitive internals',
+      });
+    },
   });
   await assert.rejects(httpAnalyzer.analyze(analyzerInput()), (error) =>
     error.code === 'GEMINI_HTTP_ERROR' && !error.message.includes('sensitive'));
+  assert.equal(httpCalls, 1);
 });
 
 test('logging contém somente metadados sanitizados', async () => {

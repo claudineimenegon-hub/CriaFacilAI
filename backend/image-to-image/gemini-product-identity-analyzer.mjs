@@ -9,54 +9,42 @@ export const GEMINI_GENERATE_CONTENT_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_HTTP_RESPONSE_BYTES = 128 * 1024;
-const STATES = ['known', 'uncertain', 'unknown'];
-const COMPLETENESS_VALUES = ['complete', 'partial', 'unknown'];
-const VISIBILITY_VALUES = ['partial', 'hidden'];
-const TOKEN_CHARACTERS = 120;
-
-// Keep the provider-facing shape aligned with the local validator. Cross-field
-// invariants (for example relationship membership) remain locally authoritative.
-const tokenString = { type: 'string', minLength: 1, maxLength: TOKEN_CHARACTERS };
-const optionalTokenString = { type: ['string', 'null'], maxLength: TOKEN_CHARACTERS };
-const stateSchema = { type: 'string', enum: STATES };
+// The Gemini response schema intentionally contains only its supported structural
+// subset. All limits, enums and cross-field invariants remain locally authoritative.
+const tokenString = { type: 'string' };
+const optionalTokenString = { type: 'string', nullable: true };
+const stateSchema = { type: 'string' };
 const evidenceStringSchema = {
   type: 'object',
-  additionalProperties: false,
   properties: { state: stateSchema, value: optionalTokenString },
   required: ['state', 'value'],
 };
 const evidenceQuantitySchema = {
   type: 'object',
-  additionalProperties: false,
   properties: {
     state: stateSchema,
-    value: { type: ['integer', 'null'], minimum: 1, maximum: 1000 },
+    value: { type: 'integer', nullable: true },
   },
   required: ['state', 'value'],
 };
 
 export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
   type: 'object',
-  additionalProperties: false,
   properties: {
     state: stateSchema,
     items: {
       type: 'array',
-      maxItems: 16,
       items: {
         type: 'object',
-        additionalProperties: false,
         properties: {
           id: tokenString,
           functionalType: evidenceStringSchema,
           quantity: evidenceQuantitySchema,
-          observationCompleteness: { type: 'string', enum: COMPLETENESS_VALUES },
+          observationCompleteness: { type: 'string' },
           observedFeatures: {
             type: 'array',
-            maxItems: 16,
             items: {
               type: 'object',
-              additionalProperties: false,
               properties: {
                 id: tokenString, name: tokenString, value: tokenString,
               },
@@ -65,17 +53,14 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
           },
           ambiguousFeatures: {
             type: 'array',
-            maxItems: 12,
             items: {
               type: 'object',
-              additionalProperties: false,
               properties: {
                 id: tokenString, name: tokenString,
-                visibility: { type: 'string', enum: VISIBILITY_VALUES },
+                visibility: { type: 'string' },
                 observedConstraint: optionalTokenString,
                 plausibleHypotheses: {
                   type: 'array',
-                  maxItems: 4,
                   items: tokenString,
                 },
               },
@@ -93,13 +78,11 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
     },
     relationships: {
       type: 'array',
-      maxItems: 16,
       items: {
         type: 'object',
-        additionalProperties: false,
         properties: {
           type: tokenString,
-          memberIds: { type: 'array', minItems: 1, maxItems: 16, items: tokenString },
+          memberIds: { type: 'array', items: tokenString },
           state: stateSchema,
         },
         required: ['type', 'memberIds', 'state'],
