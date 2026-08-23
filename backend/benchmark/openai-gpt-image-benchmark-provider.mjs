@@ -32,6 +32,32 @@ function safeRequestId(value) {
   return /^[A-Za-z0-9_.:-]+$/.test(requestId) ? requestId : undefined;
 }
 
+const DNS_ERROR_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'EAI_NODATA']);
+const TLS_ERROR_CODES = new Set([
+  'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'ERR_SSL_PROTOCOL_ERROR',
+  'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+]);
+const CONNECTION_ERROR_CODES = new Set([
+  'ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETDOWN',
+  'ENETUNREACH', 'ENOTCONN', 'EPIPE', 'ETIMEDOUT',
+]);
+
+function errorCode(error) {
+  const value = error?.cause?.code ?? error?.code;
+  return typeof value === 'string' ? value.toUpperCase() : '';
+}
+
+function transportCause(error, { fetchImpl, timeoutMs }) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) return 'INVALID_TIMEOUT';
+  if (typeof fetchImpl !== 'function') return 'FETCH_UNAVAILABLE';
+  const code = errorCode(error);
+  if (DNS_ERROR_CODES.has(code)) return 'DNS_ERROR';
+  if (TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_')) return 'TLS_ERROR';
+  if (CONNECTION_ERROR_CODES.has(code)) return 'CONNECTION_ERROR';
+  return 'UNKNOWN_TRANSPORT_ERROR';
+}
+
 function inputFile(input, index) {
   if (!Buffer.isBuffer(input?.bytes) || input.bytes.length === 0 ||
       input.bytes.length > MAX_INPUT_BYTES ||
@@ -114,13 +140,14 @@ function imageMimeType(bytes) {
   return png ? 'image/png' : jpeg ? 'image/jpeg' : undefined;
 }
 
-function logFailure(logger, startedAt, { statusHttp, code, category, requestId }) {
+function logFailure(logger, startedAt, { statusHttp, code, category, requestId, transportFailureCause }) {
   logger?.warn?.({
     provider: PROVIDER_NAME,
     model: OPENAI_BENCHMARK_IMAGE_MODEL,
     statusHttp: Number.isInteger(statusHttp) ? statusHttp : null,
     providerErrorCode: code,
     category,
+    ...(transportFailureCause ? { transportFailureCause } : {}),
     elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
     ...(requestId ? { upstreamRequestId: requestId } : {}),
     timestamp: new Date().toISOString(),
@@ -159,6 +186,12 @@ export function createOpenAIGPTImageBenchmarkProvider({
       const startedAt = performance.now();
       let response;
       try {
+        if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+          throw Object.assign(new Error('Invalid timeout configuration.'), { code: 'INVALID_TIMEOUT' });
+        }
+        if (typeof fetchImpl !== 'function') {
+          throw Object.assign(new Error('Fetch is unavailable.'), { code: 'FETCH_UNAVAILABLE' });
+        }
         response = await fetchImpl(OPENAI_BENCHMARK_IMAGE_ENDPOINT, {
           method: 'POST',
           headers: { Authorization: `Bearer ${apiKey}` },
@@ -168,10 +201,14 @@ export function createOpenAIGPTImageBenchmarkProvider({
       } catch (error) {
         const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
         const code = timeout ? 'UPSTREAM_TIMEOUT' : 'PROVIDER_UNAVAILABLE';
+        const transportFailureCause = timeout
+          ? undefined
+          : transportCause(error, { fetchImpl, timeoutMs });
         logFailure(logger, startedAt, {
           statusHttp: null,
           code,
           category: timeout ? 'timeout' : 'provider_unavailable',
+          transportFailureCause,
         });
         throw providerError('OpenAI image edit request failed.', { code });
       }
