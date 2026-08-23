@@ -184,6 +184,30 @@ test('registra error.code e cause.name somente como tokens sanitizados', async (
   assert.doesNotMatch(JSON.stringify(logs), /private|message|stack|prompt|base64|authorization/i);
 });
 
+test('classifica AggregateError do Node/undici pelos códigos internos seguros', async () => {
+  const cases = [
+    { code: 'ENETUNREACH', expected: 'CONNECTION_ERROR' },
+    { code: 'ECONNREFUSED', expected: 'CONNECTION_ERROR' },
+    { code: 'EAI_AGAIN', expected: 'DNS_ERROR' },
+  ];
+  for (const item of cases) {
+    const logs = [];
+    const aggregate = Object.assign(new AggregateError([], 'private aggregate'), {
+      errors: [Object.assign(new Error('private nested'), { code: item.code })],
+    });
+    const provider = createOpenAIGPTImageBenchmarkProvider({
+      apiKey: 'test',
+      logger: { warn: (event) => logs.push(event) },
+      fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: aggregate }); },
+    });
+    await assert.rejects(provider.generate(request()), { code: 'PROVIDER_UNAVAILABLE' });
+    assert.equal(logs[0].transportFailureCause, item.expected);
+    assert.deepEqual(logs[0].nestedCauseCodes, [item.code]);
+    assert.deepEqual(logs[0].nestedCauseNames, ['AggregateError', 'Error']);
+    assert.doesNotMatch(JSON.stringify(logs), /private|fetch failed|message|stack|prompt|base64|authorization/i);
+  }
+});
+
 test('envia referência estética como segunda image[]', async () => {
   let form;
   const provider = createOpenAIGPTImageBenchmarkProvider({

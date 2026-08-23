@@ -47,31 +47,53 @@ const CONNECTION_ERROR_CODES = new Set([
   'UND_ERR_DESTROYED', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET',
 ]);
 
-function errorCode(error) {
-  const value = error?.cause?.code ?? error?.code;
-  return typeof value === 'string' ? value.toUpperCase() : '';
-}
-
 function safeErrorToken(value) {
   return safeToken(value);
 }
 
+function nestedTransportErrors(error) {
+  const pending = [error?.cause];
+  const visited = new Set();
+  const errors = [];
+  while (pending.length > 0 && errors.length < 8) {
+    const current = pending.shift();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    errors.push(current);
+    if (current.cause) pending.push(current.cause);
+    if (Array.isArray(current.errors)) pending.push(...current.errors.slice(0, 8));
+  }
+  return errors;
+}
+
+function transportErrorCodes(error) {
+  return [error, ...nestedTransportErrors(error)]
+    .map((item) => safeErrorToken(item?.code)?.toUpperCase())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 function sanitizedTransportError(error) {
+  const nested = nestedTransportErrors(error);
+  const nestedCauseCodes = [...new Set(nested.map((item) => safeErrorToken(item?.code)).filter(Boolean))].slice(0, 8);
+  const nestedCauseNames = [...new Set(nested.map((item) => safeErrorToken(item?.name)).filter(Boolean))].slice(0, 8);
   return Object.freeze({
     ...(safeErrorToken(error?.name) ? { errorName: safeErrorToken(error.name) } : {}),
     ...(safeErrorToken(error?.code) ? { errorCode: safeErrorToken(error.code) } : {}),
     ...(safeErrorToken(error?.cause?.code) ? { causeCode: safeErrorToken(error.cause.code) } : {}),
     ...(safeErrorToken(error?.cause?.name) ? { causeName: safeErrorToken(error.cause.name) } : {}),
+    ...(nestedCauseCodes.length ? { nestedCauseCodes } : {}),
+    ...(nestedCauseNames.length ? { nestedCauseNames } : {}),
   });
 }
 
 function classifyTransportFailure(error, { fetchImpl, timeoutMs }) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) return 'INVALID_TIMEOUT';
   if (typeof fetchImpl !== 'function') return 'FETCH_UNAVAILABLE';
-  const code = errorCode(error);
-  if (DNS_ERROR_CODES.has(code)) return 'DNS_ERROR';
-  if (TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_') || code.startsWith('ERR_SSL_')) return 'TLS_ERROR';
-  if (CONNECTION_ERROR_CODES.has(code)) return 'CONNECTION_ERROR';
+  const codes = transportErrorCodes(error);
+  if (codes.some((code) => DNS_ERROR_CODES.has(code))) return 'DNS_ERROR';
+  if (codes.some((code) => TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_') || code.startsWith('ERR_SSL_'))) return 'TLS_ERROR';
+  if (codes.some((code) => CONNECTION_ERROR_CODES.has(code) || code.startsWith('UND_ERR_'))) return 'CONNECTION_ERROR';
   return 'UNKNOWN_TRANSPORT_ERROR';
 }
 
