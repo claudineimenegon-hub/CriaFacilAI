@@ -23,6 +23,10 @@ import {
 } from './image-to-image/image-transform-service.mjs';
 import { createImageProvider } from './providers/index.mjs';
 import { ImageProviderError } from './providers/provider-error.mjs';
+import {
+  createExperimentalV3GenerationService,
+  ExperimentalV3ValidationError,
+} from './experimental-v3/experimental-v3-generation-service.mjs';
 
 const MAX_BODY_BYTES = 20_000;
 const MAX_IMAGE_COUNT = 4;
@@ -183,7 +187,15 @@ export function createServer({
   imageToImageTelemetry = createSanitizedImageToImageTelemetry(),
   productIdentityAnalyzer = createProductIdentityAnalyzer(),
   productFidelityGuard = createProductFidelityGuard(),
+  experimentalV3Service,
+  experimentalV3ProductIdentityAnalyzer,
 } = {}) {
+  const v3Service = experimentalV3Service ?? createExperimentalV3GenerationService({
+    assetStore,
+    productIdentityAnalyzer: experimentalV3ProductIdentityAnalyzer ?? createProductIdentityAnalyzer({
+      analyzerName: process.env.GEMINI_API_KEY ? 'gemini' : 'unknown',
+    }),
+  });
   return http.createServer(async (request, response) => {
     const origin = request.headers.origin;
     const corsOrigin = selectAllowedOrigin(origin, allowedOrigin);
@@ -368,6 +380,27 @@ export function createServer({
           upstreamStatusHttp: null,
         });
         return sendJson(response, 500, { error: 'Não foi possível transformar a imagem.' }, corsOrigin);
+      }
+    }
+    if (request.method === 'POST' && request.url === '/api/experimental/v3/generate') {
+      if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
+        return sendJson(response, 415, { error: 'Envie o conteúdo como JSON.' }, corsOrigin);
+      }
+      try {
+        const batch = await v3Service.generate(await readJson(request));
+        return sendJson(response, 200, { batch }, corsOrigin);
+      } catch (error) {
+        if (error?.code === 'PAYLOAD_TOO_LARGE') {
+          return sendJson(response, 413, { error: 'A solicitação é muito grande.' }, corsOrigin);
+        }
+        if (error?.code === 'INVALID_JSON') {
+          return sendJson(response, 400, { error: 'JSON inválido.' }, corsOrigin);
+        }
+        if (error instanceof ExperimentalV3ValidationError) {
+          return sendJson(response, error.status, { error: error.message }, corsOrigin);
+        }
+        console.error('Experimental V3 request failed', error?.code ?? error?.name ?? 'UnknownError');
+        return sendJson(response, 500, { error: 'Não foi possível concluir o teste experimental.' }, corsOrigin);
       }
     }
     if (request.method !== 'POST' || request.url !== '/v1/images/generate') {

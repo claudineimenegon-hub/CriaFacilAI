@@ -7,9 +7,12 @@ import '../../core/assets/data/http_asset_upload_service.dart';
 import '../../core/assets/photo_selection_service.dart';
 import '../../core/generation/generation_types.dart';
 import 'data/http_product_photo_generation_service.dart';
+import 'data/http_experimental_v3_generation_service.dart';
+import 'domain/experimental_v3_generation_service.dart';
 import 'domain/product_photo_draft.dart';
 import 'domain/product_photo_generation_service.dart';
 import 'product_photo_results_page.dart';
+import 'experimental_v3_results_page.dart';
 
 enum _QuickMode { none, background, scene, lighting }
 
@@ -19,11 +22,13 @@ class ProductPhotoPage extends StatefulWidget {
     this.uploadService,
     this.photoSelectionService,
     this.generationService,
+    this.experimentalV3GenerationService,
   });
 
   final AssetUploadService? uploadService;
   final PhotoSelectionService? photoSelectionService;
   final ProductPhotoGenerationService? generationService;
+  final ExperimentalV3GenerationService? experimentalV3GenerationService;
 
   @override
   State<ProductPhotoPage> createState() => _ProductPhotoPageState();
@@ -34,6 +39,7 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   late final AssetUploadService _uploadService;
   late final PhotoSelectionService _photoSelectionService;
   late final ProductPhotoGenerationService _generationService;
+  late final ExperimentalV3GenerationService _experimentalV3GenerationService;
   Uint8List? _previewBytes;
   AssetReference? _asset;
   ProductCategory _category = ProductCategory.general;
@@ -41,6 +47,8 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   String _aspectRatio = '1:1';
   bool _isUploading = false;
   bool _isGenerating = false;
+  bool _experimentalV3 = false;
+  String _experimentalQuality = 'medium';
   bool _preserveProduct = true;
   bool _preservePackaging = true;
   bool _preserveLabel = true;
@@ -59,6 +67,9 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
         widget.photoSelectionService ?? createPhotoSelectionService();
     _generationService =
         widget.generationService ?? HttpProductPhotoGenerationService();
+    _experimentalV3GenerationService =
+        widget.experimentalV3GenerationService ??
+        HttpExperimentalV3GenerationService();
   }
 
   @override
@@ -143,6 +154,18 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
         );
     setState(() => _isGenerating = true);
     try {
+      if (_experimentalV3) {
+        final results = _experimentalV3GenerationService.generateFour(
+          request,
+          quality: _experimentalQuality,
+        );
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => ExperimentalV3ResultsPage(results: results),
+          ),
+        );
+        return;
+      }
       final images = await _generationService.generateFour(request);
       if (!mounted) return;
       await Navigator.of(context).push(
@@ -190,6 +213,34 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
               onRemove: _isUploading ? null : _removeImage,
             ),
             const SizedBox(height: 24),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Creative Director V3 — Experimental'),
+              subtitle: const Text(
+                'Gera quatro campanhas com direção criativa avançada.',
+              ),
+              value: _experimentalV3,
+              onChanged: _isGenerating
+                  ? null
+                  : (value) => setState(() => _experimentalV3 = value),
+            ),
+            if (_experimentalV3) ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: _experimentalQuality,
+                decoration: const InputDecoration(labelText: 'Qualidade'),
+                items: const [
+                  DropdownMenuItem(value: 'medium', child: Text('Medium')),
+                  DropdownMenuItem(value: 'high', child: Text('High')),
+                ],
+                onChanged: _isGenerating
+                    ? null
+                    : (value) => setState(
+                        () => _experimentalQuality = value ?? 'medium',
+                      ),
+              ),
+              const SizedBox(height: 16),
+            ],
             DropdownButtonFormField<ProductCategory>(
               initialValue: _category,
               decoration: const InputDecoration(labelText: 'Categoria'),
@@ -316,7 +367,11 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
                     : const Icon(Icons.auto_awesome),
                 label: Text(
                   _isGenerating
-                      ? 'CRIANDO 4 PROPOSTAS...'
+                      ? _experimentalV3
+                            ? 'CRIANDO 4 IMAGENS...'
+                            : 'CRIANDO 4 PROPOSTAS...'
+                      : _experimentalV3
+                      ? 'GERAR 4 IMAGENS'
                       : 'GERAR 4 PROPOSTAS',
                 ),
               ),

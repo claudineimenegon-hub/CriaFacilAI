@@ -9,6 +9,7 @@ import 'package:meu_app/core/assets/photo_selection_service.dart';
 import 'package:meu_app/core/generation/generation_request.dart';
 import 'package:meu_app/core/generation/generation_types.dart';
 import 'package:meu_app/features/product_photo/domain/product_photo_generation_service.dart';
+import 'package:meu_app/features/product_photo/domain/experimental_v3_generation_service.dart';
 import 'package:meu_app/features/product_photo/product_photo_page.dart';
 
 void main() {
@@ -77,6 +78,85 @@ void main() {
       isNotNull,
     );
   });
+
+  testWidgets(
+    'modo V3 abre resultados imediatamente, mostra loading e preserva erro parcial',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final experimental = _ControlledExperimentalV3Service();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ProductPhotoPage(
+            photoSelectionService: _FakePhotoSelectionService(),
+            uploadService: _FakeUploadService(),
+            generationService: _FailingGenerationService(),
+            experimentalV3GenerationService: experimental,
+          ),
+        ),
+      );
+      await tester.tap(find.text('SELECIONAR FOTO'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Creative Director V3 — Experimental'),
+        400,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Creative Director V3 — Experimental'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('GERAR 4 IMAGENS'),
+        600,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(find.text('GERAR 4 IMAGENS'));
+      await tester.pumpAndSettle();
+      final generateButton = tester.widget<FilledButton>(
+        find.byType(FilledButton),
+      );
+      expect(generateButton.onPressed, isNotNull);
+      generateButton.onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.text('Creative Director V3'), findsOneWidget);
+      expect(
+        find.text(
+          'Preparando produto • Criando direção criativa • Gerando imagens',
+        ),
+        findsOneWidget,
+      );
+      expect(experimental.calls, 1);
+      expect(experimental.quality, 'medium');
+
+      experimental.complete([
+        for (final role in [
+          'hero_commercial',
+          'contextual_lifestyle',
+          'editorial_craft_detail',
+        ])
+          ExperimentalV3ImageResult(
+            campaignRole: role,
+            status: 'completed',
+            imageBytes: _png,
+          ),
+        const ExperimentalV3ImageResult(
+          campaignRole: 'concept_campaign',
+          status: 'error',
+          errorMessage: 'Não foi possível gerar esta proposta.',
+        ),
+      ]);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Hero Comercial — concluído'), findsOneWidget);
+      expect(find.text('Lifestyle — concluído'), findsOneWidget);
+      expect(find.text('Detalhes / Editorial — concluído'), findsOneWidget);
+      expect(find.text('Campanha Conceitual — erro'), findsOneWidget);
+      expect(find.byType(Image), findsNWidgets(3));
+    },
+  );
 
   testWidgets('cancelamento do seletor mantém a tela sem erro', (tester) async {
     await tester.pumpWidget(
@@ -292,5 +372,25 @@ class _FailingGenerationService implements ProductPhotoGenerationService {
     throw const ProductPhotoGenerationException(
       'Falha controlada na transformação.',
     );
+  }
+}
+
+class _ControlledExperimentalV3Service
+    implements ExperimentalV3GenerationService {
+  final _completer = Completer<List<ExperimentalV3ImageResult>>();
+  int calls = 0;
+  String? quality;
+
+  void complete(List<ExperimentalV3ImageResult> results) =>
+      _completer.complete(results);
+
+  @override
+  Future<List<ExperimentalV3ImageResult>> generateFour(
+    GenerationRequest request, {
+    required String quality,
+  }) {
+    calls += 1;
+    this.quality = quality;
+    return _completer.future;
   }
 }

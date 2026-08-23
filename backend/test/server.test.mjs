@@ -74,6 +74,39 @@ test('rota desconhecida responde 404', async () => {
   assert.equal(response.status, 404);
 });
 
+test('endpoint experimental V3 devolve quatro resultados consumíveis sem credenciais', async () => {
+  const calls = [];
+  const baseUrl = await start({
+    experimentalV3Service: {
+      async generate(payload) {
+        calls.push(payload);
+        return {
+          expectedCount: 4,
+          status: 'partial',
+          quality: 'medium',
+          results: [
+            { campaignRole: 'hero_commercial', status: 'completed', imageBase64: 'aW1hZ2U=' },
+            { campaignRole: 'contextual_lifestyle', status: 'completed', imageBase64: 'aW1hZ2U=' },
+            { campaignRole: 'editorial_craft_detail', status: 'error', errorCode: 'UPSTREAM_TIMEOUT' },
+            { campaignRole: 'concept_campaign', status: 'completed', imageBase64: 'aW1hZ2U=' },
+          ],
+        };
+      },
+    },
+  });
+  const response = await fetch(`${baseUrl}/api/experimental/v3/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputAssetId: transformAssetId, category: 'general', objective: 'Campanha premium', aspectRatio: '1:1' }),
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(calls.length, 1);
+  assert.equal(body.batch.results.length, 4);
+  assert.equal(body.batch.status, 'partial');
+  assert.equal(JSON.stringify(body).includes('OPENAI_API_KEY'), false);
+  assert.equal(JSON.stringify(body).includes('Authorization'), false);
+});
+
 test('geração responde 503 sem chave e não chama o provedor', async () => {
   let called = false;
   const baseUrl = await start({
