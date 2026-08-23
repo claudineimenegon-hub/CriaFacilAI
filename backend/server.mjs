@@ -27,6 +27,7 @@ import {
   createExperimentalV3GenerationService,
   ExperimentalV3ValidationError,
 } from './experimental-v3/experimental-v3-generation-service.mjs';
+import { createOpenAIConnectivityDiagnostic } from './experimental-v3/openai-connectivity-diagnostic.mjs';
 
 const MAX_BODY_BYTES = 20_000;
 const MAX_IMAGE_COUNT = 4;
@@ -189,6 +190,7 @@ export function createServer({
   productFidelityGuard = createProductFidelityGuard(),
   experimentalV3Service,
   experimentalV3ProductIdentityAnalyzer,
+  openAIConnectivityDiagnostic = createOpenAIConnectivityDiagnostic(),
 } = {}) {
   const v3Service = experimentalV3Service ?? createExperimentalV3GenerationService({
     assetStore,
@@ -206,6 +208,10 @@ export function createServer({
     if (request.method === 'OPTIONS') return sendJson(response, 204, {}, corsOrigin);
     if (request.method === 'GET' && request.url === '/health') {
       return sendJson(response, 200, { status: 'ok' }, corsOrigin);
+    }
+    if (request.method === 'GET' && request.url === '/api/experimental/openai-connectivity-check') {
+      const diagnostic = await openAIConnectivityDiagnostic.run();
+      return sendJson(response, 200, diagnostic, corsOrigin);
     }
     if (request.method === 'GET' && request.url?.startsWith('/v1/assets/images/')) {
       const id = request.url.slice('/v1/assets/images/'.length);

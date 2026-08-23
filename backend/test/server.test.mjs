@@ -68,6 +68,20 @@ test('GET /health informa que o serviço está disponível', async () => {
   assert.deepEqual(await response.json(), { status: 'ok' });
 });
 
+test('endpoint temporário retorna diagnóstico OpenAI sanitizado', async () => {
+  const expected = {
+    runtimeApis: { fetch: true, FormData: true, File: true, Blob: true, AbortSignalTimeout: true },
+    simpleFetch: { success: true, statusHttp: 200, elapsedMs: 1 },
+    multipartConstruction: { success: true, stage: 'COMPLETE' },
+  };
+  const baseUrl = await start({
+    openAIConnectivityDiagnostic: { run: async () => expected },
+  });
+  const response = await fetch(`${baseUrl}/api/experimental/openai-connectivity-check`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), expected);
+});
+
 test('rota desconhecida responde 404', async () => {
   const baseUrl = await start();
   const response = await fetch(`${baseUrl}/desconhecida`);
