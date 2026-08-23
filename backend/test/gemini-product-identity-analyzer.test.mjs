@@ -212,6 +212,98 @@ test('aceita JSON estruturado cercado somente por code fence JSON', async () => 
   assert.equal((await analyzer.analyze(analyzerInput())).items.length, 1);
 });
 
+test('normaliza wrapper e aliases estruturais seguros sem inventar conteúdo', async () => {
+  const wrapped = {
+    analysis: {
+      state: 'known',
+      products: [{
+        id: 'canonical-product',
+        functional_type: { state: 'known', value: 'wearable accessory' },
+        quantity: { state: 'known', value: 1 },
+        observation_completeness: 'partial',
+        observed_features: [{ name: 'color', value: 'blue' }],
+        ambiguous_features: [],
+      }],
+      relations: [],
+    },
+  };
+  const events = [];
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => geminiResponse(wrapped),
+    logger: { info: (event) => events.push(event) },
+  });
+  const result = await analyzer.analyze(analyzerInput());
+  assert.equal(result.items[0].id, 'canonical-product');
+  assert.equal(result.items[0].functionalType.value, 'wearable accessory');
+  assert.equal(result.items[0].quantity.value, 1);
+  assert.deepEqual(result.relationships, []);
+  assert.equal(events[0].normalizationApplied, true);
+});
+
+test('primeira saída inválida recebe um único retry estrito e segunda válida é aceita', async () => {
+  let calls = 0;
+  const requestBodies = [];
+  const valid = { state: 'known', items: [genericItem()], relationships: [] };
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async (_url, options) => {
+      calls += 1;
+      requestBodies.push(JSON.parse(options.body));
+      return calls === 1
+        ? geminiResponse({ state: 'known', items: 'invalid', relationships: [] })
+        : geminiResponse(valid);
+    },
+  });
+  assert.equal((await analyzer.analyze(analyzerInput())).items.length, 1);
+  assert.equal(calls, 2);
+  assert.doesNotMatch(requestBodies[0].contents[0].parts[0].text, /Technical correction/);
+  assert.match(requestBodies[1].contents[0].parts[0].text, /Technical correction/);
+});
+
+test('duas saídas inválidas usam somente fallback canônico suficiente', async () => {
+  let calls = 0;
+  const events = [];
+  const fallbackAnalysis = {
+    state: 'known',
+    items: [genericItem({ id: 'confirmed-id', type: 'confirmed type', quantity: 2 })],
+    relationships: [],
+  };
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => {
+      calls += 1;
+      return geminiResponse({ state: 'known', items: 'invalid', relationships: [] });
+    },
+    logger: { info: (event) => events.push(event) },
+  });
+  const result = await analyzer.analyze({ ...analyzerInput(), fallbackAnalysis });
+  assert.equal(calls, 2);
+  assert.equal(result.items[0].id, 'confirmed-id');
+  assert.equal(result.items[0].functionalType.value, 'confirmed type');
+  assert.equal(result.items[0].quantity.value, 2);
+  assert.deepEqual(result.relationships, []);
+  assert.equal(events[0].fallbackUsed, true);
+  assert.equal(events[0].retryUsed, true);
+  assert.equal(events[0].attempt, 2);
+});
+
+test('duas saídas inválidas e evidência insuficiente falham sem inventar identidade', async () => {
+  let calls = 0;
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => {
+      calls += 1;
+      return geminiResponse({ state: 'known', items: 'invalid', relationships: [] });
+    },
+  });
+  await assert.rejects(analyzer.analyze({
+    ...analyzerInput(),
+    fallbackAnalysis: { state: 'unknown', items: [], relationships: [] },
+  }), { code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS' });
+  assert.equal(calls, 2);
+});
+
 test('telemetria classifica validações locais sem incluir conteúdo da resposta', async (t) => {
   const scenarios = [
     {

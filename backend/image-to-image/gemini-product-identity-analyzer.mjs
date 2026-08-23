@@ -147,7 +147,64 @@ function parseStructuredAnalysis(text) {
   if (typeof text !== 'string') throw new SyntaxError('Missing structured output.');
   const trimmed = text.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return JSON.parse(fenced ? fenced[1] : trimmed);
+  return { value: JSON.parse(fenced ? fenced[1] : trimmed), applied: Boolean(fenced) };
+}
+
+function normalizeStructuredAnalysis(value) {
+  let normalized = value;
+  let applied = false;
+  if (normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
+    const keys = Object.keys(normalized);
+    const wrapper = ['analysis', 'productIdentityAnalysis', 'result']
+      .find((key) => keys.length === 1 && normalized[key] &&
+        typeof normalized[key] === 'object' && !Array.isArray(normalized[key]));
+    if (wrapper) {
+      normalized = normalized[wrapper];
+      applied = true;
+    }
+  }
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
+    return { analysis: normalized, applied };
+  }
+  const clone = structuredClone(normalized);
+  const rename = (object, canonical, aliases) => {
+    if (!object || typeof object !== 'object' || Array.isArray(object) ||
+        Object.hasOwn(object, canonical)) return;
+    const alias = aliases.find((name) => Object.hasOwn(object, name));
+    if (!alias) return;
+    object[canonical] = object[alias];
+    delete object[alias];
+    applied = true;
+  };
+  rename(clone, 'items', ['products']);
+  rename(clone, 'relationships', ['relations']);
+  if (Array.isArray(clone.items)) {
+    for (const item of clone.items) {
+      rename(item, 'functionalType', ['functional_type']);
+      rename(item, 'observationCompleteness', ['observation_completeness']);
+      rename(item, 'observedFeatures', ['observed_features']);
+      rename(item, 'ambiguousFeatures', ['ambiguous_features']);
+      if (Array.isArray(item?.ambiguousFeatures)) {
+        for (const feature of item.ambiguousFeatures) {
+          rename(feature, 'observedConstraint', ['observed_constraint']);
+          rename(feature, 'plausibleHypotheses', ['plausible_hypotheses']);
+        }
+      }
+    }
+  }
+  if (Array.isArray(clone.relationships)) {
+    for (const relationship of clone.relationships) {
+      rename(relationship, 'memberIds', ['member_ids', 'itemIds', 'item_ids']);
+    }
+  }
+  return { analysis: clone, applied };
+}
+
+function isSafeFallbackAnalysis(analysis) {
+  return analysis.state !== 'unknown' && analysis.items.length > 0 && analysis.items.every((item) =>
+    item.functionalType.state !== 'unknown' && typeof item.functionalType.value === 'string' &&
+    item.quantity.state !== 'unknown' && Number.isSafeInteger(item.quantity.value) &&
+    item.quantity.value > 0);
 }
 
 function validationDiagnostics(error) {
@@ -225,7 +282,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     return typeof this.apiKey === 'string' && this.apiKey.trim().length > 0;
   }
 
-  async analyze({ inputs, declaredCategory, userBrief, cacheKey } = {}) {
+  async analyze({ inputs, declaredCategory, userBrief, cacheKey, fallbackAnalysis } = {}) {
     void cacheKey;
     const startedAt = performance.now();
     const controller = new AbortController();
@@ -234,6 +291,10 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     let outcome = { statusHttp: null, fallback: true };
     let terminalError;
     let preparedInputs;
+    let attemptCount = 0;
+    let normalizationApplied = false;
+    let retryUsed = false;
+    let fallbackUsed = false;
     try {
       if (!this.isConfigured) {
         throw new GeminiProductIdentityAnalyzerError(
@@ -252,80 +313,112 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
           'INVALID_ANALYZER_INPUT', 'Product identity analyzer inputs are invalid.',
         );
       }
-      const requestBody = {
-        contents: [{
-          role: 'user',
-          parts: [
-            {
-              text: [
-                analysisInstruction,
-                `Declared category (context only, not evidence): ${String(declaredCategory ?? 'unknown').slice(0, 80)}`,
-                `User brief (context only, not evidence): ${String(userBrief ?? '').slice(0, 4000)}`,
-              ].join('\n'),
-            },
-            ...preparedInputs.map(({ bytes, mimeType }) => ({
-              inlineData: { mimeType, data: Buffer.from(bytes).toString('base64') },
-            })),
-          ],
-        }],
-        generationConfig: {
-          responseFormat: {
-            text: {
-              mimeType: 'APPLICATION_JSON',
-              schema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
+      let recoverableError;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        attemptCount = attempt;
+        const requestBody = {
+          contents: [{
+            role: 'user',
+            parts: [
+              {
+                text: [
+                  analysisInstruction,
+                  ...(attempt === 2 ? [
+                    'Technical correction: return exactly the schema fields and types; do not wrap, rename, add, or omit fields.',
+                  ] : []),
+                  `Declared category (context only, not evidence): ${String(declaredCategory ?? 'unknown').slice(0, 80)}`,
+                  `User brief (context only, not evidence): ${String(userBrief ?? '').slice(0, 4000)}`,
+                ].join('\n'),
+              },
+              ...preparedInputs.map(({ bytes, mimeType }) => ({
+                inlineData: { mimeType, data: Buffer.from(bytes).toString('base64') },
+              })),
+            ],
+          }],
+          generationConfig: {
+            responseFormat: {
+              text: {
+                mimeType: 'APPLICATION_JSON',
+                schema: GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
+              },
             },
           },
-        },
-      };
-      const response = await this.fetchImpl(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': this.apiKey,
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-      outcome.statusHttp = response.status;
-      const contentLength = Number(response.headers?.get?.('content-length'));
-      if (Number.isFinite(contentLength) && contentLength > MAX_HTTP_RESPONSE_BYTES) {
-        throw new GeminiProductIdentityAnalyzerError(
-          'GEMINI_RESPONSE_TOO_LARGE', 'Product identity response exceeded the safe limit.',
-        );
+        };
+        const response = await this.fetchImpl(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': this.apiKey,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+        outcome.statusHttp = response.status;
+        const contentLength = Number(response.headers?.get?.('content-length'));
+        if (Number.isFinite(contentLength) && contentLength > MAX_HTTP_RESPONSE_BYTES) {
+          throw new GeminiProductIdentityAnalyzerError(
+            'GEMINI_RESPONSE_TOO_LARGE', 'Product identity response exceeded the safe limit.',
+          );
+        }
+        const rawResponse = await response.text();
+        if (Buffer.byteLength(rawResponse, 'utf8') > MAX_HTTP_RESPONSE_BYTES) {
+          throw new GeminiProductIdentityAnalyzerError(
+            'GEMINI_RESPONSE_TOO_LARGE', 'Product identity response exceeded the safe limit.',
+          );
+        }
+        if (!response.ok) {
+          const diagnostics = safeGeminiUpstreamDiagnostics(rawResponse);
+          const httpError = new GeminiProductIdentityAnalyzerError(
+            'GEMINI_HTTP_ERROR', 'Product identity provider request failed.',
+          );
+          Object.assign(httpError, diagnostics);
+          throw httpError;
+        }
+        try {
+          const payload = JSON.parse(rawResponse);
+          const parsed = parseStructuredAnalysis(responseText(payload));
+          const normalized = normalizeStructuredAnalysis(parsed.value);
+          normalizationApplied ||= parsed.applied || normalized.applied;
+          const validated = validateProductIdentityAnalysis(normalized.analysis);
+          outcome = {
+            statusHttp: response.status,
+            fallback: false,
+            state: validated.state,
+            items: validated.items.length,
+            relationships: validated.relationships.length,
+          };
+          return validated;
+        } catch (error) {
+          recoverableError = error?.code === 'INVALID_PRODUCT_IDENTITY_ANALYSIS'
+            ? error
+            : new GeminiProductIdentityAnalyzerError(
+              'GEMINI_INVALID_JSON', 'Product identity provider returned invalid JSON.',
+            );
+          if (attempt === 1) {
+            retryUsed = true;
+            continue;
+          }
+        }
       }
-      const rawResponse = await response.text();
-      if (Buffer.byteLength(rawResponse, 'utf8') > MAX_HTTP_RESPONSE_BYTES) {
-        throw new GeminiProductIdentityAnalyzerError(
-          'GEMINI_RESPONSE_TOO_LARGE', 'Product identity response exceeded the safe limit.',
-        );
+      if (fallbackAnalysis !== undefined) {
+        try {
+          const validatedFallback = validateProductIdentityAnalysis(fallbackAnalysis);
+          if (isSafeFallbackAnalysis(validatedFallback)) {
+            fallbackUsed = true;
+            outcome = {
+              statusHttp: outcome.statusHttp,
+              fallback: true,
+              state: validatedFallback.state,
+              items: validatedFallback.items.length,
+              relationships: validatedFallback.relationships.length,
+            };
+            return validatedFallback;
+          }
+        } catch {
+          // Invalid or incomplete evidence is never promoted into a product identity.
+        }
       }
-      if (!response.ok) {
-        const diagnostics = safeGeminiUpstreamDiagnostics(rawResponse);
-        const httpError = new GeminiProductIdentityAnalyzerError(
-          'GEMINI_HTTP_ERROR', 'Product identity provider request failed.',
-        );
-        Object.assign(httpError, diagnostics);
-        throw httpError;
-      }
-      let payload;
-      let analysis;
-      try {
-        payload = JSON.parse(rawResponse);
-        analysis = parseStructuredAnalysis(responseText(payload));
-      } catch {
-        throw new GeminiProductIdentityAnalyzerError(
-          'GEMINI_INVALID_JSON', 'Product identity provider returned invalid JSON.',
-        );
-      }
-      const validated = validateProductIdentityAnalysis(analysis);
-      outcome = {
-        statusHttp: response.status,
-        fallback: false,
-        state: validated.state,
-        items: validated.items.length,
-        relationships: validated.relationships.length,
-      };
-      return validated;
+      throw recoverableError;
     } catch (error) {
       let normalizedError;
       if (error?.name === 'AbortError') {
@@ -363,6 +456,13 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         items: outcome.items ?? 0,
         relationships: outcome.relationships ?? 0,
         fallback: outcome.fallback,
+        attempt: attemptCount,
+        normalizationApplied,
+        retryUsed,
+        fallbackUsed,
+        finalState: outcome.state ?? 'unknown',
+        itemCount: outcome.items ?? 0,
+        relationshipCount: outcome.relationships ?? 0,
         ...(terminalError?.validationStage
           ? { validationStage: terminalError.validationStage } : {}),
         ...(terminalError?.validationReason
