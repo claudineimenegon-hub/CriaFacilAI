@@ -1,12 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDeterministicCreativeDirectorV3Model } from '../benchmark/creative-director-v3.mjs';
+import { createDeterministicCreativeDirectorV3Model, validateCreativeDirectorV3Input } from '../benchmark/creative-director-v3.mjs';
 import {
   buildCreativeDirectorV3Input,
   createExperimentalV3GenerationService,
   experimentalOutputDimensions,
   validateExperimentalV3Request,
 } from '../experimental-v3/experimental-v3-generation-service.mjs';
+
+function humanPresenceInput({ category, functionalType, affordance, objective = 'Create a premium campaign' }) {
+  return validateCreativeDirectorV3Input({
+    productIdentity: {
+      category,
+      items: [{ id: 'product-1', functionalType, quantity: 1 }],
+      relationships: [], observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType, affordances: [affordance],
+      validContexts: ['commercial context'], invalidContexts: ['physically implausible use'],
+    },
+    userIntent: { objective, aspectRatio: '1:1', requestedStyle: null, additionalInstructions: null },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+}
 
 const assetId = '00000000-0000-4000-8000-000000000001';
 const sourceBytes = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
@@ -108,4 +124,48 @@ test('identidade ausente falha antes de Creative Director ou imagem', async () =
     imageProvider: { generate: async () => { throw new Error('must not run'); } },
   });
   await assert.rejects(() => instance.generate(request()), { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 });
+});
+
+test('Human Presence recomenda contexto humano somente no Lifestyle de vestíveis', async () => {
+  const cases = [
+    ['jewelry', 'jewelry set', 'wearable'],
+    ['clothing', 'garment', 'wearable'],
+    ['accessories', 'wristwatch', 'wearable'],
+  ];
+  for (const [category, functionalType, affordance] of cases) {
+    const briefs = await createDeterministicCreativeDirectorV3Model().generate(
+      humanPresenceInput({ category, functionalType, affordance }),
+    );
+    assert.deepEqual(briefs.map(({ humanInteraction }) => humanInteraction.presence), [
+      'none', 'recommended', 'none', 'none',
+    ]);
+    assert.match(briefs[1].humanInteraction.usageDescription, /gender-neutral/);
+  }
+});
+
+test('Human Presence não força pessoas em perfume, eletrônico, alimento ou categoria ambígua', async () => {
+  const cases = [
+    ['cosmetics', 'perfume bottle', 'handheld', 'optional'],
+    ['electronics', 'electronic device', 'digital_or_screen_based', 'optional'],
+    ['food', 'prepared food', 'consumable', 'optional'],
+    ['unknown', 'ambiguous product', 'unknown_safe_context', 'none'],
+  ];
+  for (const [category, functionalType, affordance, lifestylePresence] of cases) {
+    const briefs = await createDeterministicCreativeDirectorV3Model().generate(
+      humanPresenceInput({ category, functionalType, affordance }),
+    );
+    assert.deepEqual(briefs.map(({ humanInteraction }) => humanInteraction.presence), [
+      'none', lifestylePresence, 'none', 'none',
+    ]);
+  }
+});
+
+test('pedido explícito pode tornar uso humano obrigatório sem afetar as outras propostas', async () => {
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(humanPresenceInput({
+    category: 'clothing', functionalType: 'garment', affordance: 'wearable',
+    objective: 'Show the garment being worn in its correct use',
+  }));
+  assert.equal(briefs[1].humanInteraction.presence, 'required');
+  assert.equal(briefs[1].humanInteraction.mode, 'required');
+  assert.equal(briefs.filter(({ humanInteraction }) => humanInteraction.presence !== 'none').length, 1);
 });

@@ -1,4 +1,4 @@
-import { V3_CAMPAIGN_ROLES, V3_COLOR_STRATEGIES } from './creative-director-v3.mjs';
+import { V3_CAMPAIGN_ROLES, V3_COLOR_STRATEGIES, V3_HUMAN_PRESENCE } from './creative-director-v3.mjs';
 import { prepareCreativeDirectorV3SourceImage } from './creative-director-v3-source-image.mjs';
 
 export const OPENAI_CREATIVE_DIRECTOR_V3_MODEL = 'gpt-5.4-mini';
@@ -40,8 +40,8 @@ const creativeBriefSchema = {
       },
     },
     humanInteraction: {
-      type: 'object', additionalProperties: false, required: ['mode', 'usageDescription'],
-      properties: { mode: { type: 'string', enum: ['required', 'allowed', 'forbidden'] }, usageDescription: nullableString },
+      type: 'object', additionalProperties: false, required: ['presence', 'mode', 'usageDescription'],
+      properties: { presence: { type: 'string', enum: V3_HUMAN_PRESENCE }, mode: { type: 'string', enum: ['required', 'allowed', 'forbidden'] }, usageDescription: nullableString },
     },
     scene: {
       type: 'object', additionalProperties: false,
@@ -88,6 +88,9 @@ const SYSTEM_INSTRUCTIONS = [
   'For a canonical pair required by a proposal, retain its complete canonical quantity and set pairPolicy to preserve_pair. Never invent explicit_single_instance unless the supplied V3 contract explicitly authorizes it.',
   'Keep requiredVisibleItems, optionalVisibleItems and pairPolicy mutually coherent. Do not create new relationships or remove a known relationship when it is semantically required by the proposal.',
   'Never invent item IDs, duplicate products, fuse items, redesign the product, recolor it, invent logos or place products on the body without compatible affordance.',
+  'Decide human presence contextually as none, optional, recommended or required from product identity, category, affordance, valid use and campaign concept. Never apply a global always-use-a-model rule.',
+  'Use recommended or required human presence primarily when contextual_lifestyle benefits from genuine demonstration of use, scale or advertising appeal. Keep the other campaign roles product-led unless independently justified, and never let people dominate all four proposals.',
+  'Do not infer gender. Use gender-neutral human presentation unless product evidence or explicit user intent supplies sufficient context.',
   'Unknown-safe-context products require conservative, physically plausible commercial still-life or hero contexts.',
   'Use concrete locations, surfaces, materials, props, environmental colors, composition, camera, lens language, lighting and depth decisions. Avoid generic luxury filler.',
   'Do not provide commentary outside the structured result.',

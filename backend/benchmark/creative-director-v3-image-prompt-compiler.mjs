@@ -84,6 +84,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'Keep the product physically plausible in the new scene. Create prominence through framing, camera position, focus, lighting and composition—not by enlarging, shrinking, stretching, compressing or reshaping the physical product.',
     ]),
     section('D. HUMAN INTERACTION / VALID USE', [
+      `Human presence decision: ${brief.humanInteraction.presence ?? (brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional')}.`,
       `Human interaction mode: ${brief.humanInteraction.mode}.`,
       ...(brief.humanInteraction.usageDescription ? [`Required usage description: ${brief.humanInteraction.usageDescription}`] : []),
       `Applicable affordances: ${productSemantics.affordances.join(', ')}. Valid contexts: ${productSemantics.validContexts.join('; ')}.`,
@@ -91,7 +92,9 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
         ? 'Show exactly the specified real use with realistic scale, physically plausible contact and only the anatomical placement explicitly stated above. Do not invent another pose or body placement.'
         : brief.humanInteraction.mode === 'forbidden'
           ? 'Do not show a person using, holding or wearing the product.'
-          : 'Human interaction is optional and must remain within the supplied usage description and affordances; do not invent anatomical placement.',
+          : brief.humanInteraction.presence === 'recommended'
+            ? 'Human presence is recommended only because it improves truthful demonstration of use, scale or commercial appeal. Keep the product dominant, use valid anatomy and placement, and do not infer gender without evidence.'
+            : 'Human interaction is optional and must remain within the supplied usage description and affordances; do not invent anatomical placement or gender.',
     ]),
     section('E. CAMPAIGN IDEA', [
       `Campaign role: ${brief.campaignRole}.`,

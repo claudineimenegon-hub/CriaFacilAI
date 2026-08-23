@@ -17,6 +17,8 @@ export const V3_COLOR_STRATEGIES = Object.freeze([
   'botanical_natural', 'bold_chromatic', 'brand_aligned',
 ]);
 
+export const V3_HUMAN_PRESENCE = Object.freeze(['none', 'optional', 'recommended', 'required']);
+
 const ROLE_DIRECTIONS = Object.freeze([
   Object.freeze({
     campaignRole: 'hero_commercial', presentationMode: 'architectural_hero',
@@ -124,15 +126,24 @@ export function validateCreativeDirectorV3Input(input) {
   });
 }
 
-function humanInteraction(direction, semantics) {
-  if (direction.humanMode === 'forbidden') return Object.freeze({ mode: 'forbidden', usageDescription: null });
+function explicitlyRequestsHumanUse(userIntent) {
+  const intent = [userIntent.objective, userIntent.requestedStyle, userIntent.additionalInstructions]
+    .filter(Boolean).join(' ').toLowerCase();
+  return /\b(wear|wearing|worn|use|using|held|holding|human|person|model|vestir|vestido|usando|uso|pessoa|modelo)\b/.test(intent);
+}
+
+function humanInteraction(direction, semantics, userIntent) {
+  if (direction.humanMode === 'forbidden') {
+    return Object.freeze({ presence: 'none', mode: 'forbidden', usageDescription: null });
+  }
   if (semantics.affordances.includes('wearable')) {
-    return Object.freeze({ mode: 'allowed', usageDescription: 'Natural wearing only at the functionally valid body placement established by product semantics.' });
+    const presence = explicitlyRequestsHumanUse(userIntent) ? 'required' : 'recommended';
+    return Object.freeze({ presence, mode: presence === 'required' ? 'required' : 'allowed', usageDescription: 'Natural wearing only at the functionally valid body placement established by product semantics; keep human presentation gender-neutral unless supported by explicit evidence or user intent.' });
   }
   if (semantics.affordances.some((value) => ['handheld', 'consumable', 'vehicle_or_mobility', 'digital_or_screen_based'].includes(value))) {
-    return Object.freeze({ mode: 'allowed', usageDescription: 'Natural interaction limited to the product established function and valid contexts.' });
+    return Object.freeze({ presence: 'optional', mode: 'allowed', usageDescription: 'Natural interaction is optional and limited to the product established function and valid contexts; prefer a product-only scene whenever a person adds no demonstrative value.' });
   }
-  return Object.freeze({ mode: 'forbidden', usageDescription: null });
+  return Object.freeze({ presence: 'none', mode: 'forbidden', usageDescription: null });
 }
 
 function visibilityFor(role, identity) {
@@ -152,7 +163,7 @@ export function createDeterministicCreativeDirectorV3Model() {
       const { productIdentity: identity, productSemantics: semantics, userIntent } = input;
       return ROLE_DIRECTIONS.map((direction, index) => {
         const visibilityIntent = visibilityFor(direction.campaignRole, identity);
-        const human = humanInteraction(direction, semantics);
+        const human = humanInteraction(direction, semantics, userIntent);
         const context = semantics.validContexts[0] ?? 'a conservative, physically credible commercial setting';
         return {
           proposalId: index + 1,
@@ -285,12 +296,23 @@ export function validateCreativeDirectorV3Output(rawBriefs, normalizedInput) {
     }
     const selected = selectedItems(brief, input.productIdentity);
     if (!['required', 'allowed', 'forbidden'].includes(brief.humanInteraction.mode)) fail('INVALID_V3_OUTPUT', 'Invalid human interaction mode.');
+    const legacyPresence = brief.humanInteraction.mode === 'required' ? 'required'
+      : brief.humanInteraction.mode === 'allowed' ? 'optional' : 'none';
+    const presence = brief.humanInteraction.presence ?? legacyPresence;
+    if (!V3_HUMAN_PRESENCE.includes(presence)) fail('INVALID_V3_OUTPUT', 'Invalid human presence decision.');
+    if ((presence === 'none') !== (brief.humanInteraction.mode === 'forbidden') ||
+        (presence === 'required') !== (brief.humanInteraction.mode === 'required')) {
+      fail('INVALID_V3_OUTPUT', 'Human presence conflicts with interaction mode.');
+    }
     const bodilyAllowed = input.productSemantics.affordances.includes('wearable');
     if (!bodilyAllowed && /wear|ear|finger|body attachment/i.test(brief.humanInteraction.usageDescription ?? '')) fail('INVALID_V3_OUTPUT', 'Human interaction conflicts with product affordance.');
     if (!V3_COLOR_STRATEGIES.includes(brief.artDirection.colorStrategy)) fail('INVALID_V3_OUTPUT', 'Invalid color strategy.');
     if (brief.creativeFreedom?.productTransformation !== 'forbidden') fail('INVALID_V3_OUTPUT', 'Product transformation must be forbidden.');
     validateRelationships(brief, input, selected);
   }
+  const activeHumanProposals = rawBriefs.filter((brief) => (brief.humanInteraction.presence ??
+    (brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional')) !== 'none');
+  if (activeHumanProposals.length > 1) fail('INVALID_V3_OUTPUT', 'Human presence must not dominate the four-proposal set.');
   const keys = rawBriefs.map(diversityKey);
   if (new Set(keys).size !== 4) fail('INSUFFICIENT_V3_DIVERSITY', 'Creative briefs repeat essential scene, presentation, photography and color dimensions.');
   for (let left = 0; left < rawBriefs.length; left += 1) {
