@@ -180,7 +180,8 @@ function imageMimeType(bytes) {
 }
 
 function logFailure(logger, startedAt, {
-  statusHttp, code, category, requestId, transportFailureCause, transportError,
+  statusHttp, code, category, requestId, transportFailureCause, transportFailureStage,
+  transportError,
 }) {
   logger?.warn?.({
     provider: PROVIDER_NAME,
@@ -189,6 +190,7 @@ function logFailure(logger, startedAt, {
     providerErrorCode: code,
     category,
     ...(transportFailureCause ? { transportFailureCause } : {}),
+    ...(transportFailureStage ? { transportFailureStage } : {}),
     ...(transportError ?? {}),
     elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
     ...(requestId ? { upstreamRequestId: requestId } : {}),
@@ -217,30 +219,41 @@ export function createOpenAIGPTImageBenchmarkProvider({
         });
       }
 
-      const form = new FormData();
-      form.append('model', OPENAI_BENCHMARK_IMAGE_MODEL);
-      request.inputs.forEach((input, index) => form.append('image[]', inputFile(input, index)));
-      form.append('prompt', request.prompt);
-      form.append('size', size);
-      form.append('quality', quality);
-      form.append('output_format', 'png');
-
       const startedAt = performance.now();
+      let transportFailureStage = 'FORM_DATA_CREATION';
       let response;
       try {
+        const form = new FormData();
+        transportFailureStage = 'FORM_DATA_APPEND';
+        form.append('model', OPENAI_BENCHMARK_IMAGE_MODEL);
+        for (const [index, input] of request.inputs.entries()) {
+          transportFailureStage = 'FILE_CREATION';
+          const file = inputFile(input, index);
+          transportFailureStage = 'FORM_DATA_APPEND';
+          form.append('image[]', file);
+        }
+        form.append('prompt', request.prompt);
+        form.append('size', size);
+        form.append('quality', quality);
+        form.append('output_format', 'png');
+
+        transportFailureStage = 'ABORT_SIGNAL_CREATION';
         if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
           throw Object.assign(new Error('Invalid timeout configuration.'), { code: 'INVALID_TIMEOUT' });
         }
         if (typeof fetchImpl !== 'function') {
           throw Object.assign(new Error('Fetch is unavailable.'), { code: 'FETCH_UNAVAILABLE' });
         }
+        const signal = timeoutSignalFactory(timeoutMs);
+        transportFailureStage = 'FETCH_CALL';
         response = await fetchImpl(OPENAI_BENCHMARK_IMAGE_ENDPOINT, {
           method: 'POST',
           headers: { Authorization: `Bearer ${apiKey}` },
           body: form,
-          signal: timeoutSignalFactory(timeoutMs),
+          signal,
         });
       } catch (error) {
+        if (error instanceof OpenAIBenchmarkProviderError) throw error;
         const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
         const code = timeout ? 'UPSTREAM_TIMEOUT' : 'PROVIDER_UNAVAILABLE';
         const transportFailureCause = timeout
@@ -251,6 +264,7 @@ export function createOpenAIGPTImageBenchmarkProvider({
           code,
           category: timeout ? 'timeout' : 'provider_unavailable',
           transportFailureCause,
+          transportFailureStage,
           transportError: sanitizedTransportError(error),
         });
         throw providerError('OpenAI image edit request failed.', { code });

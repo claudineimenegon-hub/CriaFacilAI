@@ -208,6 +208,34 @@ test('classifica AggregateError do Node/undici pelos códigos internos seguros',
   }
 });
 
+test('identifica de forma sanitizada se TypeError ocorre no AbortSignal ou no fetch', async () => {
+  const cases = [
+    {
+      expected: 'ABORT_SIGNAL_CREATION',
+      timeoutSignalFactory: () => { throw new TypeError('private abort detail'); },
+      fetchImpl: async () => successResponse(),
+    },
+    {
+      expected: 'FETCH_CALL',
+      timeoutSignalFactory: () => new AbortController().signal,
+      fetchImpl: async () => { throw new TypeError('private fetch detail'); },
+    },
+  ];
+  for (const item of cases) {
+    const logs = [];
+    const provider = createOpenAIGPTImageBenchmarkProvider({
+      apiKey: 'test',
+      logger: { warn: (event) => logs.push(event) },
+      timeoutSignalFactory: item.timeoutSignalFactory,
+      fetchImpl: item.fetchImpl,
+    });
+    await assert.rejects(provider.generate(request()), { code: 'PROVIDER_UNAVAILABLE' });
+    assert.equal(logs[0].transportFailureStage, item.expected);
+    assert.equal(logs[0].errorName, 'TypeError');
+    assert.doesNotMatch(JSON.stringify(logs), /private|detail|message|stack|prompt|base64|authorization/i);
+  }
+});
+
 test('envia referência estética como segunda image[]', async () => {
   let form;
   const provider = createOpenAIGPTImageBenchmarkProvider({
