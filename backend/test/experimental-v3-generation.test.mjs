@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createDeterministicCreativeDirectorV3Model, validateCreativeDirectorV3Input } from '../benchmark/creative-director-v3.mjs';
+import { compileCreativeDirectorV3ImagePrompt } from '../benchmark/creative-director-v3-image-prompt-compiler.mjs';
 import {
   buildCreativeDirectorV3Input,
   createExperimentalV3GenerationService,
@@ -168,4 +169,40 @@ test('pedido explícito pode tornar uso humano obrigatório sem afetar as outras
   assert.equal(briefs[1].humanInteraction.presence, 'required');
   assert.equal(briefs[1].humanInteraction.mode, 'required');
   assert.equal(briefs.filter(({ humanInteraction }) => humanInteraction.presence !== 'none').length, 1);
+});
+
+test('fidelidade on-body protege vestíveis generalistas somente na proposta humana', async () => {
+  const cases = [
+    ['jewelry', 'earrings'],
+    ['accessories', 'wristwatch'],
+    ['eyewear', 'eyeglasses'],
+    ['clothing', 'garment'],
+  ];
+  for (const [category, functionalType] of cases) {
+    const input = humanPresenceInput({ category, functionalType, affordance: 'wearable' });
+    const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+    const prompts = briefs.map((brief) => compileCreativeDirectorV3ImagePrompt({
+      brief, productIdentity: input.productIdentity,
+      productSemantics: input.productSemantics, userIntent: input.userIntent,
+    }));
+    assert.match(prompts[1], /ON-BODY WEARABLE PRODUCT IDENTITY LOCK/);
+    assert.match(prompts[1], /source reference remains the authoritative visual identity/);
+    assert.match(prompts[1], /Adapt anatomy, pose, camera and physically plausible placement around the unchanged product/);
+    assert.equal(prompts.filter((prompt) => prompt.includes('ON-BODY WEARABLE PRODUCT IDENTITY LOCK')).length, 1);
+  }
+});
+
+test('produto não vestível sem presença humana não recebe lock on-body', async () => {
+  const input = humanPresenceInput({
+    category: 'electronics', functionalType: 'electronic device',
+    affordance: 'installed_environmental',
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  for (const brief of briefs) {
+    const prompt = compileCreativeDirectorV3ImagePrompt({
+      brief, productIdentity: input.productIdentity,
+      productSemantics: input.productSemantics, userIntent: input.userIntent,
+    });
+    assert.doesNotMatch(prompt, /ON-BODY WEARABLE PRODUCT IDENTITY LOCK/);
+  }
 });

@@ -41,6 +41,21 @@ function section(label, values) {
   return [label, ...values].join('\n');
 }
 
+function onBodyWearableFidelity(brief, productSemantics) {
+  const presence = brief.humanInteraction.presence ??
+    (brief.humanInteraction.mode === 'required' ? 'required' : 'optional');
+  const applies = productSemantics.affordances.includes('wearable') &&
+    ['recommended', 'required'].includes(presence) &&
+    brief.humanInteraction.mode !== 'forbidden';
+  if (!applies) return null;
+  return section('D2. ON-BODY WEARABLE PRODUCT IDENTITY LOCK', [
+    'The person, pose and body placement are presentation context only. The source reference remains the authoritative visual identity of the product being worn.',
+    'Preserve the exact source-visible silhouette, geometry, proportions, construction, materials, colors, components, patterns, distinctive details and canonical quantity while the product is on the body.',
+    'Adapt anatomy, pose, camera and physically plausible placement around the unchanged product. Never redesign, reshape, simplify, stretch, recolor, add, remove or substitute product components to make them fit the person.',
+    'Keep attachment, orientation, scale and contact physically credible without sacrificing product detail. Maintain natural human appearance, lighting and scene creativity outside the locked product identity.',
+  ]);
+}
+
 export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, productSemantics, userIntent }) {
   if (!brief || !productIdentity || !productSemantics) throw new TypeError('Validated V3 brief and canonical context are required.');
   const canonical = new Map(productIdentity.items.map((item) => [item.id, item]));
@@ -96,6 +111,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
             ? 'Human presence is recommended only because it improves truthful demonstration of use, scale or commercial appeal. Keep the product dominant, use valid anatomy and placement, and do not infer gender without evidence.'
             : 'Human interaction is optional and must remain within the supplied usage description and affordances; do not invent anatomical placement or gender.',
     ]),
+    onBodyWearableFidelity(brief, productSemantics),
     section('E. CAMPAIGN IDEA', [
       `Campaign role: ${brief.campaignRole}.`,
       `Campaign idea: ${brief.campaignIdea}`,
