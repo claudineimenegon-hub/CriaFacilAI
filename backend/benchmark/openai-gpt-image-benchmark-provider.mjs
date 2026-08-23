@@ -6,6 +6,7 @@ export const OPENAI_BENCHMARK_QUALITIES = Object.freeze(['medium', 'high']);
 const MAX_INPUT_BYTES = 20 * 1024 * 1024;
 const MAX_RESULT_BASE64_LENGTH = 40 * 1024 * 1024;
 const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : console;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 class OpenAIBenchmarkProviderError extends Error {
   constructor(message, { code, status } = {}) {
@@ -18,6 +19,12 @@ class OpenAIBenchmarkProviderError extends Error {
 
 function providerError(message, fields) {
   return new OpenAIBenchmarkProviderError(message, fields);
+}
+
+function normalizeApiKey(value) {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  return normalized && !CONTROL_CHARACTERS.test(normalized) ? normalized : '';
 }
 
 function safeToken(value) {
@@ -205,15 +212,16 @@ export function createOpenAIGPTImageBenchmarkProvider({
   timeoutSignalFactory = (milliseconds) => AbortSignal.timeout(milliseconds),
   logger = defaultLogger,
 } = {}) {
+  const normalizedApiKey = normalizeApiKey(apiKey);
   return Object.freeze({
     name: PROVIDER_NAME,
     model: OPENAI_BENCHMARK_IMAGE_MODEL,
-    isConfigured: Boolean(apiKey),
-    configurationRequired: apiKey ? null : 'OPENAI_API_KEY',
+    isConfigured: Boolean(normalizedApiKey),
+    configurationRequired: normalizedApiKey ? null : 'OPENAI_API_KEY',
     async generate(request) {
       const size = validateRequest(request);
       const quality = selectedQuality(request);
-      if (!apiKey) {
+      if (!normalizedApiKey) {
         throw providerError('OpenAI benchmark is not configured.', {
           code: 'PROVIDER_NOT_CONFIGURED',
         });
@@ -248,7 +256,7 @@ export function createOpenAIGPTImageBenchmarkProvider({
         transportFailureStage = 'FETCH_CALL';
         response = await fetchImpl(OPENAI_BENCHMARK_IMAGE_ENDPOINT, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${apiKey}` },
+          headers: { Authorization: `Bearer ${normalizedApiKey}` },
           body: form,
           signal,
         });

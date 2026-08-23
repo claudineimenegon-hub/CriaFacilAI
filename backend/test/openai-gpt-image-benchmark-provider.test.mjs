@@ -46,6 +46,28 @@ test('fica indisponível sem credencial e --list pode refletir configuration_req
   assert.equal(adapter.model, 'gpt-image-2');
 });
 
+test('normaliza whitespace externo da chave e rejeita controle interno antes do fetch', async () => {
+  let authorization;
+  const normalized = createOpenAIGPTImageBenchmarkProvider({
+    apiKey: '  test-key  \r\n',
+    fetchImpl: async (_url, options) => {
+      authorization = options.headers.Authorization;
+      return successResponse();
+    },
+  });
+  await normalized.generate(request());
+  assert.equal(authorization, 'Bearer test-key');
+
+  let calls = 0;
+  const invalid = createOpenAIGPTImageBenchmarkProvider({
+    apiKey: 'test\nkey',
+    fetchImpl: async () => { calls += 1; return successResponse(); },
+  });
+  assert.equal(invalid.isConfigured, false);
+  await assert.rejects(invalid.generate(request()), { code: 'PROVIDER_NOT_CONFIGURED' });
+  assert.equal(calls, 0);
+});
+
 test('medium e high são enviados diretamente no campo quality', async () => {
   for (const quality of ['medium', 'high']) {
     let form;
