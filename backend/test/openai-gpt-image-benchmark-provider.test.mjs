@@ -139,9 +139,9 @@ test('valida timeout e classifica falhas de transporte sem dados sensíveis', as
   const cases = [
     { expected: 'INVALID_TIMEOUT', timeoutMs: Number.NaN, fetchImpl: async () => successResponse() },
     { expected: 'FETCH_UNAVAILABLE', timeoutMs: 300_000, fetchImpl: null },
-    { expected: 'DNS_ERROR', timeoutMs: 300_000, fetchImpl: async () => { throw Object.assign(new Error('secret dns'), { cause: { code: 'ENOTFOUND' } }); } },
-    { expected: 'TLS_ERROR', timeoutMs: 300_000, fetchImpl: async () => { throw Object.assign(new Error('secret tls'), { cause: { code: 'ERR_TLS_CERT_ALTNAME_INVALID' } }); } },
-    { expected: 'CONNECTION_ERROR', timeoutMs: 300_000, fetchImpl: async () => { throw Object.assign(new Error('secret connection'), { cause: { code: 'ECONNREFUSED' } }); } },
+    { expected: 'DNS_ERROR', timeoutMs: 300_000, causeCode: 'ENOTFOUND', fetchImpl: async () => { throw Object.assign(new TypeError('secret dns'), { cause: { name: 'Error', code: 'ENOTFOUND' } }); } },
+    { expected: 'TLS_ERROR', timeoutMs: 300_000, causeCode: 'ERR_TLS_CERT_ALTNAME_INVALID', fetchImpl: async () => { throw Object.assign(new TypeError('secret tls'), { cause: { name: 'Error', code: 'ERR_TLS_CERT_ALTNAME_INVALID' } }); } },
+    { expected: 'CONNECTION_ERROR', timeoutMs: 300_000, causeCode: 'UND_ERR_CONNECT_TIMEOUT', fetchImpl: async () => { throw Object.assign(new TypeError('secret connection'), { cause: { name: 'ConnectTimeoutError', code: 'UND_ERR_CONNECT_TIMEOUT' } }); } },
     { expected: 'UNKNOWN_TRANSPORT_ERROR', timeoutMs: 300_000, fetchImpl: async () => { throw new Error('secret unknown'); } },
   ];
 
@@ -156,12 +156,32 @@ test('valida timeout e classifica falhas de transporte sem dados sensíveis', as
     await assert.rejects(provider.generate(request()), { code: 'PROVIDER_UNAVAILABLE' });
     assert.equal(logs.length, 1);
     assert.equal(logs[0].transportFailureCause, item.expected);
-    assert.deepEqual(Object.keys(logs[0]).sort(), [
-      'category', 'elapsedMs', 'model', 'provider', 'providerErrorCode',
-      'statusHttp', 'timestamp', 'transportFailureCause',
-    ]);
+    assert.match(logs[0].errorName, /^(Error|TypeError)$/);
+    if (item.causeCode) assert.equal(logs[0].causeCode, item.causeCode);
+    assert.equal(Object.hasOwn(logs[0], 'stack'), false);
     assert.doesNotMatch(JSON.stringify(logs), /secret|base64|data:image|authorization|prompt|stack/i);
   }
+});
+
+test('registra error.code e cause.name somente como tokens sanitizados', async () => {
+  const logs = [];
+  const provider = createOpenAIGPTImageBenchmarkProvider({
+    apiKey: 'test',
+    logger: { warn: (event) => logs.push(event) },
+    fetchImpl: async () => {
+      throw Object.assign(new TypeError('private upstream message'), {
+        code: 'UND_ERR_SOCKET',
+        cause: { name: 'SocketError', code: 'UND_ERR_SOCKET' },
+      });
+    },
+  });
+  await assert.rejects(provider.generate(request()), { code: 'PROVIDER_UNAVAILABLE' });
+  assert.equal(logs[0].transportFailureCause, 'CONNECTION_ERROR');
+  assert.equal(logs[0].errorName, 'TypeError');
+  assert.equal(logs[0].errorCode, 'UND_ERR_SOCKET');
+  assert.equal(logs[0].causeCode, 'UND_ERR_SOCKET');
+  assert.equal(logs[0].causeName, 'SocketError');
+  assert.doesNotMatch(JSON.stringify(logs), /private|message|stack|prompt|base64|authorization/i);
 });
 
 test('envia referência estética como segunda image[]', async () => {

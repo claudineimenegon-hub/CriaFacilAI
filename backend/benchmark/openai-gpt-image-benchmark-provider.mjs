@@ -35,12 +35,16 @@ function safeRequestId(value) {
 const DNS_ERROR_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'EAI_NODATA']);
 const TLS_ERROR_CODES = new Set([
   'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'ERR_SSL_PROTOCOL_ERROR',
+  'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_TLS_CERT_SIGNATURE_ALGORITHM_UNSUPPORTED',
+  'ERR_TLS_DH_PARAM_SIZE', 'ERR_TLS_HANDSHAKE_TIMEOUT',
   'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
   'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
 ]);
 const CONNECTION_ERROR_CODES = new Set([
   'ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETDOWN',
-  'ENETUNREACH', 'ENOTCONN', 'EPIPE', 'ETIMEDOUT',
+  'ENETUNREACH', 'ENOTCONN', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_ABORTED',
+  'UND_ERR_BODY_TIMEOUT', 'UND_ERR_CLOSED', 'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_DESTROYED', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET',
 ]);
 
 function errorCode(error) {
@@ -48,12 +52,25 @@ function errorCode(error) {
   return typeof value === 'string' ? value.toUpperCase() : '';
 }
 
-function transportCause(error, { fetchImpl, timeoutMs }) {
+function safeErrorToken(value) {
+  return safeToken(value);
+}
+
+function sanitizedTransportError(error) {
+  return Object.freeze({
+    ...(safeErrorToken(error?.name) ? { errorName: safeErrorToken(error.name) } : {}),
+    ...(safeErrorToken(error?.code) ? { errorCode: safeErrorToken(error.code) } : {}),
+    ...(safeErrorToken(error?.cause?.code) ? { causeCode: safeErrorToken(error.cause.code) } : {}),
+    ...(safeErrorToken(error?.cause?.name) ? { causeName: safeErrorToken(error.cause.name) } : {}),
+  });
+}
+
+function classifyTransportFailure(error, { fetchImpl, timeoutMs }) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) return 'INVALID_TIMEOUT';
   if (typeof fetchImpl !== 'function') return 'FETCH_UNAVAILABLE';
   const code = errorCode(error);
   if (DNS_ERROR_CODES.has(code)) return 'DNS_ERROR';
-  if (TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_')) return 'TLS_ERROR';
+  if (TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_') || code.startsWith('ERR_SSL_')) return 'TLS_ERROR';
   if (CONNECTION_ERROR_CODES.has(code)) return 'CONNECTION_ERROR';
   return 'UNKNOWN_TRANSPORT_ERROR';
 }
@@ -140,7 +157,9 @@ function imageMimeType(bytes) {
   return png ? 'image/png' : jpeg ? 'image/jpeg' : undefined;
 }
 
-function logFailure(logger, startedAt, { statusHttp, code, category, requestId, transportFailureCause }) {
+function logFailure(logger, startedAt, {
+  statusHttp, code, category, requestId, transportFailureCause, transportError,
+}) {
   logger?.warn?.({
     provider: PROVIDER_NAME,
     model: OPENAI_BENCHMARK_IMAGE_MODEL,
@@ -148,6 +167,7 @@ function logFailure(logger, startedAt, { statusHttp, code, category, requestId, 
     providerErrorCode: code,
     category,
     ...(transportFailureCause ? { transportFailureCause } : {}),
+    ...(transportError ?? {}),
     elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
     ...(requestId ? { upstreamRequestId: requestId } : {}),
     timestamp: new Date().toISOString(),
@@ -203,12 +223,13 @@ export function createOpenAIGPTImageBenchmarkProvider({
         const code = timeout ? 'UPSTREAM_TIMEOUT' : 'PROVIDER_UNAVAILABLE';
         const transportFailureCause = timeout
           ? undefined
-          : transportCause(error, { fetchImpl, timeoutMs });
+          : classifyTransportFailure(error, { fetchImpl, timeoutMs });
         logFailure(logger, startedAt, {
           statusHttp: null,
           code,
           category: timeout ? 'timeout' : 'provider_unavailable',
           transportFailureCause,
+          transportError: sanitizedTransportError(error),
         });
         throw providerError('OpenAI image edit request failed.', { code });
       }
