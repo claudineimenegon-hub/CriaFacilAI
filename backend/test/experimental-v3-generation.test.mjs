@@ -381,3 +381,72 @@ test('prompt limita relativeScale a quatro relações visíveis de alta confian�
   assert.doesNotMatch(scaleSection, /product-6/);
   assert.doesNotMatch(scaleSection, /approximately the same visible size/);
 });
+
+test('Lifestyle wearable prioriza âncora anatômica e oclusão natural sem exigir exposição simultânea', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'wearable collection',
+      items: [
+        { id: 'paired-wearable', functionalType: 'paired wearable accessory', quantity: 2 },
+        { id: 'single-wearable', functionalType: 'single wearable accessory', quantity: 1 },
+      ],
+      relationships: [{ type: 'pair', itemIds: ['paired-wearable'] }],
+      relativeScale: [{
+        subjectId: 'single-wearable', referenceId: 'paired-wearable',
+        relation: 'slightly_larger', confidence: 'high',
+      }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'wearable product set', affordances: ['wearable'],
+      validContexts: ['natural use at the functionally valid body placement'],
+      invalidContexts: ['invalid anatomical placement'],
+    },
+    userIntent: {
+      objective: 'Create a premium campaign', aspectRatio: '1:1',
+      requestedStyle: null, additionalInstructions: null,
+    },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const prompts = briefs.map((brief) => compileCreativeDirectorV3ImagePrompt({
+    brief, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  }));
+  const lifestyle = prompts[1];
+  assert.match(lifestyle, /HUMAN–WEARABLE PLACEMENT/);
+  assert.match(lifestyle, /Physical plausibility takes priority/);
+  assert.match(lifestyle, /valid anatomical anchor/);
+  assert.match(lifestyle, /natural occlusion/);
+  assert.match(lifestyle, /only one valid anatomical anchor is visible/);
+  assert.match(lifestyle, /do not invent a second placement/);
+  assert.match(lifestyle, /Other wearable items may appear only when their own valid anchor is naturally visible/);
+  assert.match(lifestyle, /single-wearable is slightly larger than paired-wearable/);
+  assert.equal(prompts.filter((prompt) => prompt.includes('HUMAN–WEARABLE PLACEMENT')).length, 1);
+});
+
+test('camada de placement não afeta não vestíveis nem propostas não Lifestyle', async () => {
+  const wearable = humanPresenceInput({
+    category: 'general wearable', functionalType: 'body-worn product', affordance: 'wearable',
+  });
+  const wearableBriefs = await createDeterministicCreativeDirectorV3Model().generate(wearable);
+  const wearablePrompts = wearableBriefs.map((brief) => compileCreativeDirectorV3ImagePrompt({
+    brief, productIdentity: wearable.productIdentity,
+    productSemantics: wearable.productSemantics, userIntent: wearable.userIntent,
+  }));
+  assert.doesNotMatch(wearablePrompts[0], /HUMAN–WEARABLE PLACEMENT/);
+  assert.doesNotMatch(wearablePrompts[2], /HUMAN–WEARABLE PLACEMENT/);
+  assert.doesNotMatch(wearablePrompts[3], /HUMAN–WEARABLE PLACEMENT/);
+
+  const nonWearable = humanPresenceInput({
+    category: 'electronics', functionalType: 'electronic device', affordance: 'handheld',
+  });
+  const nonWearableBriefs = await createDeterministicCreativeDirectorV3Model().generate(nonWearable);
+  for (const brief of nonWearableBriefs) {
+    const prompt = compileCreativeDirectorV3ImagePrompt({
+      brief, productIdentity: nonWearable.productIdentity,
+      productSemantics: nonWearable.productSemantics, userIntent: nonWearable.userIntent,
+    });
+    assert.doesNotMatch(prompt, /HUMAN–WEARABLE PLACEMENT/);
+  }
+});

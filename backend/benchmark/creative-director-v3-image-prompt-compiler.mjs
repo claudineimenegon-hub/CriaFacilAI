@@ -67,6 +67,23 @@ function humanProductInteractionFidelity(brief) {
   ]);
 }
 
+function humanWearablePlacement(brief, productSemantics) {
+  const presence = brief.humanInteraction.presence ??
+    (brief.humanInteraction.mode === 'required' ? 'required'
+      : brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional');
+  const applies = brief.campaignRole === 'contextual_lifestyle' &&
+    productSemantics.affordances.includes('wearable') &&
+    ['recommended', 'required'].includes(presence) &&
+    brief.humanInteraction.mode !== 'forbidden';
+  if (!applies) return null;
+  return section('D4. HUMAN–WEARABLE PLACEMENT', [
+    'Physical plausibility takes priority over making every selected unit clearly visible. For each worn product, preserve its functionally valid anatomical anchor, attachment orientation and physically plausible scale.',
+    'Treat pose and framing as visibility constraints: accept natural occlusion by anatomy, hair, clothing or the body, and accept a canonical unit being outside the frame. Never move a product to an invalid nearby body location merely to display it.',
+    'A paired product remains one canonical pair, but when only one valid anatomical anchor is visible, only the naturally anchored unit may be clearly visible; do not invent a second placement. Other wearable items may appear only when their own valid anchor is naturally visible and compositionally coherent.',
+    'Adapt pose, camera and framing to the products when useful, while preserving relativeScale and all product identity locks. Natural occlusion changes visibility only; it never changes canonical inventory, quantity or relationships.',
+  ]);
+}
+
 function relativeScaleFidelity(productIdentity, selectedIds) {
   const comparisons = (productIdentity.relativeScale ?? []).filter(({ confidence, subjectId, referenceId }) =>
     confidence === 'high' && selectedIds.has(subjectId) && selectedIds.has(referenceId)).slice(0, 4);
@@ -92,6 +109,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
   const selectedIds = new Set([...required, ...optional].map(({ itemId }) => itemId));
   const omitted = productIdentity.items.filter(({ id }) => !selectedIds.has(id));
   const interactionFidelity = humanProductInteractionFidelity(brief);
+  const wearablePlacement = humanWearablePlacement(brief, productSemantics);
   const scaleFidelity = relativeScaleFidelity(productIdentity, selectedIds);
   const prompt = [
     section('A. PRODUCT IDENTITY — HIGHEST PRIORITY', [
@@ -150,6 +168,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
     ]),
     onBodyWearableFidelity(brief, productSemantics),
     ...(interactionFidelity ? [interactionFidelity] : []),
+    ...(wearablePlacement ? [wearablePlacement] : []),
     section('E. CAMPAIGN IDEA', [
       `Campaign role: ${brief.campaignRole}.`,
       `Campaign idea: ${brief.campaignIdea}`,
