@@ -308,6 +308,22 @@ function selectedItems(brief, identity) {
   return selected;
 }
 
+const DETAIL_PHOTOGRAPHY_PATTERN = /\b(?:macro|close(?:-?up)?|detail(?:ed)?|magnified|tight framing|shallow depth|precision)\b/i;
+const DETAIL_SUBJECT_PATTERN = /\b(?:craft(?:smanship)?|material|texture|construction|finish|geometry|component|microstructure|surface transition|setting detail|structural detail|precision)\b/i;
+
+export function editorialDetailPurposeValid(brief) {
+  if (brief?.campaignRole !== 'editorial_craft_detail') return true;
+  const scope = brief.productPresentation?.presentationScope;
+  if (scope === 'complete_set') return true;
+  const photography = Object.values(brief.photography ?? {}).filter((value) => typeof value === 'string').join(' ');
+  const purpose = [
+    brief.campaignIdea, brief.visualStory, brief.commercialObjective,
+    brief.productPresentation?.presentationMode,
+  ].filter((value) => typeof value === 'string').join(' ');
+  return DETAIL_PHOTOGRAPHY_PATTERN.test(photography) &&
+    DETAIL_SUBJECT_PATTERN.test(`${purpose} ${photography}`);
+}
+
 function validateRelationships(brief, input, selected) {
   for (const relationship of input.productIdentity.relationships) {
     if (!/pair|atomic/i.test(relationship.type)) continue;
@@ -363,6 +379,9 @@ export function validateCreativeDirectorV3Output(rawBriefs, normalizedInput) {
       }
       if (presentationScope === 'single_item_detail' && selected.size !== 1) {
         fail('INVALID_V3_OUTPUT', 'Editorial single-item detail must select exactly one canonical item.');
+      }
+      if (presentationScope !== 'complete_set' && !editorialDetailPurposeValid(brief)) {
+        fail('INVALID_V3_OUTPUT', 'Editorial subset requires a genuine craft or detail purpose.');
       }
     }
     if (!['required', 'allowed', 'forbidden'].includes(brief.humanInteraction.mode)) fail('INVALID_V3_OUTPUT', 'Invalid human interaction mode.');

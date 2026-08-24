@@ -1,7 +1,13 @@
-import { compileCreativeDirectorV3ImagePrompt } from '../benchmark/creative-director-v3-image-prompt-compiler.mjs';
+import {
+  compileCreativeDirectorV3ImagePrompt,
+  deriveProposalUnitAllocation,
+} from '../benchmark/creative-director-v3-image-prompt-compiler.mjs';
 import { createOpenAICreativeDirectorV3Adapter } from '../benchmark/creative-director-v3-openai-adapter.mjs';
 import { runCreativeDirectorV3WithFailSafe } from '../benchmark/creative-director-v3-execution.mjs';
-import { V3_CAMPAIGN_ROLES } from '../benchmark/creative-director-v3.mjs';
+import {
+  editorialDetailPurposeValid,
+  V3_CAMPAIGN_ROLES,
+} from '../benchmark/creative-director-v3.mjs';
 import { createOpenAIGPTImageBenchmarkProvider } from '../benchmark/openai-gpt-image-benchmark-provider.mjs';
 import { validateProductIdentityAnalysis } from '../image-to-image/product-identity-analyzer.mjs';
 
@@ -21,7 +27,7 @@ const CATEGORY_SEMANTICS = Object.freeze({
 const ALLOWED_CATEGORIES = new Set(Object.keys(CATEGORY_SEMANTICS));
 const ALLOWED_QUALITIES = new Set(['medium', 'high']);
 const ALLOWED_RATIOS = new Set(['1:1', '4:5', '9:16', '16:9']);
-const STRUCTURAL_FEATURE_PATTERN = /\b(?:closure|clasp|connector|attachment|fasten(?:er|ing)?|buckle|hinge|extension chain|extender|cap|fecho|fechamento|conector|engate|fixa(?:ção|cao)|fivela|dobradiça|dobradica|corrente extensora|extensor|tampa)\b/i;
+const STRUCTURAL_FEATURE_PATTERN = /\b(?:closure|clasp|connector|attachment|fasten(?:er|ing)?|buckle|strap|hinge|hook|joint|terminal|extension chain|extender|cap|fecho|fechamento|conector|engate|fixa(?:ção|cao)|fivela|alça|alca|dobradiça|dobradica|gancho|junta|junção|juncao|terminal|corrente extensora|extensor|tampa)\b/i;
 const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : Object.freeze({
   info(event) { console.info(`[ExperimentalV3] ${JSON.stringify(event)}`); },
 });
@@ -213,21 +219,30 @@ export function createExperimentalV3GenerationService({
             ...brief.productPresentation.requiredVisibleItems,
             ...brief.productPresentation.optionalVisibleItems,
           ].map(({ itemId }) => itemId))];
-          const visible = new Set(visibleItemIds);
           const countByItem = (features) => Object.fromEntries(input.productIdentity.items.map(({ id }) => [
             id, features.filter(({ itemId }) => itemId === id).length,
           ]));
+          const structuralFeatureCountByItem = countByItem(input.productIdentity.criticalFeatures);
+          const allocation = deriveProposalUnitAllocation({
+            brief, productIdentity: input.productIdentity,
+          });
           effectiveLogger.info({
             component: 'ExperimentalV3ProposalInventory',
             campaignRole: brief.campaignRole,
-            visibleItemIds,
-            omittedItemIds: input.productIdentity.items.map(({ id }) => id).filter((id) => !visible.has(id)),
-            featureCountByItem: countByItem(input.productIdentity.observedFeatureEvidence),
-            criticalFeatureCountByItem: countByItem(input.productIdentity.criticalFeatures),
-            relativeScaleRelationCount: input.productIdentity.relativeScale.length,
-            visibilityMode: brief.visibilityIntent.mode,
-            pairPolicy: brief.visibilityIntent.pairPolicy,
-            humanInteractionMode: brief.humanInteraction.mode,
+            selectedCanonicalItemIds: visibleItemIds,
+            canonicalQuantities: Object.fromEntries(allocation.map(({ itemId, canonicalQuantity }) =>
+              [itemId, canonicalQuantity])),
+            humanAllocatedUnits: Object.fromEntries(allocation.map(({ itemId, humanAllocated }) =>
+              [itemId, humanAllocated])),
+            maxSceneAllocatedUnits: Object.fromEntries(allocation.map(({ itemId, maxSceneAllocated }) =>
+              [itemId, maxSceneAllocated])),
+            structuralFeatureCountByItem,
+            hasStructuralComponentsByItem: Object.fromEntries(Object.entries(structuralFeatureCountByItem)
+              .map(([itemId, count]) => [itemId, count > 0])),
+            editorialScope: brief.productPresentation.presentationScope,
+            editorialDetailPurposeValid: editorialDetailPurposeValid(brief),
+            schemaValid: direction.schemaValid === true,
+            diversityValid: direction.diversityValid === true,
           });
           const prompt = compileCreativeDirectorV3ImagePrompt({
             brief, productIdentity: input.productIdentity,

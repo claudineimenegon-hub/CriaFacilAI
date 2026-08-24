@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createDeterministicCreativeDirectorV3Model, validateCreativeDirectorV3Input, validateCreativeDirectorV3Output } from '../benchmark/creative-director-v3.mjs';
-import { compileCreativeDirectorV3ImagePrompt } from '../benchmark/creative-director-v3-image-prompt-compiler.mjs';
+import {
+  compileCreativeDirectorV3ImagePrompt,
+  deriveProposalUnitAllocation,
+} from '../benchmark/creative-director-v3-image-prompt-compiler.mjs';
 import {
   buildCreativeDirectorV3Input,
   createExperimentalV3GenerationService,
@@ -192,11 +195,19 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
   await instance.generate(request());
   const proposals = events.filter(({ component }) => component === 'ExperimentalV3ProposalInventory');
   assert.equal(proposals.length, 4);
-  assert.deepEqual(proposals[0].visibleItemIds, ['product-pair']);
-  assert.deepEqual(proposals[0].omittedItemIds, []);
-  assert.deepEqual(proposals[0].featureCountByItem, { 'product-pair': 2 });
-  assert.deepEqual(proposals[0].criticalFeatureCountByItem, { 'product-pair': 1 });
-  assert.equal(proposals[0].relativeScaleRelationCount, 0);
+  assert.deepEqual(proposals[0].selectedCanonicalItemIds, ['product-pair']);
+  assert.deepEqual(proposals[0].canonicalQuantities, { 'product-pair': 2 });
+  assert.deepEqual(proposals[0].structuralFeatureCountByItem, { 'product-pair': 1 });
+  assert.deepEqual(proposals[0].hasStructuralComponentsByItem, { 'product-pair': true });
+  assert.equal(proposals[0].schemaValid, true);
+  assert.equal(proposals[0].diversityValid, true);
+  const allowed = new Set([
+    'component', 'campaignRole', 'selectedCanonicalItemIds', 'canonicalQuantities',
+    'humanAllocatedUnits', 'maxSceneAllocatedUnits', 'structuralFeatureCountByItem',
+    'hasStructuralComponentsByItem', 'editorialScope', 'editorialDetailPurposeValid',
+    'schemaValid', 'diversityValid',
+  ]);
+  assert.equal(proposals.every((event) => Object.keys(event).every((key) => allowed.has(key))), true);
   const serialized = JSON.stringify(proposals);
   assert.doesNotMatch(serialized, /prompt|source-observed|plausibleHypotheses|Base64|data:image/i);
 });
@@ -577,4 +588,137 @@ test('camada de placement não afeta não vestíveis nem propostas não Lifestyl
     });
     assert.doesNotMatch(prompt, /HUMAN–WEARABLE PLACEMENT/);
   }
+});
+
+test('unit allocation desconta uso humano do máximo de cena sem duplicar inventário', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'multi-unit wearable',
+      items: [{ id: 'paired-product', functionalType: 'paired wearable product', quantity: 2 }],
+      relationships: [{ type: 'pair', itemIds: ['paired-product'] }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'paired wearable product', affordances: ['wearable'],
+      validContexts: ['physically plausible human use'], invalidContexts: ['invalid placement'],
+    },
+    userIntent: {
+      objective: 'Create a premium campaign', aspectRatio: '1:1',
+      requestedStyle: null, additionalInstructions: null,
+    },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const lifestyle = (await createDeterministicCreativeDirectorV3Model().generate(input))[1];
+  const oneOnHuman = {
+    ...lifestyle,
+    humanInteraction: {
+      ...lifestyle.humanInteraction,
+      usageDescription: 'One paired-product unit is naturally used by the person; the other may be occluded or out of frame.',
+    },
+  };
+  const one = deriveProposalUnitAllocation({ brief: oneOnHuman, productIdentity: input.productIdentity });
+  assert.deepEqual(one, [{
+    itemId: 'paired-product', canonicalQuantity: 2, humanAllocated: 1, maxSceneAllocated: 1,
+  }]);
+  const both = deriveProposalUnitAllocation({
+    brief: {
+      ...oneOnHuman,
+      humanInteraction: { ...oneOnHuman.humanInteraction, usageDescription: 'Both paired-product units are used by the person.' },
+    },
+    productIdentity: input.productIdentity,
+  });
+  assert.equal(both[0].humanAllocated, 2);
+  assert.equal(both[0].maxSceneAllocated, 0);
+  for (const allocation of [...one, ...both]) {
+    assert.ok(allocation.humanAllocated + allocation.maxSceneAllocated <= allocation.canonicalQuantity);
+  }
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: oneOnHuman, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.match(prompt, /TOTAL CANONICAL QUANTITY FOR THIS PROPOSAL: 2/);
+  assert.match(prompt, /ALLOCATED TO HUMAN: 1/);
+  assert.match(prompt, /MAXIMUM ADDITIONAL UNITS ALLOWED ELSEWHERE IN THE SCENE: 1/);
+  assert.match(prompt, /never authorizes an additional pair/);
+  assert.match(prompt, /Occluded or out-of-frame units do not create additional inventory/);
+});
+
+test('Editorial subset exige finalidade real de detalhe e separa múltiplos produtos', async () => {
+  const normalized = validateExperimentalV3Request(request());
+  const second = {
+    id: 'second-product', functionalType: { state: 'known', value: 'independent product' },
+    quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+    observedFeatures: [], ambiguousFeatures: [],
+  };
+  const input = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: { ...analysis, items: [...analysis.items, second] }, request: normalized,
+  }));
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const editorial = briefs[2];
+  const multiPrompt = compileCreativeDirectorV3ImagePrompt({
+    brief: editorial, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.match(multiPrompt, /EDITORIAL PRODUCT SEPARATION/);
+  assert.match(multiPrompt, /independent physical object/);
+
+  const selected = [{ itemId: 'second-product', quantity: 1 }];
+  const validDetail = {
+    ...editorial,
+    productPresentation: {
+      ...editorial.productPresentation, heroItemIds: ['second-product'], supportingItemIds: [],
+      requiredVisibleItems: selected, optionalVisibleItems: [], presentationScope: 'single_item_detail',
+    },
+    visibilityIntent: {
+      ...editorial.visibilityIntent, heroItemIds: ['second-product'],
+      requiredVisibleItems: selected, optionalVisibleItems: [], pairPolicy: 'not_selected', mode: 'subset',
+    },
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output([
+    briefs[0], briefs[1], validDetail, briefs[3],
+  ], input));
+  const singlePrompt = compileCreativeDirectorV3ImagePrompt({
+    brief: validDetail, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.doesNotMatch(singlePrompt, /EDITORIAL PRODUCT SEPARATION/);
+
+  const genericStillLife = {
+    ...validDetail,
+    campaignIdea: 'A conventional studio arrangement',
+    commercialObjective: 'Present the product in a conventional arrangement',
+    visualStory: 'The product rests on a plain table in a standard composition',
+    productPresentation: { ...validDetail.productPresentation, presentationMode: 'ordinary still life' },
+    photography: {
+      shotType: 'standard shot', cameraAngle: 'ordinary angle', framing: 'standard framing',
+      lensLanguage: 'normal lens', depthOfField: 'general focus', lighting: 'basic studio light',
+      contrast: 'medium contrast',
+    },
+  };
+  assert.throws(() => validateCreativeDirectorV3Output([
+    briefs[0], briefs[1], genericStillLife, briefs[3],
+  ], input), /genuine craft or detail purpose/);
+});
+
+test('componentes estruturais observados são críticos sem promover evidência ambígua', () => {
+  const normalized = validateExperimentalV3Request(request({ category: 'general' }));
+  const componentAnalysis = {
+    state: 'known',
+    items: [{
+      id: 'product-1', functionalType: { state: 'known', value: 'portable product' },
+      quantity: { state: 'known', value: 1 }, observationCompleteness: 'partial',
+      observedFeatures: [
+        { id: 'strap-1', name: 'visible carrying strap', value: 'attached by a visible buckle' },
+        { id: 'finish-1', name: 'surface finish', value: 'matte' },
+      ],
+      ambiguousFeatures: [{
+        id: 'hidden-hook', name: 'possible hidden hook', visibility: 'hidden',
+        observedConstraint: null, plausibleHypotheses: ['concealed hook'],
+      }],
+    }],
+    relationships: [],
+  };
+  const input = buildCreativeDirectorV3Input({ analysis: componentAnalysis, request: normalized });
+  assert.deepEqual(input.productIdentity.criticalFeatures.map(({ featureId }) => featureId), ['strap-1']);
+  assert.equal(input.productIdentity.criticalFeatures.some(({ featureId }) => featureId === 'hidden-hook'), false);
 });

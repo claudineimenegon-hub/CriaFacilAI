@@ -139,6 +139,9 @@ test('constrói requisição multimodal estruturada com categoria, brief e image
   assert.match(instruction.text, /Declared category .* accessory/);
   assert.match(instruction.text, /complete collection/);
   assert.match(instruction.text, /Never promote an inference to observed fact/);
+  assert.match(instruction.text, /small structural or functional components/);
+  assert.match(instruction.text, /clasps, extenders, connectors/);
+  assert.match(instruction.text, /Do not invent hidden components/);
   assert.doesNotMatch(instruction.text, /jewel|ring|earring|gemstone/i);
   assert.deepEqual(image.inlineData, {
     mimeType: 'image/jpeg', data: imageBytes.toString('base64'),

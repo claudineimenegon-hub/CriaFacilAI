@@ -113,6 +113,7 @@ const analysisInstruction = [
   'Never promote an inference to observed fact. Never invent inventory, quantity, type, geometry, branding, or relationships.',
   'Use known, uncertain, or unknown conservatively. Unknown inventory must contain no items or relationships.',
   'Keep items generic and individually addressable. This policy applies to every product category.',
+  'When clearly visible, record small structural or functional components as observedFeatures linked to their canonical item, including clasps, extenders, connectors, closures, joints, hooks, buckles, straps, hinges, fasteners, terminals, attachments, and equivalent visible functional connections. Do not invent hidden components, promote ambiguous micro-details, or require a component that lacks sufficient visual evidence.',
   'When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, relation exactly one of slightly_larger, approximately_same, clearly_larger, or significantly_smaller, and confidence exactly one of high, medium, or low. Omit unknown or uncertain comparisons and never estimate physical measurements.',
 ].join(' ');
 

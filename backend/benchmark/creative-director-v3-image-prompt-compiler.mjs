@@ -84,6 +84,44 @@ function humanWearablePlacement(brief, productSemantics) {
   ]);
 }
 
+function humanInteractionActive(brief) {
+  const presence = brief.humanInteraction.presence ??
+    (brief.humanInteraction.mode === 'required' ? 'required'
+      : brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional');
+  return brief.campaignRole === 'contextual_lifestyle' && presence !== 'none' &&
+    brief.humanInteraction.mode !== 'forbidden';
+}
+
+function itemMentionedByUsage(item, usage) {
+  const tokens = `${item.id} ${item.functionalType}`.toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 4);
+  return tokens.some((token) => usage.includes(token));
+}
+
+export function deriveProposalUnitAllocation({ brief, productIdentity }) {
+  const selected = [...brief.productPresentation.requiredVisibleItems,
+    ...brief.productPresentation.optionalVisibleItems];
+  const canonical = new Map(productIdentity.items.map((item) => [item.id, item]));
+  if (!humanInteractionActive(brief)) {
+    return selected.map(({ itemId, quantity }) => Object.freeze({
+      itemId, canonicalQuantity: quantity, humanAllocated: 0, maxSceneAllocated: quantity,
+    }));
+  }
+  const usage = String(brief.humanInteraction.usageDescription ?? '').toLowerCase();
+  const mentionedIds = new Set(selected.filter(({ itemId }) =>
+    itemMentionedByUsage(canonical.get(itemId), usage)).map(({ itemId }) => itemId));
+  const candidates = mentionedIds.size > 0
+    ? mentionedIds : new Set(brief.productPresentation.heroItemIds);
+  const allUnits = /\b(?:all|both|every|each|complete pair|full pair|one on each|todas?|ambas?|cada)\b/i.test(usage);
+  return selected.map(({ itemId, quantity }) => {
+    const humanAllocated = candidates.has(itemId) ? (allUnits ? quantity : Math.min(1, quantity)) : 0;
+    return Object.freeze({
+      itemId, canonicalQuantity: quantity, humanAllocated,
+      maxSceneAllocated: Math.max(0, quantity - humanAllocated),
+    });
+  });
+}
+
 function relativeScaleFidelity(productIdentity, selectedIds) {
   const comparisons = (productIdentity.relativeScale ?? []).filter(({ confidence, subjectId, referenceId }) =>
     confidence === 'high' && selectedIds.has(subjectId) && selectedIds.has(referenceId)).slice(0, 4);
@@ -111,6 +149,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
   const interactionFidelity = humanProductInteractionFidelity(brief);
   const wearablePlacement = humanWearablePlacement(brief, productSemantics);
   const scaleFidelity = relativeScaleFidelity(productIdentity, selectedIds);
+  const unitAllocation = deriveProposalUnitAllocation({ brief, productIdentity });
   const criticalFeatures = (productIdentity.criticalFeatures ?? [])
     .filter(({ itemId }) => selectedIds.has(itemId));
   const selectedObservedFeatures = (productIdentity.observedFeatureEvidence?.length ?? 0) > 0
@@ -147,6 +186,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'Preserve all source-observed structural features associated with each selected canonical item.',
       ...criticalFeatures.map(({ itemId, name, value }) => `- ${itemId}: ${name}=${value}.`),
       'These are observed structural facts, not inferred generic components. Do not add an unobserved feature.',
+      'When a selected product is substantially visible, retain these components as part of its physical identity. Natural concealment by pose, body, rear perspective, crop or plausible occlusion is allowed, but never remove a component merely to simplify the design when it should be visible.',
     ])] : []),
     section('B. VISIBLE INVENTORY FOR THIS PROPOSAL', [
       wearablePlacement
@@ -164,12 +204,25 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'Product fidelity applies only to the items selected by this proposal and must not restore omitted canonical items.',
     ]),
     section('C. PROTECTED RELATIONSHIPS', relationshipLines(brief, productIdentity, selectedIds)),
+    ...(humanInteractionActive(brief) ? [section('C1. PROPOSAL UNIT ALLOCATION', [
+      ...unitAllocation.flatMap(({ itemId, canonicalQuantity, humanAllocated, maxSceneAllocated }) => [
+        `- ${itemId} — TOTAL CANONICAL QUANTITY FOR THIS PROPOSAL: ${canonicalQuantity}.`,
+        `  ALLOCATED TO HUMAN: ${humanAllocated}.`,
+        `  MAXIMUM ADDITIONAL UNITS ALLOWED ELSEWHERE IN THE SCENE: ${maxSceneAllocated}.`,
+      ]),
+      'Human-allocated and scene-displayed units are parts of the same canonical inventory. Never repeat one unit in multiple locations, and never let their sum exceed the canonical quantity. Occluded or out-of-frame units do not create additional inventory; the remaining allowance is a maximum, not a requirement to display it.',
+      'preserve_pair protects the canonical relationship and never authorizes an additional pair.',
+    ])] : []),
     section('C2. PRODUCT SCALE LOCK', [
       'Preserve credible physical scale, internal relative proportions and the source-observed size relationships between product components.',
       'When the product interacts with a person, anatomy, a hand, furniture, architecture, another familiar object or a recognizable environment, use those elements as realistic physical scale references.',
       'Keep the product physically plausible in the new scene. Create prominence through framing, camera position, focus, lighting and composition—not by enlarging, shrinking, stretching, compressing or reshaping the physical product.',
     ]),
     ...(scaleFidelity ? [scaleFidelity] : []),
+    ...(brief.campaignRole === 'editorial_craft_detail' && selectedIds.size > 1
+      ? [section('C4. EDITORIAL PRODUCT SEPARATION', [
+        'Keep every selected canonical item as an independent physical object with recognizable boundaries. Do not share geometry, incorporate one product into another, or use destructive overlap that prevents the products from being distinguished.',
+      ])] : []),
     section('D. HUMAN INTERACTION / VALID USE', [
       `Human presence decision: ${brief.humanInteraction.presence ?? (brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional')}.`,
       `Human interaction mode: ${brief.humanInteraction.mode}.`,
