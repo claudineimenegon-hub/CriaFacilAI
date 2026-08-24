@@ -246,6 +246,57 @@ test('normaliza wrapper e aliases estruturais seguros sem inventar conteúdo', a
   assert.equal(events[0].normalizationApplied, true);
 });
 
+test('normaliza enum seguro de relativeScale antes da validação', async () => {
+  const events = [];
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => geminiResponse({
+      state: 'known',
+      items: [genericItem({ id: 'product-a' }), genericItem({ id: 'product-b' })],
+      relationships: [],
+      relativeScale: [{
+        subject_id: 'product-a', reference_id: 'product-b',
+        relation: 'slightly larger', confidence: 'HIGH',
+      }],
+    }),
+    logger: { info: (event) => events.push(event) },
+  });
+  const result = await analyzer.analyze(analyzerInput());
+  assert.deepEqual(result.relativeScale, [{
+    subjectId: 'product-a', referenceId: 'product-b',
+    relation: 'slightly_larger', confidence: 'high',
+  }]);
+  assert.equal(events[0].normalizationApplied, true);
+});
+
+test('relativeScale desconhecido ou inválido é omitido sem abortar a identidade válida', async () => {
+  const responses = [
+    { relation: 'approximately_same', confidence: 'unknown' },
+    { relation: 'artistically_bigger', confidence: 'high' },
+  ];
+  for (const comparison of responses) {
+    let calls = 0;
+    const analyzer = new GeminiProductIdentityAnalyzer({
+      apiKey,
+      fetchImpl: async () => {
+        calls += 1;
+        return geminiResponse({
+          state: 'known',
+          items: [genericItem({ id: 'product-a' }), genericItem({ id: 'product-b' })],
+          relationships: [],
+          relativeScale: [{
+            subjectId: 'product-a', referenceId: 'product-b', ...comparison,
+          }],
+        });
+      },
+    });
+    const result = await analyzer.analyze(analyzerInput());
+    assert.deepEqual(result.relativeScale, []);
+    assert.equal(result.items.length, 2);
+    assert.equal(calls, 1);
+  }
+});
+
 test('primeira saída inválida recebe um único retry estrito e segunda válida é aceita', async () => {
   let calls = 0;
   const requestBodies = [];

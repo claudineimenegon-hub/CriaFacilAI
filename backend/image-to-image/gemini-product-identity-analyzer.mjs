@@ -113,7 +113,7 @@ const analysisInstruction = [
   'Never promote an inference to observed fact. Never invent inventory, quantity, type, geometry, branding, or relationships.',
   'Use known, uncertain, or unknown conservatively. Unknown inventory must contain no items or relationships.',
   'Keep items generic and individually addressable. This policy applies to every product category.',
-  'When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, one of slightly_larger, approximately_same, clearly_larger, or significantly_smaller, and a conservative confidence. Omit uncertain comparisons and never estimate physical measurements.',
+  'When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, relation exactly one of slightly_larger, approximately_same, clearly_larger, or significantly_smaller, and confidence exactly one of high, medium, or low. Omit unknown or uncertain comparisons and never estimate physical measurements.',
 ].join(' ');
 
 export class GeminiProductIdentityAnalyzerError extends Error {
@@ -194,6 +194,40 @@ function normalizeStructuredAnalysis(value) {
       rename(relationship, 'memberIds', ['member_ids', 'itemIds', 'item_ids']);
     }
   }
+  if (Array.isArray(clone.relativeScale)) {
+    const relations = new Set([
+      'slightly_larger', 'approximately_same', 'clearly_larger', 'significantly_smaller',
+    ]);
+    const relationAliases = new Map([
+      ['slightly larger', 'slightly_larger'],
+      ['approximately same', 'approximately_same'],
+      ['approximately the same', 'approximately_same'],
+      ['clearly larger', 'clearly_larger'],
+      ['significantly smaller', 'significantly_smaller'],
+    ]);
+    const confidences = new Set(['high', 'medium', 'low']);
+    clone.relativeScale = clone.relativeScale.filter((comparison) => {
+      if (!comparison || typeof comparison !== 'object' || Array.isArray(comparison)) return true;
+      rename(comparison, 'subjectId', ['subject_id']);
+      rename(comparison, 'referenceId', ['reference_id']);
+      if (typeof comparison.relation === 'string') {
+        const compact = comparison.relation.trim().toLowerCase().replace(/-/g, '_');
+        const canonical = relationAliases.get(compact.replace(/_/g, ' ')) ?? compact;
+        if (canonical !== comparison.relation) applied = true;
+        comparison.relation = canonical;
+      }
+      if (typeof comparison.confidence === 'string') {
+        const canonical = comparison.confidence.trim().toLowerCase();
+        if (canonical !== comparison.confidence) applied = true;
+        comparison.confidence = canonical;
+      }
+      if (!relations.has(comparison.relation) || !confidences.has(comparison.confidence)) {
+        applied = true;
+        return false;
+      }
+      return true;
+    });
+  }
   return { analysis: clone, applied };
 }
 
@@ -213,7 +247,7 @@ function validationDiagnostics(error) {
   else if (/references an unknown item|memberIds is invalid/.test(message)) {
     validationReason = 'invalid_relationship';
   } else if (/quantity.*integer|quantity.*value/.test(message)) validationReason = 'invalid_quantity';
-  else if (/state is invalid|observationCompleteness is invalid|visibility is invalid/.test(message)) {
+  else if (/state is invalid|observationCompleteness is invalid|visibility is invalid|relativeScale\[\d+\]\.(?:relation|confidence) is invalid/.test(message)) {
     validationReason = 'invalid_enum';
   } else if (/unknown|Unknown analysis/.test(message)) validationReason = 'invalid_unknown_value';
   else if (/must be|is required|is invalid/.test(message)) validationReason = 'invalid_structure';
