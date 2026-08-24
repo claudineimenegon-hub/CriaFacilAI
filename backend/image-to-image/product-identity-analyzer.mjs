@@ -1,6 +1,10 @@
 const states = new Set(['known', 'uncertain', 'unknown']);
 const completenessValues = new Set(['complete', 'partial', 'unknown']);
 const visibilityValues = new Set(['partial', 'hidden']);
+const relativeScaleRelations = new Set([
+  'slightly_larger', 'approximately_same', 'clearly_larger', 'significantly_smaller',
+]);
+const confidenceValues = new Set(['high', 'medium', 'low']);
 
 export const PRODUCT_IDENTITY_ANALYSIS_LIMITS = Object.freeze({
   encodedBytes: 32 * 1024,
@@ -135,6 +139,32 @@ function validateRelationship(value, index, itemIds) {
   });
 }
 
+function validateRelativeScale(value, itemIds) {
+  if (!Array.isArray(value) || value.length > 16) fail('analysis.relativeScale is invalid.');
+  if (itemIds.size < 2 && value.length > 0) fail('Relative scale requires multiple canonical items.');
+  const comparedPairs = new Map();
+  return Object.freeze(value.map((entry, index) => {
+    const path = `relativeScale[${index}]`;
+    assertPlainObject(entry, path, ['subjectId', 'referenceId', 'relation', 'confidence']);
+    const subjectId = validateToken(entry.subjectId, `${path}.subjectId`);
+    const referenceId = validateToken(entry.referenceId, `${path}.referenceId`);
+    if (subjectId === referenceId || !itemIds.has(subjectId) || !itemIds.has(referenceId)) {
+      fail(`${path} references invalid canonical items.`);
+    }
+    if (!relativeScaleRelations.has(entry.relation)) fail(`${path}.relation is invalid.`);
+    if (!confidenceValues.has(entry.confidence)) fail(`${path}.confidence is invalid.`);
+    const pairKey = [subjectId, referenceId].sort().join('\u0000');
+    const signature = `${subjectId}\u0000${referenceId}\u0000${entry.relation}\u0000${entry.confidence}`;
+    if (comparedPairs.has(pairKey)) {
+      fail(comparedPairs.get(pairKey) === signature
+        ? `${path} duplicates an existing relative scale comparison.`
+        : `${path} contradicts an existing relative scale comparison.`);
+    }
+    comparedPairs.set(pairKey, signature);
+    return Object.freeze({ subjectId, referenceId, relation: entry.relation, confidence: entry.confidence });
+  }));
+}
+
 export function unknownProductIdentityAnalysis() {
   return Object.freeze({
     state: 'unknown',
@@ -153,7 +183,7 @@ export function validateProductIdentityAnalysis(value) {
   if (encodedBytes > PRODUCT_IDENTITY_ANALYSIS_LIMITS.encodedBytes) {
     fail('Analysis exceeds the encoded size limit.');
   }
-  assertPlainObject(value, 'analysis', ['state', 'items', 'relationships']);
+  assertPlainObject(value, 'analysis', ['state', 'items', 'relationships', 'relativeScale']);
   if (!states.has(value.state)) fail('analysis.state is invalid.');
   if (!Array.isArray(value.items) || value.items.length > PRODUCT_IDENTITY_ANALYSIS_LIMITS.items) {
     fail('analysis.items is invalid.');
@@ -170,7 +200,12 @@ export function validateProductIdentityAnalysis(value) {
   if (itemIds.size !== items.length) fail('Item IDs must be unique.');
   const relationships = Object.freeze(value.relationships.map((entry, index) =>
     validateRelationship(entry, index, itemIds)));
-  return Object.freeze({ state: value.state, items, relationships });
+  const relativeScale = value.relativeScale === undefined
+    ? undefined : validateRelativeScale(value.relativeScale, itemIds);
+  return Object.freeze({
+    state: value.state, items, relationships,
+    ...(relativeScale === undefined ? {} : { relativeScale }),
+  });
 }
 
 export class ProductIdentityAnalyzer {
@@ -188,4 +223,3 @@ export class UnknownProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     return unknownProductIdentityAnalysis();
   }
 }
-

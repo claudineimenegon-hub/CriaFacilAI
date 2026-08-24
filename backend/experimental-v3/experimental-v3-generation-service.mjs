@@ -97,6 +97,11 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
     item.observedFeatures.map((feature) => `${item.id}: ${feature.name}=${feature.value}`));
   const ambiguousFeatures = identity.items.flatMap((item) =>
     item.ambiguousFeatures.map((feature) => `${item.id}: ${feature.name} is ${feature.visibility}`));
+  const relativeScale = (identity.relativeScale ?? [])
+    .filter(({ confidence }) => confidence === 'high')
+    .map(({ subjectId, referenceId, relation, confidence }) => ({
+      subjectId, referenceId, relation, confidence,
+    }));
   const [primaryAffordance, validContexts] = CATEGORY_SEMANTICS[request.category];
   return {
     productIdentity: {
@@ -105,6 +110,7 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
       relationships,
       observedFeatures,
       ambiguousFeatures,
+      relativeScale,
     },
     productSemantics: {
       functionalType: items.map(({ functionalType }) => functionalType).join(' and '),

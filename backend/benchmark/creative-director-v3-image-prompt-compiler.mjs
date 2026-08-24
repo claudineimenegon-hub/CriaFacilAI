@@ -67,6 +67,23 @@ function humanProductInteractionFidelity(brief) {
   ]);
 }
 
+function relativeScaleFidelity(productIdentity, selectedIds) {
+  const comparisons = (productIdentity.relativeScale ?? []).filter(({ confidence, subjectId, referenceId }) =>
+    confidence === 'high' && selectedIds.has(subjectId) && selectedIds.has(referenceId)).slice(0, 4);
+  if (!comparisons.length) return null;
+  const wording = {
+    slightly_larger: 'slightly larger than',
+    approximately_same: 'approximately the same visible size as',
+    clearly_larger: 'clearly larger than',
+    significantly_smaller: 'significantly smaller than',
+  };
+  return section('C3. SOURCE-OBSERVED RELATIVE SCALE', [
+    ...comparisons.map(({ subjectId, referenceId, relation }) =>
+      `- ${subjectId} is ${wording[relation]} ${referenceId} in the source reference.`),
+    'Preserve this hierarchy when these products appear at approximately the same depth; clearly different depth planes may naturally change apparent scale through perspective.',
+  ]);
+}
+
 export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, productSemantics, userIntent }) {
   if (!brief || !productIdentity || !productSemantics) throw new TypeError('Validated V3 brief and canonical context are required.');
   const canonical = new Map(productIdentity.items.map((item) => [item.id, item]));
@@ -75,6 +92,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
   const selectedIds = new Set([...required, ...optional].map(({ itemId }) => itemId));
   const omitted = productIdentity.items.filter(({ id }) => !selectedIds.has(id));
   const interactionFidelity = humanProductInteractionFidelity(brief);
+  const scaleFidelity = relativeScaleFidelity(productIdentity, selectedIds);
   const prompt = [
     section('A. PRODUCT IDENTITY — HIGHEST PRIORITY', [
       'The supplied source photograph is the canonical visual reference for the product.',
@@ -116,6 +134,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'When the product interacts with a person, anatomy, a hand, furniture, architecture, another familiar object or a recognizable environment, use those elements as realistic physical scale references.',
       'Keep the product physically plausible in the new scene. Create prominence through framing, camera position, focus, lighting and composition—not by enlarging, shrinking, stretching, compressing or reshaping the physical product.',
     ]),
+    ...(scaleFidelity ? [scaleFidelity] : []),
     section('D. HUMAN INTERACTION / VALID USE', [
       `Human presence decision: ${brief.humanInteraction.presence ?? (brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional')}.`,
       `Human interaction mode: ${brief.humanInteraction.mode}.`,

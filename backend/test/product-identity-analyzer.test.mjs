@@ -60,6 +60,55 @@ test('valida produto único completamente observado', () => {
   assert.ok(Object.isFrozen(result.items[0].observedFeatures));
 });
 
+test('valida escala relativa somente entre múltiplos IDs canônicos', () => {
+  const result = validateProductIdentityAnalysis({
+    state: 'known',
+    items: [item({ id: 'product-a' }), item({ id: 'product-b' })],
+    relationships: [],
+    relativeScale: [{
+      subjectId: 'product-a', referenceId: 'product-b',
+      relation: 'slightly_larger', confidence: 'high',
+    }],
+  });
+  assert.deepEqual(result.relativeScale, [{
+    subjectId: 'product-a', referenceId: 'product-b',
+    relation: 'slightly_larger', confidence: 'high',
+  }]);
+  assert.throws(() => validateProductIdentityAnalysis({
+    state: 'known', items: [item()], relationships: [],
+    relativeScale: [{
+      subjectId: 'item-1', referenceId: 'missing',
+      relation: 'clearly_larger', confidence: 'high',
+    }],
+  }), /multiple canonical items|invalid canonical items/);
+});
+
+test('rejeita escala relativa duplicada, contraditória direta ou inversa', () => {
+  const base = {
+    state: 'known',
+    items: [item({ id: 'product-a' }), item({ id: 'product-b' })],
+    relationships: [],
+  };
+  const comparison = {
+    subjectId: 'product-a', referenceId: 'product-b',
+    relation: 'slightly_larger', confidence: 'high',
+  };
+  assert.throws(() => validateProductIdentityAnalysis({
+    ...base, relativeScale: [comparison, { ...comparison }],
+  }), /duplicates/);
+  assert.throws(() => validateProductIdentityAnalysis({
+    ...base,
+    relativeScale: [comparison, { ...comparison, relation: 'clearly_larger' }],
+  }), /contradicts/);
+  assert.throws(() => validateProductIdentityAnalysis({
+    ...base,
+    relativeScale: [comparison, {
+      subjectId: 'product-b', referenceId: 'product-a',
+      relation: 'slightly_larger', confidence: 'high',
+    }],
+  }), /contradicts/);
+});
+
 test('valida produto parcial sem transformar ambiguidade em fato', () => {
   const result = validateProductIdentityAnalysis({
     state: 'uncertain',

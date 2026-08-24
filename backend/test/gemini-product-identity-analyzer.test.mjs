@@ -181,6 +181,11 @@ test('schema remoto usa somente o subconjunto estrutural aceito pelo Gemini', ()
     'relationships[].memberIds',
     'relationships[].state',
     'relationships[].type',
+    'relativeScale',
+    'relativeScale[].confidence',
+    'relativeScale[].referenceId',
+    'relativeScale[].relation',
+    'relativeScale[].subjectId',
     'state',
   ]);
   const item = GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.items.items;

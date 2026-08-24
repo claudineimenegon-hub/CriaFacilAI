@@ -272,3 +272,112 @@ test('fidelidade por componente preserva associações observáveis sem endurece
     assert.ok(prompt.length < 14_000, `prompt grew unexpectedly: ${prompt.length}`);
   }
 });
+
+test('escala relativa confiável chega condicionalmente ao prompt sem depender da categoria', async () => {
+  const analyzed = {
+    state: 'known',
+    items: [
+      {
+        id: 'product-a', functionalType: { state: 'known', value: 'generic product A' },
+        quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+        observedFeatures: [], ambiguousFeatures: [],
+      },
+      {
+        id: 'product-b', functionalType: { state: 'known', value: 'generic product B' },
+        quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+        observedFeatures: [], ambiguousFeatures: [],
+      },
+    ],
+    relationships: [],
+    relativeScale: [
+      { subjectId: 'product-a', referenceId: 'product-b', relation: 'slightly_larger', confidence: 'high' },
+    ],
+  };
+  const normalized = validateExperimentalV3Request(request({ category: 'general' }));
+  const input = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: analyzed, request: normalized,
+  }));
+  assert.deepEqual(input.productIdentity.relativeScale, [{
+    subjectId: 'product-a', referenceId: 'product-b',
+    relation: 'slightly_larger', confidence: 'high',
+  }]);
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: briefs[0], productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.match(prompt, /SOURCE-OBSERVED RELATIVE SCALE/);
+  assert.match(prompt, /product-a is slightly larger than product-b/);
+  assert.match(prompt, /approximately the same depth/);
+  assert.doesNotMatch(prompt, /\b(?:earrings?|rings?|jewelry)\b/i);
+});
+
+test('escala incerta, ausente ou produto único não altera o prompt', async () => {
+  const single = humanPresenceInput({
+    category: 'general', functionalType: 'generic product', affordance: 'unknown_safe_context',
+  });
+  const singleBrief = (await createDeterministicCreativeDirectorV3Model().generate(single))[0];
+  const singlePrompt = compileCreativeDirectorV3ImagePrompt({
+    brief: singleBrief, productIdentity: single.productIdentity,
+    productSemantics: single.productSemantics, userIntent: single.userIntent,
+  });
+  assert.doesNotMatch(singlePrompt, /SOURCE-OBSERVED RELATIVE SCALE/);
+
+  const uncertain = validateCreativeDirectorV3Input({
+    ...single,
+    productIdentity: {
+      ...single.productIdentity,
+      items: [
+        { id: 'product-a', functionalType: 'generic product A', quantity: 1 },
+        { id: 'product-b', functionalType: 'generic product B', quantity: 1 },
+      ],
+      relativeScale: [{
+        subjectId: 'product-a', referenceId: 'product-b',
+        relation: 'approximately_same', confidence: 'low',
+      }],
+    },
+  });
+  const uncertainBrief = (await createDeterministicCreativeDirectorV3Model().generate(uncertain))[0];
+  const uncertainPrompt = compileCreativeDirectorV3ImagePrompt({
+    brief: uncertainBrief, productIdentity: uncertain.productIdentity,
+    productSemantics: uncertain.productSemantics, userIntent: uncertain.userIntent,
+  });
+  assert.doesNotMatch(uncertainPrompt, /SOURCE-OBSERVED RELATIVE SCALE/);
+});
+
+test('prompt limita relativeScale a quatro relações visíveis de alta confiança', async () => {
+  const items = Array.from({ length: 6 }, (_, index) => ({
+    id: `product-${index + 1}`, functionalType: `generic product ${index + 1}`, quantity: 1,
+  }));
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'general', items, relationships: [], observedFeatures: [], ambiguousFeatures: [],
+      relativeScale: [
+        ...items.slice(1).map((item, index) => ({
+          subjectId: 'product-1', referenceId: item.id,
+          relation: index % 2 ? 'clearly_larger' : 'slightly_larger', confidence: 'high',
+        })),
+        { subjectId: 'product-2', referenceId: 'product-3', relation: 'approximately_same', confidence: 'low' },
+      ],
+    },
+    productSemantics: {
+      functionalType: 'generic product collection', affordances: ['unknown_safe_context'],
+      validContexts: ['commercial context'], invalidContexts: ['physically implausible use'],
+    },
+    userIntent: {
+      objective: 'Create a premium campaign', aspectRatio: '1:1',
+      requestedStyle: null, additionalInstructions: null,
+    },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const brief = (await createDeterministicCreativeDirectorV3Model().generate(input))[0];
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  const scaleSection = prompt.split('C3. SOURCE-OBSERVED RELATIVE SCALE')[1]
+    .split('D. HUMAN INTERACTION / VALID USE')[0];
+  assert.equal((scaleSection.match(/^- product-/gm) ?? []).length, 4);
+  assert.doesNotMatch(scaleSection, /product-6/);
+  assert.doesNotMatch(scaleSection, /approximately the same visible size/);
+});

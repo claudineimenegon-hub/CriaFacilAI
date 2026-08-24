@@ -94,6 +94,20 @@ export function validateCreativeDirectorV3Input(input) {
     if (itemIds.some((id) => !ids.has(id))) fail('INVALID_V3_INPUT', 'Relationship references an unknown item ID.');
     return Object.freeze({ type: text(relationship.type, 'relationship.type'), itemIds });
   });
+  const relativeScale = (identity.relativeScale ?? []).map((comparison) => {
+    const subjectId = text(comparison?.subjectId, 'relativeScale.subjectId');
+    const referenceId = text(comparison?.referenceId, 'relativeScale.referenceId');
+    if (subjectId === referenceId || !ids.has(subjectId) || !ids.has(referenceId)) {
+      fail('INVALID_V3_INPUT', 'Relative scale references invalid canonical item IDs.');
+    }
+    if (!['slightly_larger', 'approximately_same', 'clearly_larger', 'significantly_smaller']
+      .includes(comparison.relation) || !['high', 'medium', 'low'].includes(comparison.confidence)) {
+      fail('INVALID_V3_INPUT', 'Relative scale contains an unsupported relation or confidence.');
+    }
+    return Object.freeze({
+      subjectId, referenceId, relation: comparison.relation, confidence: comparison.confidence,
+    });
+  });
   const affordances = Array.isArray(input.productSemantics?.affordances)
     ? [...new Set(input.productSemantics.affordances)] : [];
   if (!affordances.length || affordances.some((value) => !V3_AFFORDANCES.includes(value))) fail('INVALID_V3_INPUT', 'Unsupported or missing affordance.');
@@ -103,6 +117,7 @@ export function validateCreativeDirectorV3Input(input) {
     productIdentity: Object.freeze({
       category: text(identity.category, 'productIdentity.category'), items: Object.freeze(items),
       relationships: Object.freeze(relationships),
+      relativeScale: Object.freeze(relativeScale),
       observedFeatures: strings(identity.observedFeatures ?? [], 'productIdentity.observedFeatures'),
       ambiguousFeatures: strings(identity.ambiguousFeatures ?? [], 'productIdentity.ambiguousFeatures'),
     }),

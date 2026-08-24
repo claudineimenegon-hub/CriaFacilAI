@@ -88,6 +88,19 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
         required: ['type', 'memberIds', 'state'],
       },
     },
+    relativeScale: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          subjectId: tokenString,
+          referenceId: tokenString,
+          relation: tokenString,
+          confidence: tokenString,
+        },
+        required: ['subjectId', 'referenceId', 'relation', 'confidence'],
+      },
+    },
   },
   required: ['state', 'items', 'relationships'],
 });
@@ -100,6 +113,7 @@ const analysisInstruction = [
   'Never promote an inference to observed fact. Never invent inventory, quantity, type, geometry, branding, or relationships.',
   'Use known, uncertain, or unknown conservatively. Unknown inventory must contain no items or relationships.',
   'Keep items generic and individually addressable. This policy applies to every product category.',
+  'When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, one of slightly_larger, approximately_same, clearly_larger, or significantly_smaller, and a conservative confidence. Omit uncertain comparisons and never estimate physical measurements.',
 ].join(' ');
 
 export class GeminiProductIdentityAnalyzerError extends Error {
