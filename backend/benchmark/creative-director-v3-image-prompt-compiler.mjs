@@ -137,9 +137,14 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'Natural changes from lighting, reflection, exposure and color temperature remain allowed when the intrinsic material and characteristic color association stays recognizable. Scene, camera, composition and art direction remain creatively free.',
     ]),
     section('B. VISIBLE INVENTORY FOR THIS PROPOSAL', [
-      'VISIBLE IN THIS IMAGE — REQUIRED:',
+      wearablePlacement
+        ? 'CANONICAL / EXISTING INVENTORY SELECTED FOR THIS PROPOSAL:'
+        : 'VISIBLE IN THIS IMAGE — REQUIRED:',
       ...required.map((item) => itemLine(item, canonical)),
       ...(optional.length ? ['OPTIONAL ONLY IF THE VALIDATED BRIEF REQUESTS IT:', ...optional.map((item) => itemLine(item, canonical))] : ['OPTIONAL VISIBLE ITEMS: none.']),
+      ...(wearablePlacement ? [
+        'These quantities lock the canonical products that exist in the composition; they are not a minimum clearly-visible count. Natural anatomical occlusion or an anchor outside the frame may reduce how many units are clearly visible without changing canonical quantity, pair integrity or Product Identity.',
+      ] : []),
       'NOT VISIBLE IN THIS IMAGE:',
       ...(omitted.length ? omitted.map(({ id }) => `- ${id}. Do not add, imply, substitute or transform another item into this omitted item.`) : ['- none; the validated proposal selected the full canonical inventory.']),
       `Visibility mode: ${brief.visibilityIntent.mode}. Presentation mode: ${brief.productPresentation.presentationMode}.`,

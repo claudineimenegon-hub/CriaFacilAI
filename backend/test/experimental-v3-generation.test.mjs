@@ -422,6 +422,15 @@ test('Lifestyle wearable prioriza âncora anatômica e oclusão natural sem exig
   assert.match(lifestyle, /do not invent a second placement/);
   assert.match(lifestyle, /Other wearable items may appear only when their own valid anchor is naturally visible/);
   assert.match(lifestyle, /single-wearable is slightly larger than paired-wearable/);
+  assert.match(lifestyle, /paired-wearable: exactly 2 units/);
+  assert.match(lifestyle, /CANONICAL \/ EXISTING INVENTORY SELECTED FOR THIS PROPOSAL/);
+  assert.match(lifestyle, /not a minimum clearly-visible count/);
+  assert.match(lifestyle, /without changing canonical quantity, pair integrity or Product Identity/);
+  assert.match(lifestyle, /Atomic relationship pair/);
+  assert.match(lifestyle, /canonical relationship consists of exactly 2 matched units/);
+  assert.doesNotMatch(lifestyle, /VISIBLE IN THIS IMAGE — REQUIRED/);
+  assert.doesNotMatch(lifestyle, /exactly 2 (?:clearly )?visible/i);
+  assert.doesNotMatch(lifestyle, /\b(?:earrings?|rings?|jewelry)\b/i);
   assert.equal(prompts.filter((prompt) => prompt.includes('HUMAN–WEARABLE PLACEMENT')).length, 1);
 });
 
@@ -437,6 +446,9 @@ test('camada de placement não afeta não vestíveis nem propostas não Lifestyl
   assert.doesNotMatch(wearablePrompts[0], /HUMAN–WEARABLE PLACEMENT/);
   assert.doesNotMatch(wearablePrompts[2], /HUMAN–WEARABLE PLACEMENT/);
   assert.doesNotMatch(wearablePrompts[3], /HUMAN–WEARABLE PLACEMENT/);
+  assert.match(wearablePrompts[0], /VISIBLE IN THIS IMAGE — REQUIRED/);
+  assert.match(wearablePrompts[2], /VISIBLE IN THIS IMAGE — REQUIRED/);
+  assert.match(wearablePrompts[3], /VISIBLE IN THIS IMAGE — REQUIRED/);
 
   const nonWearable = humanPresenceInput({
     category: 'electronics', functionalType: 'electronic device', affordance: 'handheld',
