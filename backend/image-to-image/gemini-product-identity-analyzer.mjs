@@ -1,4 +1,6 @@
 import {
+  canonicalizeProductIdentityEnum,
+  PRODUCT_IDENTITY_ENUMS,
   ProductIdentityAnalyzer,
   validateProductIdentityAnalysis,
 } from './product-identity-analyzer.mjs';
@@ -111,10 +113,12 @@ const analysisInstruction = [
   'Record only actually visible traits as observedFeatures.',
   'Record unsafe-to-determine or hidden traits as ambiguousFeatures.',
   'Never promote an inference to observed fact. Never invent inventory, quantity, type, geometry, branding, or relationships.',
-  'Use known, uncertain, or unknown conservatively. Unknown inventory must contain no items or relationships.',
+  `Use state exactly one of ${PRODUCT_IDENTITY_ENUMS.state.join(', ')}. Unknown inventory must contain no items or relationships.`,
+  `Use observationCompleteness exactly one of ${PRODUCT_IDENTITY_ENUMS.observationCompleteness.join(', ')}.`,
+  `For ambiguous feature visibility, use exactly one of ${PRODUCT_IDENTITY_ENUMS.ambiguousFeatureVisibility.join(', ')}.`,
   'Keep items generic and individually addressable. This policy applies to every product category.',
   'When clearly visible, record small structural or functional components as observedFeatures linked to their canonical item, including clasps, extenders, connectors, closures, joints, hooks, buckles, straps, hinges, fasteners, terminals, attachments, and equivalent visible functional connections. Do not invent hidden components, promote ambiguous micro-details, or require a component that lacks sufficient visual evidence.',
-  'When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, relation exactly one of slightly_larger, approximately_same, clearly_larger, or significantly_smaller, and confidence exactly one of high, medium, or low. Omit unknown or uncertain comparisons and never estimate physical measurements.',
+  `When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, relation exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleRelation.join(', ')}, and confidence exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleConfidence.join(', ')}. Omit unknown or uncertain comparisons and never estimate physical measurements.`,
 ].join(' ');
 
 export class GeminiProductIdentityAnalyzerError extends Error {
@@ -148,9 +152,17 @@ function parseStructuredAnalysis(text) {
   return { value: JSON.parse(fenced ? fenced[1] : trimmed), applied: Boolean(fenced) };
 }
 
+function safeEnumToken(value) {
+  if (typeof value !== 'string') return undefined;
+  const token = value.trim();
+  return token.length > 0 && token.length <= 40 && /^[A-Za-z0-9 _-]+$/.test(token)
+    ? token : undefined;
+}
+
 function normalizeStructuredAnalysis(value) {
   let normalized = value;
   let applied = false;
+  const invalidEnums = [];
   if (normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const keys = Object.keys(normalized);
     const wrapper = ['analysis', 'productIdentityAnalysis', 'result']
@@ -162,7 +174,7 @@ function normalizeStructuredAnalysis(value) {
     }
   }
   if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
-    return { analysis: normalized, applied };
+    return { analysis: normalized, applied, invalidEnums };
   }
   const clone = structuredClone(normalized);
   const rename = (object, canonical, aliases) => {
@@ -174,62 +186,67 @@ function normalizeStructuredAnalysis(value) {
     delete object[alias];
     applied = true;
   };
+  const normalizeEnum = (object, key, enumName, path) => {
+    if (!object || typeof object !== 'object' || Array.isArray(object) ||
+        typeof object[key] !== 'string') return;
+    const canonical = canonicalizeProductIdentityEnum(enumName, object[key]);
+    if (canonical === undefined) {
+      invalidEnums.push(Object.freeze({
+        path,
+        ...(safeEnumToken(object[key]) ? { receivedEnumToken: safeEnumToken(object[key]) } : {}),
+      }));
+      return;
+    }
+    if (canonical !== object[key]) applied = true;
+    object[key] = canonical;
+  };
   rename(clone, 'items', ['products']);
   rename(clone, 'relationships', ['relations']);
+  normalizeEnum(clone, 'state', 'state', 'analysis.state');
   if (Array.isArray(clone.items)) {
-    for (const item of clone.items) {
+    for (const [itemIndex, item] of clone.items.entries()) {
       rename(item, 'functionalType', ['functional_type']);
       rename(item, 'observationCompleteness', ['observation_completeness']);
       rename(item, 'observedFeatures', ['observed_features']);
       rename(item, 'ambiguousFeatures', ['ambiguous_features']);
+      normalizeEnum(item?.functionalType, 'state', 'state', `items[${itemIndex}].functionalType.state`);
+      normalizeEnum(item?.quantity, 'state', 'state', `items[${itemIndex}].quantity.state`);
+      normalizeEnum(item, 'observationCompleteness', 'observationCompleteness',
+        `items[${itemIndex}].observationCompleteness`);
       if (Array.isArray(item?.ambiguousFeatures)) {
-        for (const feature of item.ambiguousFeatures) {
+        for (const [featureIndex, feature] of item.ambiguousFeatures.entries()) {
           rename(feature, 'observedConstraint', ['observed_constraint']);
           rename(feature, 'plausibleHypotheses', ['plausible_hypotheses']);
+          normalizeEnum(feature, 'visibility', 'ambiguousFeatureVisibility',
+            `items[${itemIndex}].ambiguousFeatures[${featureIndex}].visibility`);
         }
       }
     }
   }
   if (Array.isArray(clone.relationships)) {
-    for (const relationship of clone.relationships) {
+    for (const [relationshipIndex, relationship] of clone.relationships.entries()) {
       rename(relationship, 'memberIds', ['member_ids', 'itemIds', 'item_ids']);
+      normalizeEnum(relationship, 'state', 'state', `relationships[${relationshipIndex}].state`);
     }
   }
   if (Array.isArray(clone.relativeScale)) {
-    const relations = new Set([
-      'slightly_larger', 'approximately_same', 'clearly_larger', 'significantly_smaller',
-    ]);
-    const relationAliases = new Map([
-      ['slightly larger', 'slightly_larger'],
-      ['approximately same', 'approximately_same'],
-      ['approximately the same', 'approximately_same'],
-      ['clearly larger', 'clearly_larger'],
-      ['significantly smaller', 'significantly_smaller'],
-    ]);
-    const confidences = new Set(['high', 'medium', 'low']);
-    clone.relativeScale = clone.relativeScale.filter((comparison) => {
+    clone.relativeScale = clone.relativeScale.filter((comparison, comparisonIndex) => {
       if (!comparison || typeof comparison !== 'object' || Array.isArray(comparison)) return true;
       rename(comparison, 'subjectId', ['subject_id']);
       rename(comparison, 'referenceId', ['reference_id']);
-      if (typeof comparison.relation === 'string') {
-        const compact = comparison.relation.trim().toLowerCase().replace(/-/g, '_');
-        const canonical = relationAliases.get(compact.replace(/_/g, ' ')) ?? compact;
-        if (canonical !== comparison.relation) applied = true;
-        comparison.relation = canonical;
-      }
-      if (typeof comparison.confidence === 'string') {
-        const canonical = comparison.confidence.trim().toLowerCase();
-        if (canonical !== comparison.confidence) applied = true;
-        comparison.confidence = canonical;
-      }
-      if (!relations.has(comparison.relation) || !confidences.has(comparison.confidence)) {
+      normalizeEnum(comparison, 'relation', 'relativeScaleRelation',
+        `relativeScale[${comparisonIndex}].relation`);
+      normalizeEnum(comparison, 'confidence', 'relativeScaleConfidence',
+        `relativeScale[${comparisonIndex}].confidence`);
+      if (!PRODUCT_IDENTITY_ENUMS.relativeScaleRelation.includes(comparison.relation) ||
+          !PRODUCT_IDENTITY_ENUMS.relativeScaleConfidence.includes(comparison.confidence)) {
         applied = true;
         return false;
       }
       return true;
     });
   }
-  return { analysis: clone, applied };
+  return { analysis: clone, applied, invalidEnums };
 }
 
 function isSafeFallbackAnalysis(analysis) {
@@ -252,7 +269,20 @@ function validationDiagnostics(error) {
     validationReason = 'invalid_enum';
   } else if (/unknown|Unknown analysis/.test(message)) validationReason = 'invalid_unknown_value';
   else if (/must be|is required|is invalid/.test(message)) validationReason = 'invalid_structure';
-  return { validationStage: 'schema_validation', validationReason };
+  const field = message.match(/^(analysis\.state|items\[\d+\]\.(?:functionalType\.state|quantity\.state|observationCompleteness|ambiguousFeatures\[\d+\]\.visibility)|relationships\[\d+\]\.state|relativeScale\[\d+\]\.(?:relation|confidence)) is invalid\./)?.[1];
+  let enumName;
+  if (field?.endsWith('.state') || field === 'analysis.state') enumName = 'state';
+  else if (field?.endsWith('.observationCompleteness')) enumName = 'observationCompleteness';
+  else if (field?.endsWith('.visibility')) enumName = 'ambiguousFeatureVisibility';
+  else if (field?.endsWith('.relation')) enumName = 'relativeScaleRelation';
+  else if (field?.endsWith('.confidence')) enumName = 'relativeScaleConfidence';
+  return {
+    validationStage: 'schema_validation', validationReason,
+    ...(field && enumName ? {
+      validationField: field,
+      allowedEnumValues: PRODUCT_IDENTITY_ENUMS[enumName],
+    } : {}),
+  };
 }
 
 function safeDiagnosticText(value, maxLength = 240) {
@@ -327,6 +357,8 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     let normalizationApplied = false;
     let retryUsed = false;
     let fallbackUsed = false;
+    const attemptDiagnostics = [];
+    let retryCorrection;
     try {
       if (!this.isConfigured) {
         throw new GeminiProductIdentityAnalyzerError(
@@ -356,7 +388,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
                 text: [
                   analysisInstruction,
                   ...(attempt === 2 ? [
-                    'Technical correction: return exactly the schema fields and types; do not wrap, rename, add, or omit fields.',
+                    retryCorrection ?? 'Technical correction: return exactly the schema fields and types; do not wrap, rename, add, or omit fields.',
                   ] : []),
                   `Declared category (context only, not evidence): ${String(declaredCategory ?? 'unknown').slice(0, 80)}`,
                   `User brief (context only, not evidence): ${String(userBrief ?? '').slice(0, 4000)}`,
@@ -406,11 +438,15 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
           Object.assign(httpError, diagnostics);
           throw httpError;
         }
+        let attemptNormalizationApplied = false;
+        let invalidEnums = [];
         try {
           const payload = JSON.parse(rawResponse);
           const parsed = parseStructuredAnalysis(responseText(payload));
           const normalized = normalizeStructuredAnalysis(parsed.value);
-          normalizationApplied ||= parsed.applied || normalized.applied;
+          invalidEnums = normalized.invalidEnums;
+          attemptNormalizationApplied = parsed.applied || normalized.applied;
+          normalizationApplied ||= attemptNormalizationApplied;
           const validated = validateProductIdentityAnalysis(normalized.analysis);
           outcome = {
             statusHttp: response.status,
@@ -426,8 +462,25 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
             : new GeminiProductIdentityAnalyzerError(
               'GEMINI_INVALID_JSON', 'Product identity provider returned invalid JSON.',
             );
+          const diagnostics = validationDiagnostics(recoverableError);
+          const invalidEnum = diagnostics.validationField
+            ? invalidEnums.find(({ path }) => path === diagnostics.validationField) : undefined;
+          const willRetry = attempt === 1;
+          attemptDiagnostics.push(Object.freeze({
+            attempt,
+            validationField: diagnostics.validationField ?? 'response',
+            validationReason: diagnostics.validationReason ??
+              (recoverableError.code === 'GEMINI_INVALID_JSON' ? 'invalid_json' : 'other_allowlisted_reason'),
+            retryUsed: willRetry,
+            normalizationApplied: attemptNormalizationApplied,
+            ...(invalidEnum?.receivedEnumToken
+              ? { receivedEnumToken: invalidEnum.receivedEnumToken } : {}),
+          }));
           if (attempt === 1) {
             retryUsed = true;
+            retryCorrection = diagnostics.validationField && diagnostics.allowedEnumValues
+              ? `Technical correction: field ${diagnostics.validationField} must use exactly one canonical value from [${diagnostics.allowedEnumValues.join(', ')}]. Return exactly the schema fields and types; do not wrap, rename, add, or omit fields.`
+              : 'Technical correction: return exactly the schema fields and types; do not wrap, rename, add, or omit fields.';
             continue;
           }
         }
@@ -495,6 +548,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         finalState: outcome.state ?? 'unknown',
         itemCount: outcome.items ?? 0,
         relationshipCount: outcome.relationships ?? 0,
+        ...(attemptDiagnostics.length ? { attemptDiagnostics } : {}),
         ...(terminalError?.validationStage
           ? { validationStage: terminalError.validationStage } : {}),
         ...(terminalError?.validationReason

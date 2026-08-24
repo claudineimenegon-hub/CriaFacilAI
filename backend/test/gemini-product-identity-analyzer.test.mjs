@@ -13,6 +13,8 @@ import {
   createProductIdentityAnalyzer,
 } from '../image-to-image/product-identity-analyzer-factory.mjs';
 import {
+  canonicalizeProductIdentityEnum,
+  PRODUCT_IDENTITY_ENUMS,
   UnknownProductIdentityAnalyzer,
 } from '../image-to-image/product-identity-analyzer.mjs';
 import { generateProductPhotoBatch } from '../image-to-image/image-transform-service.mjs';
@@ -270,6 +272,93 @@ test('normaliza enum seguro de relativeScale antes da validação', async () => 
     relation: 'slightly_larger', confidence: 'high',
   }]);
   assert.equal(events[0].normalizationApplied, true);
+});
+
+test('canonicaliza enums seguros de toda a análise usando uma única fonte canônica', async () => {
+  const events = [];
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => geminiResponse({
+      state: 'KNOWN',
+      items: [{
+        ...genericItem({ completeness: 'partially-observed' }),
+        functionalType: { state: 'Known', value: 'generic product' },
+        quantity: { state: ' known ', value: 1 },
+        ambiguousFeatures: [{
+          name: 'rear connection', visibility: 'partially-visible',
+          observedConstraint: null, plausibleHypotheses: [],
+        }],
+      }],
+      relationships: [{ type: 'set', memberIds: ['item-1'], state: 'Known' }],
+      relativeScale: [],
+    }),
+    logger: { info: (event) => events.push(event) },
+  });
+  const result = await analyzer.analyze(analyzerInput());
+  assert.equal(result.state, 'known');
+  assert.equal(result.items[0].functionalType.state, 'known');
+  assert.equal(result.items[0].quantity.state, 'known');
+  assert.equal(result.items[0].observationCompleteness, 'partial');
+  assert.equal(result.items[0].ambiguousFeatures[0].visibility, 'partial');
+  assert.equal(result.relationships[0].state, 'known');
+  assert.equal(events[0].normalizationApplied, true);
+
+  assert.equal(canonicalizeProductIdentityEnum('state', 'KNOWN'), 'known');
+  assert.equal(canonicalizeProductIdentityEnum('state', 'Known'), 'known');
+  assert.equal(canonicalizeProductIdentityEnum('observationCompleteness', 'fully-observed'), 'complete');
+  assert.equal(canonicalizeProductIdentityEnum('ambiguousFeatureVisibility', 'not visible'), 'hidden');
+  assert.equal(canonicalizeProductIdentityEnum('relativeScaleRelation', 'slightly-larger'), 'slightly_larger');
+  assert.deepEqual(PRODUCT_IDENTITY_ENUMS.state, ['known', 'uncertain', 'unknown']);
+});
+
+test('enum semanticamente ambíguo é rejeitado e retry informa campo e valores permitidos', async () => {
+  const requests = [];
+  const events = [];
+  const secret = 'sensitive-value-that-must-not-appear';
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return geminiResponse({
+        state: 'known',
+        items: [{
+          ...genericItem({ completeness: 'partial' }),
+          ambiguousFeatures: [{
+            name: secret, visibility: 'visible', observedConstraint: null,
+            plausibleHypotheses: [],
+          }],
+        }],
+        relationships: [],
+      });
+    },
+    logger: { info: (event) => events.push(event) },
+  });
+  await assert.rejects(analyzer.analyze(analyzerInput()), {
+    code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS',
+  });
+  assert.equal(requests.length, 2);
+  const retryInstruction = requests[1].contents[0].parts[0].text;
+  assert.match(retryInstruction,
+    /items\[0\]\.ambiguousFeatures\[0\]\.visibility must use exactly one canonical value from \[partial, hidden\]/);
+  assert.doesNotMatch(retryInstruction, /received(?: value| token)?[:=].*visible|sensitive-value-that-must-not-appear/i);
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0].attemptDiagnostics, [
+    {
+      attempt: 1,
+      validationField: 'items[0].ambiguousFeatures[0].visibility',
+      validationReason: 'invalid_enum', retryUsed: true,
+      normalizationApplied: false, receivedEnumToken: 'visible',
+    },
+    {
+      attempt: 2,
+      validationField: 'items[0].ambiguousFeatures[0].visibility',
+      validationReason: 'invalid_enum', retryUsed: false,
+      normalizationApplied: false, receivedEnumToken: 'visible',
+    },
+  ]);
+  const telemetry = JSON.stringify(events[0]);
+  assert.doesNotMatch(telemetry, new RegExp(secret));
+  assert.doesNotMatch(telemetry, /test-key-must-never-leak|base64|data:image/i);
 });
 
 test('relativeScale desconhecido ou inválido é omitido sem abortar a identidade válida', async () => {

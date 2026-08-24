@@ -1,10 +1,39 @@
-const states = new Set(['known', 'uncertain', 'unknown']);
-const completenessValues = new Set(['complete', 'partial', 'unknown']);
-const visibilityValues = new Set(['partial', 'hidden']);
-const relativeScaleRelations = new Set([
-  'slightly_larger', 'approximately_same', 'clearly_larger', 'significantly_smaller',
-]);
-const confidenceValues = new Set(['high', 'medium', 'low']);
+export const PRODUCT_IDENTITY_ENUMS = Object.freeze({
+  state: Object.freeze(['known', 'uncertain', 'unknown']),
+  observationCompleteness: Object.freeze(['complete', 'partial', 'unknown']),
+  ambiguousFeatureVisibility: Object.freeze(['partial', 'hidden']),
+  relativeScaleRelation: Object.freeze([
+    'slightly_larger', 'approximately_same', 'clearly_larger', 'significantly_smaller',
+  ]),
+  relativeScaleConfidence: Object.freeze(['high', 'medium', 'low']),
+});
+
+const ENUM_ALIASES = Object.freeze({
+  state: Object.freeze({}),
+  observationCompleteness: Object.freeze({
+    fully_observed: 'complete', partially_observed: 'partial',
+  }),
+  ambiguousFeatureVisibility: Object.freeze({
+    partially_visible: 'partial', not_visible: 'hidden', fully_hidden: 'hidden',
+  }),
+  relativeScaleRelation: Object.freeze({
+    approximately_the_same: 'approximately_same',
+  }),
+  relativeScaleConfidence: Object.freeze({}),
+});
+
+export function canonicalizeProductIdentityEnum(enumName, value) {
+  if (typeof value !== 'string' || !Object.hasOwn(PRODUCT_IDENTITY_ENUMS, enumName)) return undefined;
+  const token = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const canonical = ENUM_ALIASES[enumName]?.[token] ?? token;
+  return PRODUCT_IDENTITY_ENUMS[enumName].includes(canonical) ? canonical : undefined;
+}
+
+const states = new Set(PRODUCT_IDENTITY_ENUMS.state);
+const completenessValues = new Set(PRODUCT_IDENTITY_ENUMS.observationCompleteness);
+const visibilityValues = new Set(PRODUCT_IDENTITY_ENUMS.ambiguousFeatureVisibility);
+const relativeScaleRelations = new Set(PRODUCT_IDENTITY_ENUMS.relativeScaleRelation);
+const confidenceValues = new Set(PRODUCT_IDENTITY_ENUMS.relativeScaleConfidence);
 
 export const PRODUCT_IDENTITY_ANALYSIS_LIMITS = Object.freeze({
   encodedBytes: 32 * 1024,
@@ -117,8 +146,10 @@ function validateItem(value, index) {
     functionalType: validateEvidence(value.functionalType, `${path}.functionalType`),
     quantity: validateEvidence(value.quantity, `${path}.quantity`, { quantity: true }),
     observationCompleteness: value.observationCompleteness,
-    observedFeatures: Object.freeze(observedFeatures.map(validateObservedFeature)),
-    ambiguousFeatures: Object.freeze(ambiguousFeatures.map(validateAmbiguousFeature)),
+    observedFeatures: Object.freeze(observedFeatures.map((feature, featureIndex) =>
+      validateObservedFeature(feature, `${path}.observedFeatures[${featureIndex}]`))),
+    ambiguousFeatures: Object.freeze(ambiguousFeatures.map((feature, featureIndex) =>
+      validateAmbiguousFeature(feature, `${path}.ambiguousFeatures[${featureIndex}]`))),
   });
 }
 
