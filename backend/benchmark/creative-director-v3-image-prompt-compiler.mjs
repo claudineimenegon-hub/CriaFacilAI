@@ -82,6 +82,12 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'When an unseen region must be completed for physical plausibility, use the most conservative visually compatible continuation: remain consistent with visible geometry, materials and construction, introduce no distinctive decoration, and add no functional component unless canonical Product Identity requires it.',
       'An inferred hidden feature must never override or alter a visible source feature.',
     ]),
+    section('A3. OBSERVED COMPONENT-ATTRIBUTE BINDING', [
+      'When the source clearly distinguishes a product component or region, keep each visibly evidenced color, material, texture, finish, pattern, decorative detail and structural detail associated with that same component or region.',
+      'Do not migrate, copy, swap or spread an observed attribute from one component or region onto another. Preserve the source-visible component hierarchy without requiring pixel-perfect reconstruction.',
+      'Apply this lock only to confident source-visible associations. Do not count indeterminate micro-details, invent hidden components, infer unseen geometry or promote ambiguous evidence into a hard constraint.',
+      'Natural changes from lighting, reflection, exposure and color temperature remain allowed when the intrinsic material and characteristic color association stays recognizable. Scene, camera, composition and art direction remain creatively free.',
+    ]),
     section('B. VISIBLE INVENTORY FOR THIS PROPOSAL', [
       'VISIBLE IN THIS IMAGE — REQUIRED:',
       ...required.map((item) => itemLine(item, canonical)),

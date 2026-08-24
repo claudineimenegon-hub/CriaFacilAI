@@ -206,3 +206,48 @@ test('produto não vestível sem presença humana não recebe lock on-body', asy
     assert.doesNotMatch(prompt, /ON-BODY WEARABLE PRODUCT IDENTITY LOCK/);
   }
 });
+
+test('fidelidade por componente preserva associações observáveis sem endurecer ambiguidades ou cena', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'general',
+      items: [{ id: 'product-1', functionalType: 'generic manufactured product', quantity: 1 }],
+      relationships: [],
+      observedFeatures: [
+        'product-1: upper-region finish=matte neutral finish',
+        'product-1: lower-region material=brushed metallic material',
+      ],
+      ambiguousFeatures: ['product-1: hidden-internal-component is hidden'],
+    },
+    productSemantics: {
+      functionalType: 'generic manufactured product',
+      affordances: ['installed_environmental'],
+      validContexts: ['commercial context'],
+      invalidContexts: ['physically implausible use'],
+    },
+    userIntent: {
+      objective: 'Create a premium campaign', aspectRatio: '1:1',
+      requestedStyle: null, additionalInstructions: null,
+    },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const prompts = briefs.map((brief) => compileCreativeDirectorV3ImagePrompt({
+    brief, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  }));
+
+  for (let index = 0; index < prompts.length; index += 1) {
+    const prompt = prompts[index];
+    assert.match(prompt, /OBSERVED COMPONENT-ATTRIBUTE BINDING/);
+    assert.match(prompt, /Do not migrate, copy, swap or spread an observed attribute/);
+    assert.match(prompt, /upper-region finish=matte neutral finish/);
+    assert.match(prompt, /lower-region material=brushed metallic material/);
+    assert.match(prompt, /Do not count indeterminate micro-details, invent hidden components/);
+    assert.doesNotMatch(prompt, /hidden-internal-component/);
+    assert.match(prompt, new RegExp(briefs[index].scene.environment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(prompt, new RegExp(briefs[index].photography.lighting.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(prompt, /\b(?:earrings?|rings?|gemstones?|turquoise)\b/i);
+    assert.ok(prompt.length < 14_000, `prompt grew unexpectedly: ${prompt.length}`);
+  }
+});
