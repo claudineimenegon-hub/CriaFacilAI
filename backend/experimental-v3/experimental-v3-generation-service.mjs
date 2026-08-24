@@ -21,6 +21,10 @@ const CATEGORY_SEMANTICS = Object.freeze({
 const ALLOWED_CATEGORIES = new Set(Object.keys(CATEGORY_SEMANTICS));
 const ALLOWED_QUALITIES = new Set(['medium', 'high']);
 const ALLOWED_RATIOS = new Set(['1:1', '4:5', '9:16', '16:9']);
+const STRUCTURAL_FEATURE_PATTERN = /\b(?:closure|clasp|connector|attachment|fasten(?:er|ing)?|buckle|hinge|extension chain|extender|cap|fecho|fechamento|conector|engate|fixa(?:ção|cao)|fivela|dobradiça|dobradica|corrente extensora|extensor|tampa)\b/i;
+const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : Object.freeze({
+  info(event) { console.info(`[ExperimentalV3] ${JSON.stringify(event)}`); },
+});
 
 export class ExperimentalV3ValidationError extends Error {
   constructor(message, { code = 'INVALID_EXPERIMENTAL_V3_REQUEST', status = 400 } = {}) {
@@ -97,8 +101,27 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
     item.observedFeatures.map((feature) => `${item.id}: ${feature.name}=${feature.value}`));
   const ambiguousFeatures = identity.items.flatMap((item) =>
     item.ambiguousFeatures.map((feature) => `${item.id}: ${feature.name} is ${feature.visibility}`));
+  const observedFeatureEvidence = identity.items.flatMap((item) =>
+    item.observedFeatures.map((feature) => ({
+      itemId: item.id,
+      ...(feature.id == null ? {} : { featureId: feature.id }),
+      name: feature.name,
+      value: feature.value,
+    })));
+  const ambiguousFeatureEvidence = identity.items.flatMap((item) =>
+    item.ambiguousFeatures.map((feature) => ({
+      itemId: item.id,
+      ...(feature.id == null ? {} : { featureId: feature.id }),
+      name: feature.name,
+      visibility: feature.visibility,
+      observedConstraint: feature.observedConstraint,
+      plausibleHypotheses: [...feature.plausibleHypotheses],
+      certainty: 'ambiguous',
+    })));
+  const criticalFeatures = observedFeatureEvidence
+    .filter(({ name, value }) => STRUCTURAL_FEATURE_PATTERN.test(`${name} ${value}`))
+    .map((feature) => ({ ...feature, evidence: 'observed' }));
   const relativeScale = (identity.relativeScale ?? [])
-    .filter(({ confidence }) => confidence === 'high')
     .map(({ subjectId, referenceId, relation, confidence }) => ({
       subjectId, referenceId, relation, confidence,
     }));
@@ -110,6 +133,9 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
       relationships,
       observedFeatures,
       ambiguousFeatures,
+      observedFeatureEvidence,
+      ambiguousFeatureEvidence,
+      criticalFeatures,
       relativeScale,
     },
     productSemantics: {
@@ -150,6 +176,7 @@ export function createExperimentalV3GenerationService({
   imageProvider = createOpenAIGPTImageBenchmarkProvider(),
   logger,
 } = {}) {
+  const effectiveLogger = logger ?? defaultLogger ?? { info() {} };
   return Object.freeze({
     async generate(rawRequest) {
       const request = validateExperimentalV3Request(rawRequest);
@@ -175,13 +202,33 @@ export function createExperimentalV3GenerationService({
       const direction = await runCreativeDirector({
         input,
         modelAdapter: creativeDirectorAdapterFactory(source),
-        logger: logger ?? { info() {} },
+        logger: effectiveLogger,
       });
       const briefs = direction.briefs;
       const dimensions = experimentalOutputDimensions(request.aspectRatio);
       const results = [];
       for (let start = 0; start < briefs.length; start += 2) {
         const batch = briefs.slice(start, start + 2).map(async (brief) => {
+          const visibleItemIds = [...new Set([
+            ...brief.productPresentation.requiredVisibleItems,
+            ...brief.productPresentation.optionalVisibleItems,
+          ].map(({ itemId }) => itemId))];
+          const visible = new Set(visibleItemIds);
+          const countByItem = (features) => Object.fromEntries(input.productIdentity.items.map(({ id }) => [
+            id, features.filter(({ itemId }) => itemId === id).length,
+          ]));
+          effectiveLogger.info({
+            component: 'ExperimentalV3ProposalInventory',
+            campaignRole: brief.campaignRole,
+            visibleItemIds,
+            omittedItemIds: input.productIdentity.items.map(({ id }) => id).filter((id) => !visible.has(id)),
+            featureCountByItem: countByItem(input.productIdentity.observedFeatureEvidence),
+            criticalFeatureCountByItem: countByItem(input.productIdentity.criticalFeatures),
+            relativeScaleRelationCount: input.productIdentity.relativeScale.length,
+            visibilityMode: brief.visibilityIntent.mode,
+            pairPolicy: brief.visibilityIntent.pairPolicy,
+            humanInteractionMode: brief.humanInteraction.mode,
+          });
           const prompt = compileCreativeDirectorV3ImagePrompt({
             brief, productIdentity: input.productIdentity,
             productSemantics: input.productSemantics, userIntent: input.userIntent,

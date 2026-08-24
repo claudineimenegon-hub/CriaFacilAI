@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDeterministicCreativeDirectorV3Model, validateCreativeDirectorV3Input } from '../benchmark/creative-director-v3.mjs';
+import { createDeterministicCreativeDirectorV3Model, validateCreativeDirectorV3Input, validateCreativeDirectorV3Output } from '../benchmark/creative-director-v3.mjs';
 import { compileCreativeDirectorV3ImagePrompt } from '../benchmark/creative-director-v3-image-prompt-compiler.mjs';
 import {
   buildCreativeDirectorV3Input,
@@ -33,8 +33,15 @@ const analysis = {
     {
       id: 'product-pair', functionalType: { state: 'known', value: 'wearable product' },
       quantity: { state: 'known', value: 2 }, observationCompleteness: 'partial',
-      observedFeatures: [{ name: 'color', value: 'source-observed blue' }],
-      ambiguousFeatures: [{ name: 'hidden-back', visibility: 'hidden', observedConstraint: null, plausibleHypotheses: [] }],
+      observedFeatures: [
+        { id: 'color-feature', name: 'color', value: 'source-observed blue' },
+        { id: 'closure-feature', name: 'visible fastening element', value: 'source-observed connector' },
+      ],
+      ambiguousFeatures: [{
+        id: 'hidden-feature', name: 'hidden-back', visibility: 'hidden',
+        observedConstraint: 'must continue the visible outer geometry',
+        plausibleHypotheses: ['plain continuation', 'concealed support'],
+      }],
     },
   ],
   relationships: [{ type: 'pair', memberIds: ['product-pair'], state: 'known' }],
@@ -82,7 +89,116 @@ test('ponte constrói Product Identity V3 real sem fixture e preserva pair e evi
   assert.deepEqual(input.productIdentity.items, [{ id: 'product-pair', functionalType: 'wearable product', quantity: 2 }]);
   assert.deepEqual(input.productIdentity.relationships, [{ type: 'pair', itemIds: ['product-pair'] }]);
   assert.match(input.productIdentity.observedFeatures[0], /source-observed blue/);
+  assert.deepEqual(input.productIdentity.observedFeatureEvidence[0], {
+    itemId: 'product-pair', featureId: 'color-feature', name: 'color', value: 'source-observed blue',
+  });
+  assert.deepEqual(input.productIdentity.ambiguousFeatureEvidence[0], {
+    itemId: 'product-pair', featureId: 'hidden-feature', name: 'hidden-back', visibility: 'hidden',
+    observedConstraint: 'must continue the visible outer geometry',
+    plausibleHypotheses: ['plain continuation', 'concealed support'], certainty: 'ambiguous',
+  });
+  assert.deepEqual(input.productIdentity.criticalFeatures, [{
+    itemId: 'product-pair', featureId: 'closure-feature', name: 'visible fastening element',
+    value: 'source-observed connector', evidence: 'observed',
+  }]);
+  assert.equal(input.productIdentity.criticalFeatures.some(({ name }) => name === 'color'), false);
   assert.equal(JSON.stringify(input).includes('fixture'), false);
+});
+
+test('critical feature chega ao prompt somente para item selecionado e nunca é inventada', async () => {
+  const normalized = validateExperimentalV3Request(request());
+  const extraItem = {
+    id: 'other-product', functionalType: { state: 'known', value: 'generic product' },
+    quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+    observedFeatures: [{ id: 'surface-feature', name: 'surface color', value: 'neutral' }],
+    ambiguousFeatures: [],
+  };
+  const input = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: { ...analysis, items: [...analysis.items, extraItem] }, request: normalized,
+  }));
+  const brief = (await createDeterministicCreativeDirectorV3Model().generate(input))[2];
+  const selected = [{ itemId: 'product-pair', quantity: 2 }];
+  const subset = {
+    ...brief,
+    productPresentation: {
+      ...brief.productPresentation, heroItemIds: ['product-pair'], supportingItemIds: [],
+      requiredVisibleItems: selected, optionalVisibleItems: [], presentationScope: 'single_item_detail',
+    },
+    visibilityIntent: {
+      ...brief.visibilityIntent, requiredVisibleItems: selected, optionalVisibleItems: [],
+      heroItemIds: ['product-pair'], pairPolicy: 'preserve_pair', mode: 'subset',
+    },
+  };
+  validateCreativeDirectorV3Output([
+    ...(await createDeterministicCreativeDirectorV3Model().generate(input)).slice(0, 2),
+    subset,
+    (await createDeterministicCreativeDirectorV3Model().generate(input))[3],
+  ], input);
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: subset, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.match(prompt, /SOURCE-OBSERVED STRUCTURAL FEATURES/);
+  assert.match(prompt, /product-pair: visible fastening element=source-observed connector/);
+  assert.doesNotMatch(prompt, /other-product: surface color/);
+  assert.doesNotMatch(prompt, /plain continuation|concealed support/);
+});
+
+test('Editorial diferencia detalhe selecionado de apresentação do conjunto completo', async () => {
+  const normalized = validateExperimentalV3Request(request());
+  const second = {
+    id: 'second-product', functionalType: { state: 'known', value: 'second product category' },
+    quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+    observedFeatures: [], ambiguousFeatures: [],
+  };
+  const input = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: { ...analysis, items: [...analysis.items, second] }, request: normalized,
+  }));
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const selected = [{ itemId: 'second-product', quantity: 1 }];
+  const editorial = {
+    ...briefs[2],
+    productPresentation: {
+      ...briefs[2].productPresentation, heroItemIds: ['second-product'], supportingItemIds: [],
+      requiredVisibleItems: selected, optionalVisibleItems: [], presentationScope: 'single_item_detail',
+    },
+    visibilityIntent: {
+      ...briefs[2].visibilityIntent, requiredVisibleItems: selected, optionalVisibleItems: [],
+      heroItemIds: ['second-product'], pairPolicy: 'not_selected', mode: 'subset',
+    },
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output([
+    briefs[0], briefs[1], editorial, briefs[3],
+  ], input));
+  const inconsistent = {
+    ...editorial,
+    productPresentation: { ...editorial.productPresentation, presentationScope: 'complete_set' },
+  };
+  assert.throws(() => validateCreativeDirectorV3Output([
+    briefs[0], briefs[1], inconsistent, briefs[3],
+  ], input), /complete-set presentation cannot omit/);
+});
+
+test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores de features', async () => {
+  const events = [];
+  const deterministic = createDeterministicCreativeDirectorV3Model();
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async () => ({ bytes: sourceBytes, mimeType: 'image/jpeg', metadata: {} }) },
+    productIdentityAnalyzer: { analyze: async () => analysis },
+    creativeDirectorAdapterFactory: () => ({ name: 'mock-director', generate: (input) => deterministic.generate(input) }),
+    imageProvider: { generate: async () => ({ imageBase64: 'aW1hZ2U=' }) },
+    logger: { info: (event) => events.push(event) },
+  });
+  await instance.generate(request());
+  const proposals = events.filter(({ component }) => component === 'ExperimentalV3ProposalInventory');
+  assert.equal(proposals.length, 4);
+  assert.deepEqual(proposals[0].visibleItemIds, ['product-pair']);
+  assert.deepEqual(proposals[0].omittedItemIds, []);
+  assert.deepEqual(proposals[0].featureCountByItem, { 'product-pair': 2 });
+  assert.deepEqual(proposals[0].criticalFeatureCountByItem, { 'product-pair': 1 });
+  assert.equal(proposals[0].relativeScaleRelationCount, 0);
+  const serialized = JSON.stringify(proposals);
+  assert.doesNotMatch(serialized, /prompt|source-observed|plausibleHypotheses|Base64|data:image/i);
 });
 
 test('uma direção lógica produz quatro briefs, quatro prompts e quatro chamadas visuais', async () => {

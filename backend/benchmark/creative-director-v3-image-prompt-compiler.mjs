@@ -111,13 +111,20 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
   const interactionFidelity = humanProductInteractionFidelity(brief);
   const wearablePlacement = humanWearablePlacement(brief, productSemantics);
   const scaleFidelity = relativeScaleFidelity(productIdentity, selectedIds);
+  const criticalFeatures = (productIdentity.criticalFeatures ?? [])
+    .filter(({ itemId }) => selectedIds.has(itemId));
+  const selectedObservedFeatures = (productIdentity.observedFeatureEvidence?.length ?? 0) > 0
+    ? productIdentity.observedFeatureEvidence
+      .filter(({ itemId }) => selectedIds.has(itemId))
+      .map(({ itemId, name, value }) => `${itemId}: ${name}=${value}`)
+    : productIdentity.observedFeatures;
   const prompt = [
     section('A. PRODUCT IDENTITY — HIGHEST PRIORITY', [
       'The supplied source photograph is the canonical visual reference for the product.',
       'Use it to preserve geometry, design, observable materials, colors, finish and distinctive details—not its original photographic composition.',
       `Canonical category: ${requireText(productIdentity.category, 'productIdentity.category')}.`,
       ...productIdentity.items.map(({ id, functionalType, quantity }) => `- ${id}: canonical functional type ${functionalType}; global locked quantity ${quantity}.`),
-      ...(productIdentity.observedFeatures.length ? [`Observed identity facts: ${productIdentity.observedFeatures.join('; ')}.`] : []),
+      ...(selectedObservedFeatures.length ? [`Observed identity facts: ${selectedObservedFeatures.join('; ')}.`] : []),
       'Preserve the identity of every selected canonical item. Never transform one canonical item into another product type, invent additional products, duplicate beyond visible quantity, fuse separate products, redesign the product, or replace it with a similar substitute.',
       'Product identity has priority over scene creativity.',
     ]),
@@ -136,6 +143,11 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'Apply this lock only to confident source-visible associations. Do not count indeterminate micro-details, invent hidden components, infer unseen geometry or promote ambiguous evidence into a hard constraint.',
       'Natural changes from lighting, reflection, exposure and color temperature remain allowed when the intrinsic material and characteristic color association stays recognizable. Scene, camera, composition and art direction remain creatively free.',
     ]),
+    ...(criticalFeatures.length ? [section('A4. SOURCE-OBSERVED STRUCTURAL FEATURES', [
+      'Preserve all source-observed structural features associated with each selected canonical item.',
+      ...criticalFeatures.map(({ itemId, name, value }) => `- ${itemId}: ${name}=${value}.`),
+      'These are observed structural facts, not inferred generic components. Do not add an unobserved feature.',
+    ])] : []),
     section('B. VISIBLE INVENTORY FOR THIS PROPOSAL', [
       wearablePlacement
         ? 'CANONICAL / EXISTING INVENTORY SELECTED FOR THIS PROPOSAL:'

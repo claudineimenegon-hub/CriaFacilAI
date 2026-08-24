@@ -77,6 +77,33 @@ function strings(value, field) {
   return Object.freeze(value.map((item) => item.trim()));
 }
 
+function featureEvidence(value, ids, field, { ambiguous = false, critical = false } = {}) {
+  if (!Array.isArray(value)) fail('INVALID_V3_INPUT', `${field} must be an array.`);
+  return Object.freeze(value.map((feature, index) => {
+    const path = `${field}[${index}]`;
+    const itemId = text(feature?.itemId, `${path}.itemId`);
+    if (!ids.has(itemId)) fail('INVALID_V3_INPUT', `${path} references an unknown item ID.`);
+    const base = {
+      itemId,
+      ...(feature.featureId == null ? {} : { featureId: text(feature.featureId, `${path}.featureId`) }),
+      name: text(feature.name, `${path}.name`),
+    };
+    if (ambiguous) return Object.freeze({
+      ...base,
+      visibility: text(feature.visibility, `${path}.visibility`),
+      observedConstraint: text(feature.observedConstraint, `${path}.observedConstraint`, { optional: true }),
+      plausibleHypotheses: strings(feature.plausibleHypotheses ?? [], `${path}.plausibleHypotheses`),
+      certainty: feature.certainty === 'ambiguous' ? 'ambiguous'
+        : fail('INVALID_V3_INPUT', `${path}.certainty must remain ambiguous.`),
+    });
+    return Object.freeze({
+      ...base, value: text(feature.value, `${path}.value`),
+      ...(critical ? { evidence: feature.evidence === 'observed' ? 'observed'
+        : fail('INVALID_V3_INPUT', `${path}.evidence must be observed.`) } : {}),
+    });
+  }));
+}
+
 export function validateCreativeDirectorV3Input(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_V3_INPUT', 'V3 input must be an object.');
   const identity = input.productIdentity;
@@ -108,6 +135,16 @@ export function validateCreativeDirectorV3Input(input) {
       subjectId, referenceId, relation: comparison.relation, confidence: comparison.confidence,
     });
   });
+  const observedFeatureEvidence = featureEvidence(
+    identity.observedFeatureEvidence ?? [], ids, 'productIdentity.observedFeatureEvidence',
+  );
+  const ambiguousFeatureEvidence = featureEvidence(
+    identity.ambiguousFeatureEvidence ?? [], ids, 'productIdentity.ambiguousFeatureEvidence',
+    { ambiguous: true },
+  );
+  const criticalFeatures = featureEvidence(
+    identity.criticalFeatures ?? [], ids, 'productIdentity.criticalFeatures', { critical: true },
+  );
   const affordances = Array.isArray(input.productSemantics?.affordances)
     ? [...new Set(input.productSemantics.affordances)] : [];
   if (!affordances.length || affordances.some((value) => !V3_AFFORDANCES.includes(value))) fail('INVALID_V3_INPUT', 'Unsupported or missing affordance.');
@@ -120,6 +157,9 @@ export function validateCreativeDirectorV3Input(input) {
       relativeScale: Object.freeze(relativeScale),
       observedFeatures: strings(identity.observedFeatures ?? [], 'productIdentity.observedFeatures'),
       ambiguousFeatures: strings(identity.ambiguousFeatures ?? [], 'productIdentity.ambiguousFeatures'),
+      observedFeatureEvidence,
+      ambiguousFeatureEvidence,
+      criticalFeatures,
     }),
     productSemantics: Object.freeze({
       functionalType: text(input.productSemantics.functionalType, 'productSemantics.functionalType'),
@@ -192,6 +232,7 @@ export function createDeterministicCreativeDirectorV3Model() {
             requiredVisibleItems: visibilityIntent.requiredVisibleItems,
             optionalVisibleItems: visibilityIntent.optionalVisibleItems,
             presentationMode: direction.presentationMode,
+            presentationScope: 'complete_set',
           },
           visibilityIntent,
           humanInteraction: human,
@@ -310,6 +351,20 @@ export function validateCreativeDirectorV3Output(rawBriefs, normalizedInput) {
       if (!Array.isArray(brief.productPresentation[field]) || brief.productPresentation[field].some((id) => !knownIds.has(id))) fail('INVALID_V3_OUTPUT', `${field} contains an unknown item ID.`);
     }
     const selected = selectedItems(brief, input.productIdentity);
+    const inferredScope = selected.size === input.productIdentity.items.length
+      ? 'complete_set' : selected.size === 1 ? 'single_item_detail' : 'selected_subset';
+    const presentationScope = brief.productPresentation.presentationScope ?? inferredScope;
+    if (!['complete_set', 'selected_subset', 'single_item_detail'].includes(presentationScope)) {
+      fail('INVALID_V3_OUTPUT', 'Invalid product presentation scope.');
+    }
+    if (brief.campaignRole === 'editorial_craft_detail') {
+      if (presentationScope === 'complete_set' && selected.size !== input.productIdentity.items.length) {
+        fail('INVALID_V3_OUTPUT', 'Editorial complete-set presentation cannot omit canonical items.');
+      }
+      if (presentationScope === 'single_item_detail' && selected.size !== 1) {
+        fail('INVALID_V3_OUTPUT', 'Editorial single-item detail must select exactly one canonical item.');
+      }
+    }
     if (!['required', 'allowed', 'forbidden'].includes(brief.humanInteraction.mode)) fail('INVALID_V3_OUTPUT', 'Invalid human interaction mode.');
     const legacyPresence = brief.humanInteraction.mode === 'required' ? 'required'
       : brief.humanInteraction.mode === 'allowed' ? 'optional' : 'none';

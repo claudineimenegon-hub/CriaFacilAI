@@ -24,11 +24,12 @@ const creativeBriefSchema = {
     campaignIdea: string, commercialObjective: string, visualStory: string,
     productPresentation: {
       type: 'object', additionalProperties: false,
-      required: ['heroItemIds', 'supportingItemIds', 'requiredVisibleItems', 'optionalVisibleItems', 'presentationMode'],
+      required: ['heroItemIds', 'supportingItemIds', 'requiredVisibleItems', 'optionalVisibleItems', 'presentationMode', 'presentationScope'],
       properties: {
         heroItemIds: stringArray, supportingItemIds: stringArray,
         requiredVisibleItems: { type: 'array', items: itemQuantity },
         optionalVisibleItems: { type: 'array', items: itemQuantity }, presentationMode: string,
+        presentationScope: { type: 'string', enum: ['complete_set', 'selected_subset', 'single_item_detail'] },
       },
     },
     visibilityIntent: {
@@ -129,6 +130,7 @@ function visibilityInstructions(normalizedInput) {
     'If contextual human use is selected, preserve canonical identity, quantities and protected relationships, and maintain valid placement, realistic scale and physical plausibility.',
     'For contextual_lifestyle with wearable human use, selected inventory defines the canonical products available to the scene, not an obligation to make every unit simultaneously unobstructed. Use only functionally valid anatomical anchors and orientations. If pose or framing exposes only one valid anchor, allow the other canonical unit to be naturally occluded or outside the frame; never relocate it to an anatomically invalid location merely to complete display. Keep other product items optional when their natural body anchor is not visible or their inclusion would weaken physical plausibility.',
     'EDITORIAL_CRAFT_DETAIL prioritizes distinctive craftsmanship, geometry, materials, texture and construction. Choose full inventory, a canonical subset or one safely representable item according to the strongest detail photograph; do not crowd a macro composition with every global item, and never break an atomic relationship for a close-up.',
+    'Set productPresentation.presentationScope explicitly. Use complete_set only when the proposal truly presents the complete canonical set, selected_subset for a deliberate multi-item subset, and single_item_detail for one selected canonical item. An editorial complete_set proposal must include every canonical item; never describe a complete collection while silently omitting a category.',
     'CONCEPT_CAMPAIGN may choose full inventory or a canonical subset to maximize iconic composition, visual metaphor, memorability and product recognition. Its freedom applies to the scene, never canonical product identity.',
     'HERO_COMMERCIAL optimizes immediate desirability and commercial readability. Full inventory can be appropriate when presenting a set, but is not mandatory unless an atomic canonical relationship requires it.',
     'ANTI-TEMPLATE RULE: do not assign visibility using a fixed campaignRole-to-visibility mapping. Reason independently about each proposal so the outputs feel art-directed rather than mechanically assigned.',
