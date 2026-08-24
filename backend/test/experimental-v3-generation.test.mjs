@@ -188,7 +188,10 @@ test('fidelidade on-body protege vestíveis generalistas somente na proposta hum
     assert.match(prompts[1], /ON-BODY WEARABLE PRODUCT IDENTITY LOCK/);
     assert.match(prompts[1], /source reference remains the authoritative visual identity/);
     assert.match(prompts[1], /Adapt anatomy, pose, camera and physically plausible placement around the unchanged product/);
+    assert.match(prompts[1], /HUMAN–PRODUCT INTERACTION FIDELITY/);
+    assert.match(prompts[1], /preserve their plausible relative physical scale/);
     assert.equal(prompts.filter((prompt) => prompt.includes('ON-BODY WEARABLE PRODUCT IDENTITY LOCK')).length, 1);
+    assert.equal(prompts.filter((prompt) => prompt.includes('HUMAN–PRODUCT INTERACTION FIDELITY')).length, 1);
   }
 });
 
@@ -204,7 +207,25 @@ test('produto não vestível sem presença humana não recebe lock on-body', asy
       productSemantics: input.productSemantics, userIntent: input.userIntent,
     });
     assert.doesNotMatch(prompt, /ON-BODY WEARABLE PRODUCT IDENTITY LOCK/);
+    assert.doesNotMatch(prompt, /HUMAN–PRODUCT INTERACTION FIDELITY/);
   }
+});
+
+test('interação humana não depende de joias nem de affordance wearable', async () => {
+  const input = humanPresenceInput({
+    category: 'cosmetics', functionalType: 'cosmetic container', affordance: 'handheld',
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const prompts = briefs.map((brief) => compileCreativeDirectorV3ImagePrompt({
+    brief, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  }));
+  assert.equal(briefs[1].humanInteraction.presence, 'optional');
+  assert.match(prompts[1], /HUMAN–PRODUCT INTERACTION FIDELITY/);
+  assert.match(prompts[1], /component structure, material\/color placement/);
+  assert.match(prompts[1], /pose, scene, lighting, camera and composition creatively free/);
+  assert.doesNotMatch(prompts[1], /\b(?:earrings?|rings?|gemstones?|turquoise)\b/i);
+  assert.equal(prompts.filter((prompt) => prompt.includes('HUMAN–PRODUCT INTERACTION FIDELITY')).length, 1);
 });
 
 test('fidelidade por componente preserva associações observáveis sem endurecer ambiguidades ou cena', async () => {
