@@ -215,9 +215,20 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
     imageProvider: { generate: async () => ({ imageBase64: 'aW1hZ2U=' }) },
     logger: { info: (event) => events.push(event) },
   });
-  await instance.generate(request());
+  await instance.generate(request({ category: 'jewelry' }));
+  const canonical = events.find(({ component }) => component === 'ExperimentalV3CanonicalInventory');
+  assert.equal(canonical.analysisState, 'known');
+  assert.equal(canonical.validationState, 'locally_validated');
+  assert.equal(canonical.canonicalItemCount, 1);
+  assert.deepEqual(canonical.items, [{
+    itemId: 'product-pair', functionalType: 'wearable product', canonicalQuantity: 2,
+    functionalTypeState: 'known', quantityState: 'known', observationCompleteness: 'partial',
+    observedFeatureCount: 2, ambiguousFeatureCount: 1, structuralComponentCount: 1,
+    relationships: [{ type: 'pair', itemIds: ['product-pair'] }], relativeScale: [],
+  }]);
   const proposals = events.filter(({ component }) => component === 'ExperimentalV3ProposalInventory');
   assert.equal(proposals.length, 4);
+  assert.equal(proposals[0].proposalId, 1);
   assert.deepEqual(proposals[0].selectedCanonicalItemIds, ['product-pair']);
   assert.deepEqual(proposals[0].canonicalQuantities, { 'product-pair': 2 });
   assert.deepEqual(proposals[0].structuralFeatureCountByItem, { 'product-pair': 1 });
@@ -225,14 +236,66 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
   assert.equal(proposals[0].schemaValid, true);
   assert.equal(proposals[0].diversityValid, true);
   const allowed = new Set([
-    'component', 'campaignRole', 'selectedCanonicalItemIds', 'canonicalQuantities',
+    'component', 'proposalId', 'campaignRole', 'selectedCanonicalItemIds', 'items', 'canonicalQuantities',
     'humanAllocatedUnits', 'maxSceneAllocatedUnits', 'structuralFeatureCountByItem',
     'hasStructuralComponentsByItem', 'editorialScope', 'editorialDetailPurposeValid',
     'schemaValid', 'diversityValid',
   ]);
   assert.equal(proposals.every((event) => Object.keys(event).every((key) => allowed.has(key))), true);
-  const serialized = JSON.stringify(proposals);
-  assert.doesNotMatch(serialized, /prompt|source-observed|plausibleHypotheses|Base64|data:image/i);
+  const preProvider = events.filter(({ component }) => component === 'ExperimentalV3PreProviderContract');
+  assert.equal(preProvider.length, 4);
+  assert.equal(preProvider[0].canonicalItemCount, 1);
+  assert.equal(preProvider[0].selectedItemCount, 1);
+  assert.equal(preProvider[0].intentionallyOmittedItemCount, 0);
+  assert.deepEqual(preProvider[0].items[0], proposals[0].items[0]);
+  assert.deepEqual(proposals[0].items[0], {
+    itemId: 'product-pair', functionalType: 'wearable product', canonicalQuantity: 2,
+    visibility: 'required', requestedQuantity: 2, humanAllocatedUnits: 0,
+    sceneAllocatedUnits: null, occludedOrOutOfFrameUnits: null, maxSceneAllocatedUnits: 2,
+    requestedVisibleUnits: 2,
+    pairPolicy: 'preserve_pair', placement: null, observedFeatureCount: 2,
+    structuralComponentCount: 1,
+  });
+  const lifestyleItem = proposals.find(({ campaignRole }) =>
+    campaignRole === 'contextual_lifestyle').items[0];
+  assert.equal(lifestyleItem.visibility, 'required');
+  assert.equal(lifestyleItem.humanAllocatedUnits, 1);
+  assert.equal(lifestyleItem.sceneAllocatedUnits, 0);
+  assert.equal(lifestyleItem.occludedOrOutOfFrameUnits, 1);
+  assert.equal(lifestyleItem.requestedVisibleUnits, 1);
+  assert.deepEqual(lifestyleItem.placement, {
+    interactionMode: 'functionally valid human use', anatomicalAnchor: null,
+    orientation: 'preserve the product native functional orientation',
+  });
+  const serialized = JSON.stringify(events);
+  assert.doesNotMatch(serialized, /prompt|source-observed|plausibleHypotheses|Base64|data:image|Authorization|api[_-]?key/i);
+});
+
+test('telemetria observacional não altera prompt, seleção, resposta ou chamada visual', async () => {
+  const baseline = service();
+  const baselineResult = await baseline.instance.generate(request());
+  const events = [];
+  const deterministic = createDeterministicCreativeDirectorV3Model();
+  const visualCalls = [];
+  const instrumented = createExperimentalV3GenerationService({
+    assetStore: { readImage: async () => ({ bytes: sourceBytes, mimeType: 'image/jpeg', metadata: { hash: 'safe-hash' } }) },
+    productIdentityAnalyzer: { analyze: async () => analysis },
+    creativeDirectorAdapterFactory: () => ({ name: 'mock-director', generate: (input) => deterministic.generate(input) }),
+    imageProvider: {
+      async generate(input) {
+        visualCalls.push(input);
+        const role = /Campaign role: ([a-z_]+)/.exec(input.prompt)?.[1];
+        return { imageBase64: Buffer.from(role).toString('base64') };
+      },
+    },
+    logger: { info: (event) => events.push(event) },
+  });
+  const instrumentedResult = await instrumented.generate(request());
+  assert.deepEqual(instrumentedResult, baselineResult);
+  assert.equal(visualCalls.length, baseline.visualCalls.length);
+  assert.deepEqual(visualCalls, baseline.visualCalls);
+  assert.equal(events.filter(({ component }) => component === 'ExperimentalV3CanonicalInventory').length, 1);
+  assert.equal(events.filter(({ component }) => component === 'ExperimentalV3PreProviderContract').length, 4);
 });
 
 test('uma direção lógica produz quatro briefs, quatro prompts e quatro chamadas visuais', async () => {

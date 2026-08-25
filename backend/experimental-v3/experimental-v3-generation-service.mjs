@@ -185,6 +185,97 @@ function safeVisualError(error) {
   return allowed.has(error?.code) ? error.code : 'VISUAL_GENERATION_FAILED';
 }
 
+function safeDiagnosticPhrase(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return 'invalid';
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  if (!normalized || normalized.length > 120 ||
+      /(?:data:image|base64|bearer\s|authorization|api[_-]?key|token)/i.test(normalized)) {
+    return 'redacted';
+  }
+  return normalized;
+}
+
+function relationshipDiagnostics(productIdentity, itemId) {
+  return productIdentity.relationships
+    .filter(({ itemIds }) => itemIds.includes(itemId))
+    .map(({ type, itemIds }) => ({ type, itemIds: [...itemIds] }));
+}
+
+function relativeScaleDiagnostics(productIdentity, itemId) {
+  return (productIdentity.relativeScale ?? [])
+    .filter(({ subjectId, referenceId }) => subjectId === itemId || referenceId === itemId)
+    .map(({ subjectId, referenceId, relation, confidence }) => ({
+      subjectId, referenceId, relation, confidence,
+    }));
+}
+
+function canonicalInventoryDiagnostics(analysis, productIdentity) {
+  const sourceItems = new Map(analysis.items.map((item) => [item.id, item]));
+  return productIdentity.items.map(({ id, functionalType, quantity }) => {
+    const sourceItem = sourceItems.get(id);
+    return {
+      itemId: id,
+      functionalType,
+      canonicalQuantity: quantity,
+      functionalTypeState: sourceItem?.functionalType?.state ?? 'unknown',
+      quantityState: sourceItem?.quantity?.state ?? 'unknown',
+      observationCompleteness: sourceItem?.observationCompleteness ?? 'unknown',
+      observedFeatureCount: sourceItem?.observedFeatures?.length ?? 0,
+      ambiguousFeatureCount: sourceItem?.ambiguousFeatures?.length ?? 0,
+      structuralComponentCount: (productIdentity.structuralComponents ?? [])
+        .filter(({ parentItemId }) => parentItemId === id).length,
+      relationships: relationshipDiagnostics(productIdentity, id),
+      relativeScale: relativeScaleDiagnostics(productIdentity, id),
+    };
+  });
+}
+
+function proposalContractDiagnostics({ brief, productIdentity, allocation }) {
+  const required = new Map(brief.productPresentation.requiredVisibleItems
+    .map(({ itemId, quantity }) => [itemId, quantity]));
+  const optional = new Map(brief.productPresentation.optionalVisibleItems
+    .map(({ itemId, quantity }) => [itemId, quantity]));
+  const allocationByItem = new Map(allocation.map((entry) => [entry.itemId, entry]));
+  const placementByItem = new Map((brief.humanInteraction.physicalPlacement ?? [])
+    .map((placement) => [placement.itemId, placement]));
+  return productIdentity.items.map(({ id, functionalType, quantity }) => {
+    const visibility = required.has(id) ? 'required' : optional.has(id) ? 'optional' : 'omitted';
+    const unitAllocation = allocationByItem.get(id);
+    const placement = placementByItem.get(id);
+    const humanAllocatedUnits = unitAllocation?.humanAllocated ?? 0;
+    const hasExactAllocation = unitAllocation?.sceneAllocated !== undefined;
+    const sceneAllocatedUnits = hasExactAllocation ? unitAllocation.sceneAllocated : null;
+    const occludedOrOutOfFrameUnits = hasExactAllocation
+      ? unitAllocation.occludedOrOutOfFrame : null;
+    const requestedVisibleUnits = hasExactAllocation
+      ? humanAllocatedUnits + sceneAllocatedUnits
+      : visibility === 'required' ? required.get(id) : null;
+    return {
+      itemId: id,
+      functionalType,
+      canonicalQuantity: quantity,
+      visibility,
+      requestedQuantity: required.get(id) ?? optional.get(id) ?? 0,
+      humanAllocatedUnits,
+      sceneAllocatedUnits,
+      occludedOrOutOfFrameUnits,
+      maxSceneAllocatedUnits: unitAllocation?.maxSceneAllocated ?? 0,
+      requestedVisibleUnits,
+      pairPolicy: brief.visibilityIntent.pairPolicy,
+      placement: placement ? {
+        interactionMode: safeDiagnosticPhrase(placement.interactionMode),
+        anatomicalAnchor: safeDiagnosticPhrase(placement.anatomicalAnchor),
+        orientation: safeDiagnosticPhrase(placement.orientation),
+      } : null,
+      observedFeatureCount: (productIdentity.observedFeatureEvidence ?? [])
+        .filter(({ itemId }) => itemId === id).length,
+      structuralComponentCount: (productIdentity.structuralComponents ?? [])
+        .filter(({ parentItemId }) => parentItemId === id).length,
+    };
+  });
+}
+
 export function createExperimentalV3GenerationService({
   assetStore,
   productIdentityAnalyzer,
@@ -216,6 +307,15 @@ export function createExperimentalV3GenerationService({
         cacheKey: asset.metadata?.hash ?? request.inputAssetId,
       });
       const input = buildCreativeDirectorV3Input({ analysis, request });
+      effectiveLogger.info({
+        component: 'ExperimentalV3CanonicalInventory',
+        analysisState: analysis.state,
+        validationState: 'locally_validated',
+        canonicalItemCount: input.productIdentity.items.length,
+        relationshipCount: input.productIdentity.relationships.length,
+        relativeScaleCount: input.productIdentity.relativeScale.length,
+        items: canonicalInventoryDiagnostics(analysis, input.productIdentity),
+      });
       const direction = await runCreativeDirector({
         input,
         modelAdapter: creativeDirectorAdapterFactory(source),
@@ -237,10 +337,15 @@ export function createExperimentalV3GenerationService({
           const allocation = deriveProposalUnitAllocation({
             brief, productIdentity: input.productIdentity,
           });
+          const proposalItems = proposalContractDiagnostics({
+            brief, productIdentity: input.productIdentity, allocation,
+          });
           effectiveLogger.info({
             component: 'ExperimentalV3ProposalInventory',
+            proposalId: brief.proposalId,
             campaignRole: brief.campaignRole,
             selectedCanonicalItemIds: visibleItemIds,
+            items: proposalItems,
             canonicalQuantities: Object.fromEntries(allocation.map(({ itemId, canonicalQuantity }) =>
               [itemId, canonicalQuantity])),
             humanAllocatedUnits: Object.fromEntries(allocation.map(({ itemId, humanAllocated }) =>
@@ -258,6 +363,15 @@ export function createExperimentalV3GenerationService({
           const prompt = compileCreativeDirectorV3ImagePrompt({
             brief, productIdentity: input.productIdentity,
             productSemantics: input.productSemantics, userIntent: input.userIntent,
+          });
+          effectiveLogger.info({
+            component: 'ExperimentalV3PreProviderContract',
+            proposalId: brief.proposalId,
+            campaignRole: brief.campaignRole,
+            canonicalItemCount: input.productIdentity.items.length,
+            selectedItemCount: proposalItems.filter(({ visibility }) => visibility !== 'omitted').length,
+            intentionallyOmittedItemCount: proposalItems.filter(({ visibility }) => visibility === 'omitted').length,
+            items: proposalItems,
           });
           try {
             const image = await imageProvider.generate({
