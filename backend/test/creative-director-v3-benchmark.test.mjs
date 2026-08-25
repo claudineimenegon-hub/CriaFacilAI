@@ -18,6 +18,14 @@ async function generated(name = 'unknown') {
   return { input, result };
 }
 
+function legacyHumanInteraction(brief) {
+  return {
+    presence: brief.humanInteraction.presence,
+    mode: brief.humanInteraction.mode,
+    usageDescription: brief.humanInteraction.usageDescription,
+  };
+}
+
 test('15 categorias generalistas produzem quatro briefs válidos, distintos e fiéis', async () => {
   assert.equal(CREATIVE_DIRECTOR_V3_FIXTURE_NAMES.length, 15);
   for (const name of CREATIVE_DIRECTOR_V3_FIXTURE_NAMES) {
@@ -65,12 +73,14 @@ test('visibility seletiva aceita inventário completo, subconjunto canônico e p
       return { ...brief,
         productPresentation: { ...brief.productPresentation, heroItemIds: ['earring-pair'], supportingItemIds: [], requiredVisibleItems: items, optionalVisibleItems: [], presentationScope: 'single_item_detail' },
         visibilityIntent: { ...brief.visibilityIntent, requiredVisibleItems: items, optionalVisibleItems: [], heroItemIds: ['earring-pair'], pairPolicy: 'preserve_pair' },
+        humanInteraction: legacyHumanInteraction(brief),
       };
     }
     const items = [{ itemId: 'ring-1', quantity: 1 }];
     return { ...brief,
       productPresentation: { ...brief.productPresentation, heroItemIds: ['ring-1'], supportingItemIds: [], requiredVisibleItems: items, optionalVisibleItems: [], presentationScope: 'single_item_detail' },
       visibilityIntent: { ...brief.visibilityIntent, requiredVisibleItems: items, optionalVisibleItems: [], heroItemIds: ['ring-1'], pairPolicy: 'not_selected' },
+      humanInteraction: legacyHumanInteraction(brief),
     };
   });
   assert.equal(validateCreativeDirectorV3Output(subset, input).length, 4);
@@ -104,6 +114,7 @@ test('relação set não atômica permite subset sem apagar a relação global',
     return { ...brief,
       productPresentation: { ...brief.productPresentation, heroItemIds: ['bottle-1'], supportingItemIds: [], requiredVisibleItems: items, optionalVisibleItems: [], presentationScope: 'single_item_detail' },
       visibilityIntent: { ...brief.visibilityIntent, requiredVisibleItems: items, optionalVisibleItems: [], heroItemIds: ['bottle-1'], pairPolicy: 'not_applicable' },
+      humanInteraction: legacyHumanInteraction(brief),
     };
   });
   assert.equal(validateCreativeDirectorV3Output(subset, input).length, 4);
@@ -122,6 +133,7 @@ test('selective visibility isolada não satisfaz diversidade', async () => {
       visibilityIntent: { ...brief.visibilityIntent, requiredVisibleItems: items, optionalVisibleItems: [], heroItemIds: [items[0].itemId], pairPolicy: items[0].itemId === 'earring-pair' ? 'preserve_pair' : 'not_selected' },
       photography: { ...brief.photography, shotType: first.photography.shotType, cameraAngle: first.photography.cameraAngle, lighting: first.photography.lighting },
       artDirection: { ...brief.artDirection, visualLanguage: first.artDirection.visualLanguage, colorStrategy: first.artDirection.colorStrategy },
+      humanInteraction: legacyHumanInteraction(brief),
     };
   });
   assert.throws(() => validateCreativeDirectorV3Output(repetitive, input), { code: 'INSUFFICIENT_V3_DIVERSITY' });

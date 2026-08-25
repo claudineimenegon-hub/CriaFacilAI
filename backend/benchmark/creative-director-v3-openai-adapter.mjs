@@ -12,6 +12,22 @@ const itemQuantity = {
   type: 'object', additionalProperties: false, required: ['itemId', 'quantity'],
   properties: { itemId: string, quantity: { type: 'integer', minimum: 1 } },
 };
+const unitAllocation = {
+  type: 'object', additionalProperties: false,
+  required: ['itemId', 'canonicalQuantity', 'humanAllocatedUnits', 'sceneAllocatedUnits', 'occludedOrOutOfFrameUnits'],
+  properties: {
+    itemId: string,
+    canonicalQuantity: { type: 'integer', minimum: 1 },
+    humanAllocatedUnits: { type: 'integer', minimum: 0 },
+    sceneAllocatedUnits: { type: 'integer', minimum: 0 },
+    occludedOrOutOfFrameUnits: { type: 'integer', minimum: 0 },
+  },
+};
+const physicalPlacement = {
+  type: 'object', additionalProperties: false,
+  required: ['itemId', 'interactionMode', 'anatomicalAnchor', 'orientation'],
+  properties: { itemId: string, interactionMode: string, anatomicalAnchor: nullableString, orientation: nullableString },
+};
 
 const creativeBriefSchema = {
   type: 'object', additionalProperties: false,
@@ -41,8 +57,15 @@ const creativeBriefSchema = {
       },
     },
     humanInteraction: {
-      type: 'object', additionalProperties: false, required: ['presence', 'mode', 'usageDescription'],
-      properties: { presence: { type: 'string', enum: V3_HUMAN_PRESENCE }, mode: { type: 'string', enum: ['required', 'allowed', 'forbidden'] }, usageDescription: nullableString },
+      type: 'object', additionalProperties: false,
+      required: ['presence', 'mode', 'usageDescription', 'unitAllocation', 'physicalPlacement'],
+      properties: {
+        presence: { type: 'string', enum: V3_HUMAN_PRESENCE },
+        mode: { type: 'string', enum: ['required', 'allowed', 'forbidden'] },
+        usageDescription: nullableString,
+        unitAllocation: { type: 'array', items: unitAllocation },
+        physicalPlacement: { type: 'array', items: physicalPlacement },
+      },
     },
     scene: {
       type: 'object', additionalProperties: false,
@@ -92,6 +115,10 @@ const SYSTEM_INSTRUCTIONS = [
   'Decide human presence contextually as none, optional, recommended or required from product identity, category, affordance, valid use and campaign concept. Never apply a global always-use-a-model rule.',
   'Use recommended or required human presence primarily when contextual_lifestyle benefits from genuine demonstration of use, scale or advertising appeal. Keep the other campaign roles product-led unless independently justified, and never let people dominate all four proposals.',
   'For contextual_lifestyle with a wearable on a person, physical plausibility outranks simultaneous display of every canonical unit. Plan valid anatomical anchors, attachment orientation and pose-dependent visibility; allow natural occlusion or off-frame placement instead of relocating a product to an invalid body location. This does not change canonical identity, quantity or relationships.',
+  'For every proposal with human interaction, provide unitAllocation for every selected canonical item. canonicalQuantity must match Product Identity, and humanAllocatedUnits + sceneAllocatedUnits + occludedOrOutOfFrameUnits must never exceed it. A physical unit cannot be allocated to both the human and the scene.',
+  'Provide physicalPlacement only for items with humanAllocatedUnits greater than zero. Use short general semantic descriptions for interactionMode, anatomicalAnchor and orientation; use null when an anchor or orientation is not applicable or cannot be established safely. Do not invent anatomy or unsupported product use.',
+  'When human interaction is forbidden, unitAllocation and physicalPlacement must both be empty arrays.',
+  'Distinct canonical item IDs are independent physical products. Plausible overlap is allowed, but never merge their geometry, components, materials or functions into a hybrid product.',
   'Do not infer gender. Use gender-neutral human presentation unless product evidence or explicit user intent supplies sufficient context.',
   'Unknown-safe-context products require conservative, physically plausible commercial still-life or hero contexts.',
   'Use concrete locations, surfaces, materials, props, environmental colors, composition, camera, lens language, lighting and depth decisions. Avoid generic luxury filler.',

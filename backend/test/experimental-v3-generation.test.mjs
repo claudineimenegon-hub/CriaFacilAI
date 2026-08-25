@@ -11,6 +11,7 @@ import {
   experimentalOutputDimensions,
   validateExperimentalV3Request,
 } from '../experimental-v3/experimental-v3-generation-service.mjs';
+import { OPENAI_CREATIVE_DIRECTOR_V3_SCHEMA } from '../benchmark/creative-director-v3-openai-adapter.mjs';
 
 function humanPresenceInput({ category, functionalType, affordance, objective = 'Create a premium campaign' }) {
   return validateCreativeDirectorV3Input({
@@ -86,6 +87,23 @@ test('request usa medium por padrão e rejeita valores técnicos inválidos', ()
   assert.throws(() => validateExperimentalV3Request(request({ inputAssetId: 'fixture' })), /referência/);
 });
 
+test('schema OpenAI e fallback determinístico compartilham allocation e placement', async () => {
+  const humanSchema = OPENAI_CREATIVE_DIRECTOR_V3_SCHEMA.properties.briefs.items
+    .properties.humanInteraction;
+  assert.ok(humanSchema.required.includes('unitAllocation'));
+  assert.ok(humanSchema.required.includes('physicalPlacement'));
+  assert.deepEqual(Object.keys(humanSchema.properties.unitAllocation.items.properties), [
+    'itemId', 'canonicalQuantity', 'humanAllocatedUnits',
+    'sceneAllocatedUnits', 'occludedOrOutOfFrameUnits',
+  ]);
+  const input = humanPresenceInput({
+    category: 'clothing', functionalType: 'wearable garment', affordance: 'wearable',
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  assert.ok(briefs.every((brief) => Array.isArray(brief.humanInteraction.unitAllocation)));
+  assert.ok(briefs.every((brief) => Array.isArray(brief.humanInteraction.physicalPlacement)));
+});
+
 test('ponte constrói Product Identity V3 real sem fixture e preserva pair e evidência', () => {
   const normalized = validateExperimentalV3Request(request());
   const input = buildCreativeDirectorV3Input({ analysis, request: normalized });
@@ -103,6 +121,11 @@ test('ponte constrói Product Identity V3 real sem fixture e preserva pair e evi
   assert.deepEqual(input.productIdentity.criticalFeatures, [{
     itemId: 'product-pair', featureId: 'closure-feature', name: 'visible fastening element',
     value: 'source-observed connector', evidence: 'observed',
+  }]);
+  assert.deepEqual(input.productIdentity.structuralComponents, [{
+    componentId: 'closure-feature', parentItemId: 'product-pair',
+    name: 'visible fastening element', value: 'source-observed connector',
+    evidence: 'observed', requiredWhenParentVisible: true,
   }]);
   assert.equal(input.productIdentity.criticalFeatures.some(({ name }) => name === 'color'), false);
   assert.equal(JSON.stringify(input).includes('fixture'), false);
@@ -503,7 +526,7 @@ test('prompt limita relativeScale a quatro relações visíveis de alta confian�
     productSemantics: input.productSemantics, userIntent: input.userIntent,
   });
   const scaleSection = prompt.split('C3. SOURCE-OBSERVED RELATIVE SCALE')[1]
-    .split('D. HUMAN INTERACTION / VALID USE')[0];
+    .split('C5. CANONICAL PRODUCT INDEPENDENCE')[0];
   assert.equal((scaleSection.match(/^- product-/gm) ?? []).length, 4);
   assert.doesNotMatch(scaleSection, /product-6/);
   assert.doesNotMatch(scaleSection, /approximately the same visible size/);
@@ -590,7 +613,7 @@ test('camada de placement não afeta não vestíveis nem propostas não Lifestyl
   }
 });
 
-test('unit allocation desconta uso humano do máximo de cena sem duplicar inventário', async () => {
+test('unit allocation estruturada é fonte de verdade e não muda com usageDescription', async () => {
   const input = validateCreativeDirectorV3Input({
     productIdentity: {
       category: 'multi-unit wearable',
@@ -618,7 +641,8 @@ test('unit allocation desconta uso humano do máximo de cena sem duplicar invent
   };
   const one = deriveProposalUnitAllocation({ brief: oneOnHuman, productIdentity: input.productIdentity });
   assert.deepEqual(one, [{
-    itemId: 'paired-product', canonicalQuantity: 2, humanAllocated: 1, maxSceneAllocated: 1,
+    itemId: 'paired-product', canonicalQuantity: 2, humanAllocated: 1,
+    sceneAllocated: 0, occludedOrOutOfFrame: 1, maxSceneAllocated: 0,
   }]);
   const both = deriveProposalUnitAllocation({
     brief: {
@@ -627,10 +651,11 @@ test('unit allocation desconta uso humano do máximo de cena sem duplicar invent
     },
     productIdentity: input.productIdentity,
   });
-  assert.equal(both[0].humanAllocated, 2);
-  assert.equal(both[0].maxSceneAllocated, 0);
+  assert.equal(both[0].humanAllocated, 1);
+  assert.equal(both[0].occludedOrOutOfFrame, 1);
   for (const allocation of [...one, ...both]) {
-    assert.ok(allocation.humanAllocated + allocation.maxSceneAllocated <= allocation.canonicalQuantity);
+    assert.ok(allocation.humanAllocated + allocation.sceneAllocated +
+      allocation.occludedOrOutOfFrame <= allocation.canonicalQuantity);
   }
   const prompt = compileCreativeDirectorV3ImagePrompt({
     brief: oneOnHuman, productIdentity: input.productIdentity,
@@ -638,7 +663,8 @@ test('unit allocation desconta uso humano do máximo de cena sem duplicar invent
   });
   assert.match(prompt, /TOTAL CANONICAL QUANTITY FOR THIS PROPOSAL: 2/);
   assert.match(prompt, /ALLOCATED TO HUMAN: 1/);
-  assert.match(prompt, /MAXIMUM ADDITIONAL UNITS ALLOWED ELSEWHERE IN THE SCENE: 1/);
+  assert.match(prompt, /ALLOCATED TO SCENE: 0/);
+  assert.match(prompt, /NATURALLY OCCLUDED OR OUT OF FRAME: 1/);
   assert.match(prompt, /never authorizes an additional pair/);
   assert.match(prompt, /Occluded or out-of-frame units do not create additional inventory/);
 });
@@ -720,5 +746,133 @@ test('componentes estruturais observados são críticos sem promover evidência 
   };
   const input = buildCreativeDirectorV3Input({ analysis: componentAnalysis, request: normalized });
   assert.deepEqual(input.productIdentity.criticalFeatures.map(({ featureId }) => featureId), ['strap-1']);
+  assert.deepEqual(input.productIdentity.structuralComponents.map(({ componentId, parentItemId }) =>
+    ({ componentId, parentItemId })), [{ componentId: 'strap-1', parentItemId: 'product-1' }]);
   assert.equal(input.productIdentity.criticalFeatures.some(({ featureId }) => featureId === 'hidden-hook'), false);
+  assert.equal(input.productIdentity.structuralComponents.some(({ componentId }) => componentId === 'hidden-hook'), false);
+});
+
+test('componente estrutural exige evidência observada correspondente e item pai conhecido', () => {
+  const base = humanPresenceInput({ category: 'electronics', functionalType: 'portable electronic device', affordance: 'handheld' });
+  const structural = {
+    ...base,
+    productIdentity: {
+      ...base.productIdentity,
+      criticalFeatures: [{
+        itemId: 'product-1', featureId: 'hinge-1', name: 'visible hinge',
+        value: 'source-observed folding joint', evidence: 'observed',
+      }],
+      structuralComponents: [{
+        componentId: 'hinge-1', parentItemId: 'product-1', name: 'visible hinge',
+        value: 'source-observed folding joint', evidence: 'observed', requiredWhenParentVisible: true,
+      }],
+    },
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Input(structural));
+  assert.throws(() => validateCreativeDirectorV3Input({
+    ...structural,
+    productIdentity: {
+      ...structural.productIdentity,
+      structuralComponents: [{ ...structural.productIdentity.structuralComponents[0], componentId: 'invented-part' }],
+    },
+  }), /lacks matching explicit observed evidence/);
+});
+
+test('alocação validada impede duplicação e exige placement somente para interação humana', async () => {
+  const categories = [
+    ['clothing', 'wearable garment', 'wearable'],
+    ['electronics', 'portable electronic device', 'handheld'],
+    ['cosmetics', 'cosmetic container', 'handheld'],
+    ['food', 'packaged food product', 'consumable'],
+  ];
+  for (const [category, functionalType, affordance] of categories) {
+    const input = humanPresenceInput({ category, functionalType, affordance });
+    const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+    assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input), category);
+    const lifestyle = briefs[1];
+    assert.equal(lifestyle.humanInteraction.unitAllocation.length, 1, category);
+    assert.equal(lifestyle.humanInteraction.physicalPlacement.length, 1, category);
+    assert.equal(lifestyle.humanInteraction.physicalPlacement[0].itemId, 'product-1', category);
+    assert.ok(lifestyle.humanInteraction.physicalPlacement[0].interactionMode.length > 1, category);
+  }
+
+  const input = humanPresenceInput({ category: 'clothing', functionalType: 'wearable product', affordance: 'wearable' });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const invalidLifestyle = {
+    ...briefs[1],
+    humanInteraction: {
+      ...briefs[1].humanInteraction,
+      unitAllocation: [{
+        itemId: 'product-1', canonicalQuantity: 1, humanAllocatedUnits: 1,
+        sceneAllocatedUnits: 1, occludedOrOutOfFrameUnits: 0,
+      }],
+    },
+  };
+  assert.throws(() => validateCreativeDirectorV3Output([
+    briefs[0], invalidLifestyle, briefs[2], briefs[3],
+  ], input), /exceeds canonical quantity/);
+});
+
+test('produto sem componente e briefing legado permanecem compatíveis', async () => {
+  const input = humanPresenceInput({ category: 'food', functionalType: 'packaged food', affordance: 'consumable' });
+  assert.deepEqual(input.productIdentity.structuralComponents, []);
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const legacy = briefs.map((brief) => ({
+    ...brief,
+    humanInteraction: {
+      presence: brief.humanInteraction.presence,
+      mode: brief.humanInteraction.mode,
+      usageDescription: brief.humanInteraction.usageDescription,
+    },
+  }));
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(legacy, input));
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: legacy[0], productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.doesNotMatch(prompt, /PARENT-BOUND STRUCTURAL COMPONENTS/);
+});
+
+test('conjunto misto preserva independência física e pair sem obrigar inventário no Editorial', async () => {
+  const normalized = validateExperimentalV3Request(request());
+  const mixed = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: {
+      state: 'known',
+      items: [
+        analysis.items[0],
+        {
+          id: 'device-1', functionalType: { state: 'known', value: 'electronic device' },
+          quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+          observedFeatures: [], ambiguousFeatures: [],
+        },
+      ],
+      relationships: analysis.relationships,
+    },
+    request: normalized,
+  }));
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(mixed);
+  const heroPrompt = compileCreativeDirectorV3ImagePrompt({
+    brief: briefs[0], productIdentity: mixed.productIdentity,
+    productSemantics: mixed.productSemantics, userIntent: mixed.userIntent,
+  });
+  assert.match(heroPrompt, /CANONICAL PRODUCT INDEPENDENCE/);
+  assert.match(heroPrompt, /never fuse their geometry/);
+
+  const editorial = {
+    ...briefs[2],
+    productPresentation: {
+      ...briefs[2].productPresentation,
+      heroItemIds: ['device-1'], supportingItemIds: [],
+      requiredVisibleItems: [{ itemId: 'device-1', quantity: 1 }], optionalVisibleItems: [],
+      presentationScope: 'single_item_detail',
+    },
+    visibilityIntent: {
+      ...briefs[2].visibilityIntent,
+      heroItemIds: ['device-1'], requiredVisibleItems: [{ itemId: 'device-1', quantity: 1 }],
+      optionalVisibleItems: [], pairPolicy: 'not_selected', mode: 'subset',
+    },
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output([
+    briefs[0], briefs[1], editorial, briefs[3],
+  ], mixed));
 });

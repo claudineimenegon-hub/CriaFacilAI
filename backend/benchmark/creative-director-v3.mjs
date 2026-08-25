@@ -104,6 +104,30 @@ function featureEvidence(value, ids, field, { ambiguous = false, critical = fals
   }));
 }
 
+function structuralComponents(value, ids) {
+  if (!Array.isArray(value)) fail('INVALID_V3_INPUT', 'productIdentity.structuralComponents must be an array.');
+  const componentIds = new Set();
+  return Object.freeze(value.map((component, index) => {
+    const path = `productIdentity.structuralComponents[${index}]`;
+    const componentId = text(component?.componentId, `${path}.componentId`);
+    const parentItemId = text(component?.parentItemId, `${path}.parentItemId`);
+    if (componentIds.has(componentId)) fail('INVALID_V3_INPUT', `${path}.componentId must be unique.`);
+    if (!ids.has(parentItemId)) fail('INVALID_V3_INPUT', `${path}.parentItemId references an unknown item ID.`);
+    if (component.evidence !== 'observed' || component.requiredWhenParentVisible !== true) {
+      fail('INVALID_V3_INPUT', `${path} must remain explicitly observed and parent-bound.`);
+    }
+    componentIds.add(componentId);
+    return Object.freeze({
+      componentId,
+      parentItemId,
+      name: text(component.name, `${path}.name`),
+      value: text(component.value, `${path}.value`),
+      evidence: 'observed',
+      requiredWhenParentVisible: true,
+    });
+  }));
+}
+
 export function validateCreativeDirectorV3Input(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_V3_INPUT', 'V3 input must be an object.');
   const identity = input.productIdentity;
@@ -145,6 +169,13 @@ export function validateCreativeDirectorV3Input(input) {
   const criticalFeatures = featureEvidence(
     identity.criticalFeatures ?? [], ids, 'productIdentity.criticalFeatures', { critical: true },
   );
+  const confirmedStructuralComponents = structuralComponents(identity.structuralComponents ?? [], ids);
+  for (const component of confirmedStructuralComponents) {
+    const supported = criticalFeatures.some((feature) =>
+      feature.featureId === component.componentId && feature.itemId === component.parentItemId &&
+      feature.name === component.name && feature.value === component.value);
+    if (!supported) fail('INVALID_V3_INPUT', 'Structural component lacks matching explicit observed evidence.');
+  }
   const affordances = Array.isArray(input.productSemantics?.affordances)
     ? [...new Set(input.productSemantics.affordances)] : [];
   if (!affordances.length || affordances.some((value) => !V3_AFFORDANCES.includes(value))) fail('INVALID_V3_INPUT', 'Unsupported or missing affordance.');
@@ -160,6 +191,7 @@ export function validateCreativeDirectorV3Input(input) {
       observedFeatureEvidence,
       ambiguousFeatureEvidence,
       criticalFeatures,
+      structuralComponents: confirmedStructuralComponents,
     }),
     productSemantics: Object.freeze({
       functionalType: text(input.productSemantics.functionalType, 'productSemantics.functionalType'),
@@ -211,6 +243,32 @@ function visibilityFor(role, identity) {
   });
 }
 
+function structuredHumanPlan(human, identity, visibilityIntent) {
+  if (human.mode === 'forbidden') {
+    return Object.freeze({ unitAllocation: Object.freeze([]), physicalPlacement: Object.freeze([]) });
+  }
+  const heroIds = new Set(visibilityIntent.heroItemIds);
+  const allocations = visibilityIntent.requiredVisibleItems.map(({ itemId, quantity }) => {
+    const humanAllocatedUnits = heroIds.has(itemId) ? Math.min(1, quantity) : 0;
+    return Object.freeze({
+      itemId,
+      canonicalQuantity: quantity,
+      humanAllocatedUnits,
+      sceneAllocatedUnits: 0,
+      occludedOrOutOfFrameUnits: quantity - humanAllocatedUnits,
+    });
+  });
+  const physicalPlacement = allocations
+    .filter(({ humanAllocatedUnits }) => humanAllocatedUnits > 0)
+    .map(({ itemId }) => Object.freeze({
+      itemId,
+      interactionMode: 'functionally valid human use',
+      anatomicalAnchor: null,
+      orientation: 'preserve the product native functional orientation',
+    }));
+  return Object.freeze({ unitAllocation: Object.freeze(allocations), physicalPlacement: Object.freeze(physicalPlacement) });
+}
+
 export function createDeterministicCreativeDirectorV3Model() {
   return Object.freeze({
     name: 'deterministic-v3-dry-run-adapter',
@@ -219,6 +277,7 @@ export function createDeterministicCreativeDirectorV3Model() {
       return ROLE_DIRECTIONS.map((direction, index) => {
         const visibilityIntent = visibilityFor(direction.campaignRole, identity);
         const human = humanInteraction(direction, semantics, userIntent);
+        const humanPlan = structuredHumanPlan(human, identity, visibilityIntent);
         const context = semantics.validContexts[0] ?? 'a conservative, physically credible commercial setting';
         return {
           proposalId: index + 1,
@@ -235,7 +294,7 @@ export function createDeterministicCreativeDirectorV3Model() {
             presentationScope: 'complete_set',
           },
           visibilityIntent,
-          humanInteraction: human,
+          humanInteraction: Object.freeze({ ...human, ...humanPlan }),
           scene: {
             environment: direction.environment, surface: direction.surface,
             foreground: `a restrained framing cue appropriate to ${context}`,
@@ -340,6 +399,56 @@ function validateRelationships(brief, input, selected) {
   }
 }
 
+function validateHumanPlan(brief, identity, selected) {
+  const interaction = brief.humanInteraction;
+  const hasAllocation = interaction.unitAllocation !== undefined;
+  const hasPlacement = interaction.physicalPlacement !== undefined;
+  if (!hasAllocation && !hasPlacement) return;
+  if (!Array.isArray(interaction.unitAllocation) || !Array.isArray(interaction.physicalPlacement)) {
+    fail('INVALID_V3_OUTPUT', 'Human unit allocation and physical placement must both be arrays.');
+  }
+  const canonical = new Map(identity.items.map(({ id, quantity }) => [id, quantity]));
+  const allocated = new Set();
+  for (const allocation of interaction.unitAllocation) {
+    const itemId = allocation?.itemId;
+    if (!selected.has(itemId) || allocated.has(itemId)) fail('INVALID_V3_OUTPUT', 'Human unit allocation contains an unknown, omitted or duplicate item ID.');
+    const expected = canonical.get(itemId);
+    const values = [allocation.canonicalQuantity, allocation.humanAllocatedUnits,
+      allocation.sceneAllocatedUnits, allocation.occludedOrOutOfFrameUnits];
+    if (values.some((value) => !Number.isSafeInteger(value) || value < 0) || allocation.canonicalQuantity !== expected) {
+      fail('INVALID_V3_OUTPUT', 'Human unit allocation violates a canonical quantity lock.');
+    }
+    if (allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits +
+        allocation.occludedOrOutOfFrameUnits > expected) {
+      fail('INVALID_V3_OUTPUT', 'Human unit allocation exceeds canonical quantity.');
+    }
+    allocated.add(itemId);
+  }
+  if (interaction.mode !== 'forbidden' && [...selected].some((itemId) => !allocated.has(itemId))) {
+    fail('INVALID_V3_OUTPUT', 'Human unit allocation must account for every selected item.');
+  }
+  if (interaction.mode === 'forbidden' && (interaction.unitAllocation.length || interaction.physicalPlacement.length)) {
+    fail('INVALID_V3_OUTPUT', 'Forbidden human interaction cannot contain allocation or placement.');
+  }
+  const placed = new Set();
+  for (const placement of interaction.physicalPlacement) {
+    const itemId = placement?.itemId;
+    const allocation = interaction.unitAllocation.find((entry) => entry.itemId === itemId);
+    if (!allocation || allocation.humanAllocatedUnits < 1 || placed.has(itemId)) {
+      fail('INVALID_V3_OUTPUT', 'Physical placement must reference one unique human-allocated canonical item.');
+    }
+    text(placement.interactionMode, 'physicalPlacement.interactionMode');
+    text(placement.anatomicalAnchor, 'physicalPlacement.anatomicalAnchor', { optional: true });
+    text(placement.orientation, 'physicalPlacement.orientation', { optional: true });
+    placed.add(itemId);
+  }
+  for (const allocation of interaction.unitAllocation) {
+    if (allocation.humanAllocatedUnits > 0 && !placed.has(allocation.itemId)) {
+      fail('INVALID_V3_OUTPUT', 'Every human-allocated item requires one physical placement plan.');
+    }
+  }
+}
+
 function diversityKey(brief) {
   return [brief.scene.environment, brief.productPresentation.presentationMode,
     brief.photography.shotType, brief.photography.cameraAngle, brief.photography.lighting,
@@ -395,6 +504,7 @@ export function validateCreativeDirectorV3Output(rawBriefs, normalizedInput) {
     }
     const bodilyAllowed = input.productSemantics.affordances.includes('wearable');
     if (!bodilyAllowed && /wear|ear|finger|body attachment/i.test(brief.humanInteraction.usageDescription ?? '')) fail('INVALID_V3_OUTPUT', 'Human interaction conflicts with product affordance.');
+    validateHumanPlan(brief, input.productIdentity, selected);
     if (!V3_COLOR_STRATEGIES.includes(brief.artDirection.colorStrategy)) fail('INVALID_V3_OUTPUT', 'Invalid color strategy.');
     if (brief.creativeFreedom?.productTransformation !== 'forbidden') fail('INVALID_V3_OUTPUT', 'Product transformation must be forbidden.');
     validateRelationships(brief, input, selected);

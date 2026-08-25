@@ -107,6 +107,16 @@ export function deriveProposalUnitAllocation({ brief, productIdentity }) {
       itemId, canonicalQuantity: quantity, humanAllocated: 0, maxSceneAllocated: quantity,
     }));
   }
+  if (Array.isArray(brief.humanInteraction.unitAllocation)) {
+    return brief.humanInteraction.unitAllocation.map((allocation) => Object.freeze({
+      itemId: allocation.itemId,
+      canonicalQuantity: allocation.canonicalQuantity,
+      humanAllocated: allocation.humanAllocatedUnits,
+      sceneAllocated: allocation.sceneAllocatedUnits,
+      occludedOrOutOfFrame: allocation.occludedOrOutOfFrameUnits,
+      maxSceneAllocated: allocation.sceneAllocatedUnits,
+    }));
+  }
   const usage = String(brief.humanInteraction.usageDescription ?? '').toLowerCase();
   const mentionedIds = new Set(selected.filter(({ itemId }) =>
     itemMentionedByUsage(canonical.get(itemId), usage)).map(({ itemId }) => itemId));
@@ -152,6 +162,8 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
   const unitAllocation = deriveProposalUnitAllocation({ brief, productIdentity });
   const criticalFeatures = (productIdentity.criticalFeatures ?? [])
     .filter(({ itemId }) => selectedIds.has(itemId));
+  const structuralComponents = (productIdentity.structuralComponents ?? [])
+    .filter(({ parentItemId }) => selectedIds.has(parentItemId));
   const selectedObservedFeatures = (productIdentity.observedFeatureEvidence?.length ?? 0) > 0
     ? productIdentity.observedFeatureEvidence
       .filter(({ itemId }) => selectedIds.has(itemId))
@@ -188,6 +200,11 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'These are observed structural facts, not inferred generic components. Do not add an unobserved feature.',
       'When a selected product is substantially visible, retain these components as part of its physical identity. Natural concealment by pose, body, rear perspective, crop or plausible occlusion is allowed, but never remove a component merely to simplify the design when it should be visible.',
     ])] : []),
+    ...(structuralComponents.length ? [section('A5. PARENT-BOUND STRUCTURAL COMPONENTS', [
+      ...structuralComponents.map(({ componentId, parentItemId, name, value }) =>
+        `- ${componentId} belongs physically to ${parentItemId}: ${name}=${value}. Preserve it with that parent whenever the parent is substantially visible.`),
+      'Do not detach, transfer, duplicate or attach these components to another canonical item. These locks come only from explicit source evidence.',
+    ])] : []),
     section('B. VISIBLE INVENTORY FOR THIS PROPOSAL', [
       wearablePlacement
         ? 'CANONICAL / EXISTING INVENTORY SELECTED FOR THIS PROPOSAL:'
@@ -205,10 +222,12 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
     ]),
     section('C. PROTECTED RELATIONSHIPS', relationshipLines(brief, productIdentity, selectedIds)),
     ...(humanInteractionActive(brief) ? [section('C1. PROPOSAL UNIT ALLOCATION', [
-      ...unitAllocation.flatMap(({ itemId, canonicalQuantity, humanAllocated, maxSceneAllocated }) => [
+      ...unitAllocation.flatMap(({ itemId, canonicalQuantity, humanAllocated, sceneAllocated, occludedOrOutOfFrame, maxSceneAllocated }) => [
         `- ${itemId} — TOTAL CANONICAL QUANTITY FOR THIS PROPOSAL: ${canonicalQuantity}.`,
         `  ALLOCATED TO HUMAN: ${humanAllocated}.`,
-        `  MAXIMUM ADDITIONAL UNITS ALLOWED ELSEWHERE IN THE SCENE: ${maxSceneAllocated}.`,
+        ...(sceneAllocated === undefined
+          ? [`  MAXIMUM ADDITIONAL UNITS ALLOWED ELSEWHERE IN THE SCENE: ${maxSceneAllocated}.`]
+          : [`  ALLOCATED TO SCENE: ${sceneAllocated}.`, `  NATURALLY OCCLUDED OR OUT OF FRAME: ${occludedOrOutOfFrame}.`]),
       ]),
       'Human-allocated and scene-displayed units are parts of the same canonical inventory. Never repeat one unit in multiple locations, and never let their sum exceed the canonical quantity. Occluded or out-of-frame units do not create additional inventory; the remaining allowance is a maximum, not a requirement to display it.',
       'preserve_pair protects the canonical relationship and never authorizes an additional pair.',
@@ -223,10 +242,16 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       ? [section('C4. EDITORIAL PRODUCT SEPARATION', [
         'Keep every selected canonical item as an independent physical object with recognizable boundaries. Do not share geometry, incorporate one product into another, or use destructive overlap that prevents the products from being distinguished.',
       ])] : []),
+    ...(selectedIds.size > 1 ? [section('C5. CANONICAL PRODUCT INDEPENDENCE', [
+      `Keep these canonical IDs as independent physical products: ${[...selectedIds].join(', ')}.`,
+      'Physically plausible overlap is allowed, but never fuse their geometry, components, materials or functions into one hybrid object.',
+    ])] : []),
     section('D. HUMAN INTERACTION / VALID USE', [
       `Human presence decision: ${brief.humanInteraction.presence ?? (brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional')}.`,
       `Human interaction mode: ${brief.humanInteraction.mode}.`,
       ...(brief.humanInteraction.usageDescription ? [`Required usage description: ${brief.humanInteraction.usageDescription}`] : []),
+      ...((brief.humanInteraction.physicalPlacement ?? []).map(({ itemId, interactionMode, anatomicalAnchor, orientation }) =>
+        `Placement for ${itemId}: interaction=${interactionMode}; anchor=${anatomicalAnchor ?? 'not applicable'}; orientation=${orientation ?? 'conservative native orientation'}.`)),
       `Applicable affordances: ${productSemantics.affordances.join(', ')}. Valid contexts: ${productSemantics.validContexts.join('; ')}.`,
       brief.humanInteraction.mode === 'required'
         ? 'Show exactly the specified real use with realistic scale, physically plausible contact and only the anatomical placement explicitly stated above. Do not invent another pose or body placement.'

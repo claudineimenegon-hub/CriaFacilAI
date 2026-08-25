@@ -127,6 +127,16 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
   const criticalFeatures = observedFeatureEvidence
     .filter(({ name, value }) => STRUCTURAL_FEATURE_PATTERN.test(`${name} ${value}`))
     .map((feature) => ({ ...feature, evidence: 'observed' }));
+  const structuralComponents = criticalFeatures
+    .filter(({ featureId }) => featureId != null)
+    .map(({ itemId, featureId, name, value }) => ({
+      componentId: featureId,
+      parentItemId: itemId,
+      name,
+      value,
+      evidence: 'observed',
+      requiredWhenParentVisible: true,
+    }));
   const relativeScale = (identity.relativeScale ?? [])
     .map(({ subjectId, referenceId, relation, confidence }) => ({
       subjectId, referenceId, relation, confidence,
@@ -142,6 +152,7 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
       observedFeatureEvidence,
       ambiguousFeatureEvidence,
       criticalFeatures,
+      structuralComponents,
       relativeScale,
     },
     productSemantics: {
