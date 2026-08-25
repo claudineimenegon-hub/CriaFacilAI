@@ -250,12 +250,13 @@ function structuredHumanPlan(human, identity, visibilityIntent) {
   const heroIds = new Set(visibilityIntent.heroItemIds);
   const allocations = visibilityIntent.requiredVisibleItems.map(({ itemId, quantity }) => {
     const humanAllocatedUnits = heroIds.has(itemId) ? Math.min(1, quantity) : 0;
+    const sceneAllocatedUnits = humanAllocatedUnits === 0 ? Math.min(1, quantity) : 0;
     return Object.freeze({
       itemId,
       canonicalQuantity: quantity,
       humanAllocatedUnits,
-      sceneAllocatedUnits: 0,
-      occludedOrOutOfFrameUnits: quantity - humanAllocatedUnits,
+      sceneAllocatedUnits,
+      occludedOrOutOfFrameUnits: quantity - humanAllocatedUnits - sceneAllocatedUnits,
     });
   });
   const physicalPlacement = allocations
@@ -408,6 +409,7 @@ function validateHumanPlan(brief, identity, selected) {
     fail('INVALID_V3_OUTPUT', 'Human unit allocation and physical placement must both be arrays.');
   }
   const canonical = new Map(identity.items.map(({ id, quantity }) => [id, quantity]));
+  const required = new Set(brief.productPresentation.requiredVisibleItems.map(({ itemId }) => itemId));
   const allocated = new Set();
   for (const allocation of interaction.unitAllocation) {
     const itemId = allocation?.itemId;
@@ -421,6 +423,9 @@ function validateHumanPlan(brief, identity, selected) {
     if (allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits +
         allocation.occludedOrOutOfFrameUnits > expected) {
       fail('INVALID_V3_OUTPUT', 'Human unit allocation exceeds canonical quantity.');
+    }
+    if (required.has(itemId) && allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits < 1) {
+      fail('INVALID_V3_OUTPUT', 'A required visible item must have at least one unit presented to the human or scene.');
     }
     allocated.add(itemId);
   }

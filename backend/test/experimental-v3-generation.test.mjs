@@ -813,6 +813,136 @@ test('alocação validada impede duplicação e exige placement somente para int
   ], input), /exceeds canonical quantity/);
 });
 
+test('requiredVisible exige apresentação mínima sem restaurar opcionais ou omitidos', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'wearable collection',
+      items: [
+        { id: 'neck-item', functionalType: 'neck-worn product', quantity: 1 },
+        { id: 'paired-item', functionalType: 'paired body-worn product', quantity: 2 },
+        { id: 'hand-item', functionalType: 'finger-worn product', quantity: 1 },
+        { id: 'wrist-item', functionalType: 'wrist-worn product', quantity: 1 },
+      ],
+      relationships: [{ type: 'pair', itemIds: ['paired-item'] }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'wearable product collection', affordances: ['wearable'],
+      validContexts: ['physically plausible human use'], invalidContexts: ['invalid placement'],
+    },
+    userIntent: {
+      objective: 'Create a general premium wearable campaign', aspectRatio: '1:1',
+      requestedStyle: null, additionalInstructions: null,
+    },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const lifestyle = briefs[1];
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input));
+  for (const required of lifestyle.productPresentation.requiredVisibleItems) {
+    const allocation = lifestyle.humanInteraction.unitAllocation
+      .find(({ itemId }) => itemId === required.itemId);
+    assert.ok(allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits >= 1);
+    assert.ok(allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits +
+      allocation.occludedOrOutOfFrameUnits <= allocation.canonicalQuantity);
+  }
+
+  const replaceLifestyle = (humanInteraction, productPresentation = lifestyle.productPresentation,
+    visibilityIntent = lifestyle.visibilityIntent) => [
+    briefs[0], { ...lifestyle, humanInteraction, productPresentation, visibilityIntent },
+    briefs[2], briefs[3],
+  ];
+  const hiddenRequired = {
+    ...lifestyle.humanInteraction,
+    unitAllocation: lifestyle.humanInteraction.unitAllocation.map((entry) =>
+      entry.itemId === 'hand-item' ? {
+        ...entry, humanAllocatedUnits: 0, sceneAllocatedUnits: 0,
+        occludedOrOutOfFrameUnits: entry.canonicalQuantity,
+      } : entry),
+    physicalPlacement: lifestyle.humanInteraction.physicalPlacement
+      .filter(({ itemId }) => itemId !== 'hand-item'),
+  };
+  assert.throws(() => validateCreativeDirectorV3Output(
+    replaceLifestyle(hiddenRequired), input,
+  ), /required visible item must have at least one unit presented/);
+
+  const pairedPresented = {
+    ...lifestyle.humanInteraction,
+    unitAllocation: lifestyle.humanInteraction.unitAllocation.map((entry) =>
+      entry.itemId === 'paired-item' ? {
+        ...entry, humanAllocatedUnits: 1, sceneAllocatedUnits: 0,
+        occludedOrOutOfFrameUnits: 1,
+      } : entry),
+    physicalPlacement: [
+      ...lifestyle.humanInteraction.physicalPlacement,
+      { itemId: 'paired-item', interactionMode: 'functionally valid human use',
+        anatomicalAnchor: null, orientation: 'native functional orientation' },
+    ],
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(
+    replaceLifestyle(pairedPresented), input,
+  ));
+
+  const scenePresented = {
+    ...lifestyle.humanInteraction,
+    unitAllocation: lifestyle.humanInteraction.unitAllocation.map((entry) =>
+      entry.itemId === 'hand-item' ? {
+        ...entry, humanAllocatedUnits: 0, sceneAllocatedUnits: 1,
+        occludedOrOutOfFrameUnits: 0,
+      } : entry),
+    physicalPlacement: lifestyle.humanInteraction.physicalPlacement
+      .filter(({ itemId }) => itemId !== 'hand-item'),
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(
+    replaceLifestyle(scenePresented), input,
+  ));
+
+  const required = lifestyle.productPresentation.requiredVisibleItems
+    .filter(({ itemId }) => itemId !== 'wrist-item');
+  const optional = [{ itemId: 'wrist-item', quantity: 1 }];
+  const optionalHidden = {
+    ...lifestyle.humanInteraction,
+    unitAllocation: lifestyle.humanInteraction.unitAllocation.map((entry) =>
+      entry.itemId === 'wrist-item' ? {
+        ...entry, humanAllocatedUnits: 0, sceneAllocatedUnits: 0,
+        occludedOrOutOfFrameUnits: 1,
+      } : entry),
+    physicalPlacement: lifestyle.humanInteraction.physicalPlacement
+      .filter(({ itemId }) => itemId !== 'wrist-item'),
+  };
+  const optionalPresentation = {
+    ...lifestyle.productPresentation, requiredVisibleItems: required, optionalVisibleItems: optional,
+  };
+  const optionalIntent = {
+    ...lifestyle.visibilityIntent, requiredVisibleItems: required, optionalVisibleItems: optional,
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(
+    replaceLifestyle(optionalHidden, optionalPresentation, optionalIntent), input,
+  ));
+
+  const subset = required.filter(({ itemId }) => itemId === 'hand-item');
+  const subsetLifestyle = {
+    ...lifestyle,
+    productPresentation: {
+      ...lifestyle.productPresentation, heroItemIds: ['hand-item'], supportingItemIds: [],
+      requiredVisibleItems: subset, optionalVisibleItems: [], presentationScope: 'single_item_detail',
+    },
+    visibilityIntent: {
+      ...lifestyle.visibilityIntent, heroItemIds: ['hand-item'], requiredVisibleItems: subset,
+      optionalVisibleItems: [], pairPolicy: 'not_selected', mode: 'subset',
+    },
+    humanInteraction: {
+      ...lifestyle.humanInteraction,
+      unitAllocation: [{ itemId: 'hand-item', canonicalQuantity: 1,
+        humanAllocatedUnits: 0, sceneAllocatedUnits: 1, occludedOrOutOfFrameUnits: 0 }],
+      physicalPlacement: [],
+    },
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output([
+    briefs[0], subsetLifestyle, briefs[2], briefs[3],
+  ], input));
+});
+
 test('produto sem componente e briefing legado permanecem compatíveis', async () => {
   const input = humanPresenceInput({ category: 'food', functionalType: 'packaged food', affordance: 'consumable' });
   assert.deepEqual(input.productIdentity.structuralComponents, []);
