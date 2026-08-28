@@ -179,6 +179,13 @@ export function validateCreativeDirectorV3Input(input) {
   const affordances = Array.isArray(input.productSemantics?.affordances)
     ? [...new Set(input.productSemantics.affordances)] : [];
   if (!affordances.length || affordances.some((value) => !V3_AFFORDANCES.includes(value))) fail('INVALID_V3_INPUT', 'Unsupported or missing affordance.');
+  const suppliedWearableItemIds = input.productSemantics?.wearableItemIds;
+  const wearableItemIds = suppliedWearableItemIds === undefined
+    ? (affordances.includes('wearable') ? items.map(({ id }) => id) : [])
+    : strings(suppliedWearableItemIds, 'productSemantics.wearableItemIds');
+  if (wearableItemIds.some((id) => !ids.has(id)) || new Set(wearableItemIds).size !== wearableItemIds.length) {
+    fail('INVALID_V3_INPUT', 'Wearable item IDs must be unique canonical item IDs.');
+  }
   const proposalCount = input.generationPolicy?.proposalCount ?? 4;
   if (proposalCount !== 4) fail('INVALID_V3_INPUT', 'Creative Director V3 requires exactly four proposals.');
   return Object.freeze({
@@ -196,6 +203,9 @@ export function validateCreativeDirectorV3Input(input) {
     productSemantics: Object.freeze({
       functionalType: text(input.productSemantics.functionalType, 'productSemantics.functionalType'),
       affordances: Object.freeze(affordances),
+      wearableItemIds: Object.freeze(wearableItemIds),
+      affordanceSource: text(input.productSemantics.affordanceSource, 'productSemantics.affordanceSource', { optional: true }),
+      requestedCategory: text(input.productSemantics.requestedCategory, 'productSemantics.requestedCategory', { optional: true }),
       validContexts: strings(input.productSemantics.validContexts ?? [], 'productSemantics.validContexts'),
       invalidContexts: strings(input.productSemantics.invalidContexts ?? [], 'productSemantics.invalidContexts'),
     }),
@@ -265,9 +275,11 @@ function structuredHumanPlan(human, identity, visibilityIntent, semantics) {
   if (human.mode === 'forbidden') {
     return Object.freeze({ unitAllocation: Object.freeze([]), physicalPlacement: Object.freeze([]) });
   }
-  const heroIds = new Set(visibilityIntent.heroItemIds);
+  const wearableIds = new Set(semantics.wearableItemIds ?? []);
+  const humanTargetId = visibilityIntent.heroItemIds.find((id) => wearableIds.has(id)) ??
+    visibilityIntent.requiredVisibleItems.find(({ itemId }) => wearableIds.has(itemId))?.itemId;
   const allocations = visibilityIntent.requiredVisibleItems.map(({ itemId, quantity }) => {
-    const humanAllocatedUnits = heroIds.has(itemId) ? Math.min(1, quantity) : 0;
+    const humanAllocatedUnits = itemId === humanTargetId ? Math.min(1, quantity) : 0;
     const sceneAllocatedUnits = humanAllocatedUnits === 0 ? Math.min(1, quantity) : 0;
     return Object.freeze({
       itemId,
@@ -282,7 +294,7 @@ function structuredHumanPlan(human, identity, visibilityIntent, semantics) {
     .map(({ itemId }) => Object.freeze({
       itemId,
       interactionMode: 'functionally valid human use',
-      anatomicalAnchor: semantics.affordances.includes('wearable')
+      anatomicalAnchor: wearableIds.has(itemId)
         ? semanticAnatomicalAnchor(identity.items.find(({ id }) => id === itemId)) : null,
       orientation: 'preserve the product native functional orientation',
     }));
@@ -299,12 +311,18 @@ export function createDeterministicCreativeDirectorV3Model() {
         const human = humanInteraction(direction, semantics);
         const humanPlan = structuredHumanPlan(human, identity, visibilityIntent, semantics);
         const context = semantics.validContexts[0] ?? 'a conservative, physically credible commercial setting';
+        const wearableLifestyle = direction.campaignRole === 'contextual_lifestyle' &&
+          semantics.affordances.includes('wearable');
         return {
           proposalId: index + 1,
           campaignRole: direction.campaignRole,
-          campaignIdea: `${direction.visualLanguage} that turns ${context} into a concrete campaign world while the canonical product remains unchanged.`,
+          campaignIdea: wearableLifestyle
+            ? `${direction.visualLanguage} with one realistic human visibly wearing a canonical wearable at its valid body anchor in ${context}.`
+            : `${direction.visualLanguage} that turns ${context} into a concrete campaign world while the canonical product remains unchanged.`,
           commercialObjective: `${userIntent.objective}; make the product immediately legible and commercially desirable through the ${direction.campaignRole} role.`,
-          visualStory: `The intact product anchors ${direction.environment}; spatial layers and physical materials create a single readable advertising narrative rather than a background replacement.`,
+          visualStory: wearableLifestyle
+            ? 'A realistic human visibly demonstrates the allocated wearable in natural use; remaining selected units stay secondary, independently accounted for and physically plausible.'
+            : `The intact product anchors ${direction.environment}; spatial layers and physical materials create a single readable advertising narrative rather than a background replacement.`,
           productPresentation: {
             heroItemIds: visibilityIntent.heroItemIds,
             supportingItemIds: Object.freeze(visibilityIntent.requiredVisibleItems
@@ -322,9 +340,14 @@ export function createDeterministicCreativeDirectorV3Model() {
           visibilityIntent,
           humanInteraction: Object.freeze({ ...human, ...humanPlan }),
           scene: {
-            environment: direction.environment, surface: direction.surface,
+            environment: wearableLifestyle
+              ? `a light, refined real-world human lifestyle environment within ${context}` : direction.environment,
+            surface: wearableLifestyle
+              ? 'a secondary contextual support that never replaces the visible human use' : direction.surface,
             foreground: `a restrained framing cue appropriate to ${context}`,
-            midground: 'the complete required product identity on stable, credible support',
+            midground: wearableLifestyle
+              ? 'one realistic human visibly wearing the allocated canonical unit at its valid body anchor'
+              : 'the complete required product identity on stable, credible support',
             background: `controlled depth that locates the scene in ${context}`,
             props: Object.freeze(['one semantically relevant material accent', 'one scale-consistent contextual cue']),
           },
@@ -552,9 +575,20 @@ export function validateCreativeDirectorV3Output(rawBriefs, normalizedInput) {
     validateHumanPlan(brief, input.productIdentity, selected);
     if (brief.campaignRole === 'contextual_lifestyle' &&
         input.productSemantics.affordances.includes('wearable')) {
+      const wearableIds = new Set(input.productSemantics.wearableItemIds);
       if (presence !== 'required' || brief.humanInteraction.mode !== 'required' ||
-          !brief.humanInteraction.unitAllocation?.some(({ humanAllocatedUnits }) => humanAllocatedUnits > 0)) {
+          !brief.humanInteraction.unitAllocation?.some(({ itemId, humanAllocatedUnits }) =>
+            wearableIds.has(itemId) && humanAllocatedUnits > 0)) {
         fail('INVALID_V3_OUTPUT', 'Wearable contextual lifestyle requires realistic human presence with at least one body-worn canonical unit.');
+      }
+      if (brief.humanInteraction.unitAllocation.some(({ itemId, humanAllocatedUnits }) =>
+        humanAllocatedUnits > 0 && !wearableIds.has(itemId))) {
+        fail('INVALID_V3_OUTPUT', 'Only confirmed wearable canonical items may receive body-worn allocation.');
+      }
+      const humanScene = [brief.campaignIdea, brief.visualStory, brief.scene.environment,
+        brief.scene.foreground, brief.scene.midground, brief.scene.background].join(' ');
+      if (!/\b(?:human|person|model|wearing|worn|on-body|body-worn)\b/i.test(humanScene)) {
+        fail('INVALID_V3_OUTPUT', 'Wearable contextual lifestyle scene must visibly include the required human use.');
       }
     }
     if (!V3_COLOR_STRATEGIES.includes(brief.artDirection.colorStrategy)) fail('INVALID_V3_OUTPUT', 'Invalid color strategy.');

@@ -28,6 +28,7 @@ const ALLOWED_CATEGORIES = new Set(Object.keys(CATEGORY_SEMANTICS));
 const ALLOWED_QUALITIES = new Set(['medium', 'high']);
 const ALLOWED_RATIOS = new Set(['1:1', '4:5', '9:16', '16:9']);
 const STRUCTURAL_FEATURE_PATTERN = /\b(?:closure|clasp|connector|attachment|fasten(?:er|ing)?|buckle|strap|hinge|hook|joint|terminal|extension chain|extender|cap|fecho|fechamento|conector|engate|fixa(?:ção|cao)|fivela|alça|alca|dobradiça|dobradica|gancho|junta|junção|juncao|terminal|corrente extensora|extensor|tampa)\b/i;
+const WEARABLE_FUNCTIONAL_TYPE_PATTERN = /\b(?:ear(?:ring)?|auricular|neck(?:lace)?|upper[ -]?torso|collar|pendant|finger|hand[ -]?worn|ring|wrist|watch|bracelet|bangle|face|head[ -]?worn|eyewear|glasses|spectacles|foot(?:wear)?|shoe|boot|sneaker|wearable|garment|clothing|apparel|dress|shirt|trouser|jacket|body[ -]?compatible)\b/i;
 const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : Object.freeze({
   info(event) { console.info(`[ExperimentalV3] ${JSON.stringify(event)}`); },
 });
@@ -141,7 +142,15 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
     .map(({ subjectId, referenceId, relation, confidence }) => ({
       subjectId, referenceId, relation, confidence,
     }));
-  const [primaryAffordance, validContexts] = CATEGORY_SEMANTICS[request.category];
+  const [categoryAffordance, validContexts] = CATEGORY_SEMANTICS[request.category];
+  const wearableItemIds = items
+    .filter(({ functionalType }) => WEARABLE_FUNCTIONAL_TYPE_PATTERN.test(functionalType))
+    .map(({ id }) => id);
+  const identityConfirmsWearable = wearableItemIds.length > 0;
+  const effectiveAffordances = identityConfirmsWearable
+    ? ['wearable'] : [categoryAffordance];
+  const affordanceSource = identityConfirmsWearable
+    ? (categoryAffordance === 'wearable' ? 'combined' : 'product_identity') : 'category';
   return {
     productIdentity: {
       category: request.category,
@@ -157,7 +166,10 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
     },
     productSemantics: {
       functionalType: items.map(({ functionalType }) => functionalType).join(' and '),
-      affordances: [primaryAffordance],
+      affordances: effectiveAffordances,
+      wearableItemIds,
+      affordanceSource,
+      requestedCategory: request.category,
       validContexts,
       invalidContexts: ['physically implausible use', 'unrelated body placement'],
     },
@@ -322,6 +334,17 @@ export function createExperimentalV3GenerationService({
         logger: effectiveLogger,
       });
       const briefs = direction.briefs;
+      const lifestyle = briefs.find(({ campaignRole }) => campaignRole === 'contextual_lifestyle');
+      effectiveLogger.info({
+        component: 'ExperimentalV3LifestylePolicy',
+        requestedCategory: request.category,
+        effectiveAffordances: input.productSemantics.affordances,
+        affordanceSource: input.productSemantics.affordanceSource,
+        lifestyleHumanRequired: lifestyle?.humanInteraction?.presence === 'required' &&
+          lifestyle?.humanInteraction?.mode === 'required',
+        humanAllocatedUnitCount: (lifestyle?.humanInteraction?.unitAllocation ?? [])
+          .reduce((sum, { humanAllocatedUnits }) => sum + humanAllocatedUnits, 0),
+      });
       const dimensions = experimentalOutputDimensions(request.aspectRatio);
       const results = [];
       for (let start = 0; start < briefs.length; start += 2) {

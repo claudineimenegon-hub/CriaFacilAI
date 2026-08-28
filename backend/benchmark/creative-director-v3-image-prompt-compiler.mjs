@@ -197,6 +197,9 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
   const omitted = productIdentity.items.filter(({ id }) => !selectedIds.has(id));
   const interactionFidelity = humanProductInteractionFidelity(brief);
   const wearablePlacement = humanWearablePlacement(brief, productSemantics);
+  const mandatoryWearableHuman = brief.campaignRole === 'contextual_lifestyle' &&
+    brief.humanInteraction.presence === 'required' && brief.humanInteraction.mode === 'required' &&
+    productSemantics.affordances.includes('wearable');
   const scaleFidelity = relativeScaleFidelity(productIdentity, selectedIds);
   const unitAllocation = deriveProposalUnitAllocation({ brief, productIdentity });
   const criticalFeatures = (productIdentity.criticalFeatures ?? [])
@@ -210,6 +213,10 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       .map(({ itemId, name, value }) => `${itemId}: ${name}=${value}`)
     : productIdentity.observedFeatures;
   const prompt = [
+    ...(mandatoryWearableHuman ? [section('LIFESTYLE HUMAN PRESENCE — EXECUTION PRIORITY', [
+      'A realistic human person is mandatory and must be visibly present in the final image. At least one selected wearable canonical unit must be visibly worn at its anatomically correct anchor.',
+      'Supports and surfaces may appear only as secondary context; they must not become a product-only or tabletop still-life composition.',
+    ])] : []),
     section('A. PRODUCT IDENTITY — HIGHEST PRIORITY', [
       'The supplied source photograph is the canonical visual reference for the product.',
       'Use it to preserve geometry, design, observable materials, colors, finish and distinctive details—not its original photographic composition.',
@@ -361,6 +368,9 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'Priority order: canonical Product Identity; source-visible product fidelity; proposal visibility, quantities and relationships; physical plausibility and scale; Creative Brief; photographic enhancement.',
       'The source photograph controls canonical product identity. PRODUCT FIDELITY WINS OVER ART DIRECTION when they conflict; photographic enhancement that does not alter product identity is encouraged.',
       `Requested aspect ratio: ${userIntent?.aspectRatio ?? '1:1'}. Do not create a collage, contact sheet or multiple alternatives.`,
+      ...(mandatoryWearableHuman ? [
+        'Final Lifestyle validation: a realistic human must be visibly present and using at least one allocated wearable unit. A product-only still life is invalid.',
+      ] : []),
     ]),
   ].join('\n\n');
   if (/data:image|base64,/i.test(prompt)) throw new TypeError('V3 compiler must never include image data.');

@@ -242,6 +242,12 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
     'schemaValid', 'diversityValid',
   ]);
   assert.equal(proposals.every((event) => Object.keys(event).every((key) => allowed.has(key))), true);
+  const lifestylePolicy = events.find(({ component }) => component === 'ExperimentalV3LifestylePolicy');
+  assert.deepEqual(lifestylePolicy, {
+    component: 'ExperimentalV3LifestylePolicy', requestedCategory: 'jewelry',
+    effectiveAffordances: ['wearable'], affordanceSource: 'combined',
+    lifestyleHumanRequired: true, humanAllocatedUnitCount: 1,
+  });
   const preProvider = events.filter(({ component }) => component === 'ExperimentalV3PreProviderContract');
   assert.equal(preProvider.length, 4);
   assert.equal(preProvider[0].canonicalItemCount, 1);
@@ -861,9 +867,12 @@ test('alocação validada impede duplicação e exige placement somente para int
     assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input), category);
     const lifestyle = briefs[1];
     assert.equal(lifestyle.humanInteraction.unitAllocation.length, 1, category);
-    assert.equal(lifestyle.humanInteraction.physicalPlacement.length, 1, category);
-    assert.equal(lifestyle.humanInteraction.physicalPlacement[0].itemId, 'product-1', category);
-    assert.ok(lifestyle.humanInteraction.physicalPlacement[0].interactionMode.length > 1, category);
+    const expectedPlacements = affordance === 'wearable' ? 1 : 0;
+    assert.equal(lifestyle.humanInteraction.physicalPlacement.length, expectedPlacements, category);
+    if (expectedPlacements) {
+      assert.equal(lifestyle.humanInteraction.physicalPlacement[0].itemId, 'product-1', category);
+      assert.ok(lifestyle.humanInteraction.physicalPlacement[0].interactionMode.length > 1, category);
+    }
   }
 
   const input = humanPresenceInput({ category: 'clothing', functionalType: 'wearable product', affordance: 'wearable' });
@@ -1315,4 +1324,86 @@ test('Campanha Conceitual sem relação atômica seleciona somente um canonical 
   assert.equal(briefs[3].productPresentation.presentationScope, 'single_item_detail');
   assert.equal(briefs[3].visibilityIntent.pairPolicy, 'not_selected');
   assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input));
+});
+
+test('Product Identity wearable prevalece sobre category general sem inferência ambígua', async () => {
+  for (const functionalType of ['neck-compatible wearable', 'ear-compatible wearable']) {
+    const input = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+      analysis: {
+        state: 'known',
+        items: [{
+          id: 'wearable-item', functionalType: { state: 'known', value: functionalType },
+          quantity: { state: 'known', value: functionalType.startsWith('ear') ? 2 : 1 },
+          observationCompleteness: 'complete', observedFeatures: [], ambiguousFeatures: [],
+        }],
+        relationships: functionalType.startsWith('ear')
+          ? [{ type: 'pair', memberIds: ['wearable-item'], state: 'known' }] : [],
+      },
+      request: validateExperimentalV3Request(request({ category: 'general' })),
+    }));
+    assert.deepEqual(input.productSemantics.affordances, ['wearable']);
+    assert.deepEqual(input.productSemantics.wearableItemIds, ['wearable-item']);
+    assert.equal(input.productSemantics.affordanceSource, 'product_identity');
+    const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+    assert.equal(briefs[1].humanInteraction.presence, 'required');
+    assert.ok(briefs[1].humanInteraction.unitAllocation
+      .some(({ itemId, humanAllocatedUnits }) => itemId === 'wearable-item' && humanAllocatedUnits > 0));
+  }
+
+  const nonWearable = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: {
+      state: 'known',
+      items: [{
+        id: 'device', functionalType: { state: 'known', value: 'portable electronic device' },
+        quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+        observedFeatures: [], ambiguousFeatures: [],
+      }], relationships: [],
+    },
+    request: validateExperimentalV3Request(request({ category: 'general' })),
+  }));
+  assert.deepEqual(nonWearable.productSemantics.affordances, ['surface_supported']);
+  assert.deepEqual(nonWearable.productSemantics.wearableItemIds, []);
+  assert.equal(nonWearable.productSemantics.affordanceSource, 'category');
+  const nonWearableBriefs = await createDeterministicCreativeDirectorV3Model().generate(nonWearable);
+  assert.equal(nonWearableBriefs[1].humanInteraction.presence, 'none');
+  assert.deepEqual(nonWearableBriefs[1].humanInteraction.physicalPlacement, []);
+});
+
+test('inventário misto aloca ao corpo somente item confirmado como wearable', async () => {
+  const input = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: {
+      state: 'known',
+      items: [
+        {
+          id: 'device', functionalType: { state: 'known', value: 'portable electronic device' },
+          quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+          observedFeatures: [], ambiguousFeatures: [],
+        },
+        {
+          id: 'wrist-item', functionalType: { state: 'known', value: 'wrist-compatible wearable' },
+          quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+          observedFeatures: [], ambiguousFeatures: [],
+        },
+      ], relationships: [],
+    },
+    request: validateExperimentalV3Request(request({ category: 'general' })),
+  }));
+  assert.deepEqual(input.productSemantics.wearableItemIds, ['wrist-item']);
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const lifestyle = briefs[1];
+  assert.deepEqual(lifestyle.humanInteraction.physicalPlacement.map(({ itemId }) => itemId), ['wrist-item']);
+  assert.equal(lifestyle.humanInteraction.unitAllocation.find(({ itemId }) => itemId === 'device').humanAllocatedUnits, 0);
+  assert.equal(lifestyle.humanInteraction.unitAllocation.find(({ itemId }) => itemId === 'wrist-item').humanAllocatedUnits, 1);
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input));
+
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: lifestyle, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.ok(prompt.startsWith('LIFESTYLE HUMAN PRESENCE — EXECUTION PRIORITY\nA realistic human person is mandatory'));
+  assert.ok(prompt.endsWith('Final Lifestyle validation: a realistic human must be visibly present and using at least one allocated wearable unit. A product-only still life is invalid.'));
+  const scene = prompt.match(/G\. SCENE\n([\s\S]*?)\n\nH\. ART DIRECTION/)?.[1] ?? '';
+  assert.match(scene, /realistic human visibly wearing/);
+  assert.doesNotMatch(scene, /complete required product identity on stable|tabletop|product-only/i);
+  assert.match(prompt, /natural or ambient motivated light/);
 });
