@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -6,13 +7,11 @@ import '../../core/assets/asset_upload_service.dart';
 import '../../core/assets/data/http_asset_upload_service.dart';
 import '../../core/assets/photo_selection_service.dart';
 import '../../core/generation/generation_types.dart';
-import 'data/http_product_photo_generation_service.dart';
 import 'data/http_experimental_v3_generation_service.dart';
 import 'domain/experimental_v3_generation_service.dart';
 import 'domain/product_photo_draft.dart';
-import 'domain/product_photo_generation_service.dart';
-import 'product_photo_results_page.dart';
 import 'experimental_v3_results_page.dart';
+import 'generation_duration_formatter.dart';
 
 enum _QuickMode { none, background, scene, lighting }
 
@@ -21,14 +20,14 @@ class ProductPhotoPage extends StatefulWidget {
     super.key,
     this.uploadService,
     this.photoSelectionService,
-    this.generationService,
     this.experimentalV3GenerationService,
+    this.generationStopwatchFactory = Stopwatch.new,
   });
 
   final AssetUploadService? uploadService;
   final PhotoSelectionService? photoSelectionService;
-  final ProductPhotoGenerationService? generationService;
   final ExperimentalV3GenerationService? experimentalV3GenerationService;
+  final Stopwatch Function() generationStopwatchFactory;
 
   @override
   State<ProductPhotoPage> createState() => _ProductPhotoPageState();
@@ -38,7 +37,6 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   final _descriptionController = TextEditingController();
   late final AssetUploadService _uploadService;
   late final PhotoSelectionService _photoSelectionService;
-  late final ProductPhotoGenerationService _generationService;
   late final ExperimentalV3GenerationService _experimentalV3GenerationService;
   Uint8List? _previewBytes;
   AssetReference? _asset;
@@ -47,7 +45,9 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   String _aspectRatio = '1:1';
   bool _isUploading = false;
   bool _isGenerating = false;
-  bool _experimentalV3 = false;
+  late final Stopwatch _generationStopwatch;
+  Timer? _generationTimer;
+  Duration _generationElapsed = Duration.zero;
   String _experimentalQuality = 'medium';
   bool _preserveProduct = true;
   bool _preservePackaging = true;
@@ -62,11 +62,10 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   @override
   void initState() {
     super.initState();
+    _generationStopwatch = widget.generationStopwatchFactory();
     _uploadService = widget.uploadService ?? HttpAssetUploadService();
     _photoSelectionService =
         widget.photoSelectionService ?? createPhotoSelectionService();
-    _generationService =
-        widget.generationService ?? HttpProductPhotoGenerationService();
     _experimentalV3GenerationService =
         widget.experimentalV3GenerationService ??
         HttpExperimentalV3GenerationService();
@@ -74,6 +73,8 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
 
   @override
   void dispose() {
+    _generationTimer?.cancel();
+    _generationStopwatch.stop();
     _descriptionController.dispose();
     super.dispose();
   }
@@ -124,6 +125,7 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   });
 
   Future<void> _generate() async {
+    if (_isGenerating) return;
     final asset = _asset;
     if (asset == null) return;
     final request =
@@ -152,33 +154,74 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
           idempotencyKey:
               'product-${asset.id}-${DateTime.now().microsecondsSinceEpoch}',
         );
-    setState(() => _isGenerating = true);
+    _startGenerationTimer();
     try {
-      if (_experimentalV3) {
-        final results = _experimentalV3GenerationService.generateFour(
-          request,
-          quality: _experimentalQuality,
+      final results = await _experimentalV3GenerationService.generateFour(
+        request,
+        quality: _experimentalQuality,
+      );
+      const expectedRoles = {
+        'hero_commercial',
+        'contextual_lifestyle',
+        'editorial_craft_detail',
+        'concept_campaign',
+      };
+      final receivedRoles = results
+          .map((result) => result.campaignRole)
+          .toSet();
+      if (results.length != expectedRoles.length ||
+          receivedRoles.length != expectedRoles.length ||
+          !receivedRoles.containsAll(expectedRoles) ||
+          results.any((result) => !result.isCompleted)) {
+        throw const ExperimentalV3GenerationException(
+          'O Creative Director não retornou as quatro campanhas completas.',
         );
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => ExperimentalV3ResultsPage(results: results),
-          ),
-        );
-        return;
       }
-      final images = await _generationService.generateFour(request);
       if (!mounted) return;
+      final elapsed = _stopGenerationTimer();
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
-          builder: (_) =>
-              ProductPhotoResultsPage(images: images, title: _objective.label),
+          builder: (_) => ExperimentalV3ResultsPage(
+            results: Future.value(results),
+            elapsed: elapsed,
+          ),
         ),
       );
-    } on ProductPhotoGenerationException catch (error) {
-      if (mounted) _showMessage(error.message);
+    } on ExperimentalV3GenerationException catch (error) {
+      final elapsed = _stopGenerationTimer();
+      if (mounted) {
+        _showMessage(
+          'Não foi possível gerar as quatro campanhas após '
+          '${formatGenerationDuration(elapsed)}. ${error.message}',
+        );
+      }
     } finally {
+      _stopGenerationTimer();
       if (mounted) setState(() => _isGenerating = false);
     }
+  }
+
+  void _startGenerationTimer() {
+    _generationTimer?.cancel();
+    _generationStopwatch
+      ..reset()
+      ..start();
+    setState(() {
+      _generationElapsed = Duration.zero;
+      _isGenerating = true;
+    });
+    _generationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _generationElapsed = _generationStopwatch.elapsed);
+    });
+  }
+
+  Duration _stopGenerationTimer() {
+    _generationTimer?.cancel();
+    _generationTimer = null;
+    _generationStopwatch.stop();
+    _generationElapsed = _generationStopwatch.elapsed;
+    return _generationElapsed;
   }
 
   void _showMessage(String message) =>
@@ -213,34 +256,25 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
               onRemove: _isUploading ? null : _removeImage,
             ),
             const SizedBox(height: 24),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Creative Director V3 — Experimental'),
-              subtitle: const Text(
-                'Gera quatro campanhas com direção criativa avançada.',
-              ),
-              value: _experimentalV3,
+            const Text(
+              'Creative Director',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              initialValue: _experimentalQuality,
+              decoration: const InputDecoration(labelText: 'Qualidade'),
+              items: const [
+                DropdownMenuItem(value: 'medium', child: Text('Medium')),
+                DropdownMenuItem(value: 'high', child: Text('High')),
+              ],
               onChanged: _isGenerating
                   ? null
-                  : (value) => setState(() => _experimentalV3 = value),
+                  : (value) => setState(
+                      () => _experimentalQuality = value ?? 'medium',
+                    ),
             ),
-            if (_experimentalV3) ...[
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                initialValue: _experimentalQuality,
-                decoration: const InputDecoration(labelText: 'Qualidade'),
-                items: const [
-                  DropdownMenuItem(value: 'medium', child: Text('Medium')),
-                  DropdownMenuItem(value: 'high', child: Text('High')),
-                ],
-                onChanged: _isGenerating
-                    ? null
-                    : (value) => setState(
-                        () => _experimentalQuality = value ?? 'medium',
-                      ),
-              ),
-              const SizedBox(height: 16),
-            ],
+            const SizedBox(height: 16),
             DropdownButtonFormField<ProductCategory>(
               initialValue: _category,
               decoration: const InputDecoration(labelText: 'Categoria'),
@@ -353,6 +387,36 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
                       .toList(),
             ),
             const SizedBox(height: 28),
+            if (_isGenerating) ...[
+              Semantics(
+                liveRegion: true,
+                label:
+                    'Gerando quatro campanhas. Tempo decorrido: '
+                    '${formatGenerationDuration(_generationElapsed)}.',
+                child: Column(
+                  children: [
+                    const Text(
+                      'Gerando quatro campanhas...',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Tempo decorrido: '
+                      '${formatGenerationDuration(_generationElapsed)}',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Isso pode levar alguns minutos.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+            ],
             SizedBox(
               height: 56,
               child: FilledButton.icon(
@@ -365,15 +429,7 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.auto_awesome),
-                label: Text(
-                  _isGenerating
-                      ? _experimentalV3
-                            ? 'CRIANDO 4 IMAGENS...'
-                            : 'CRIANDO 4 PROPOSTAS...'
-                      : _experimentalV3
-                      ? 'GERAR 4 IMAGENS'
-                      : 'GERAR 4 PROPOSTAS',
-                ),
+                label: Text(_isGenerating ? 'AGUARDE...' : 'GERAR 4 CAMPANHAS'),
               ),
             ),
             const SizedBox(height: 10),

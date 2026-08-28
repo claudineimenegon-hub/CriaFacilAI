@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'domain/experimental_v3_generation_service.dart';
+import 'generation_duration_formatter.dart';
 
 const _roles = <String, String>{
   'hero_commercial': 'Hero Comercial',
@@ -10,14 +11,19 @@ const _roles = <String, String>{
 };
 
 class ExperimentalV3ResultsPage extends StatelessWidget {
-  const ExperimentalV3ResultsPage({super.key, required this.results});
+  const ExperimentalV3ResultsPage({
+    super.key,
+    required this.results,
+    required this.elapsed,
+  });
 
   final Future<List<ExperimentalV3ImageResult>> results;
+  final Duration elapsed;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Creative Director V3')),
+      appBar: AppBar(title: const Text('Creative Director')),
       body: SafeArea(
         child: FutureBuilder<List<ExperimentalV3ImageResult>>(
           future: results,
@@ -50,10 +56,11 @@ class ExperimentalV3ResultsPage extends StatelessWidget {
                           ),
                         )
                       else
-                        const Expanded(
+                        Expanded(
                           child: Text(
-                            'Geração concluída',
-                            style: TextStyle(color: Colors.greenAccent),
+                            'Quatro campanhas concluídas em '
+                            '${formatGenerationDuration(elapsed)}',
+                            style: const TextStyle(color: Colors.greenAccent),
                           ),
                         ),
                     ],
@@ -134,7 +141,7 @@ class _ResultCard extends StatelessWidget {
                       padding: const EdgeInsets.all(16),
                       child: Text(
                         globalError
-                            ? 'Teste interrompido.'
+                            ? 'Geração interrompida.'
                             : result?.errorMessage ?? 'Proposta indisponível.',
                         textAlign: TextAlign.center,
                       ),

@@ -25,6 +25,7 @@ class HomePage extends StatelessWidget {
       title: 'Foto Publicitária',
       description: 'Prepare fotos premium para produtos e campanhas.',
       page: ProductPhotoPage(),
+      available: true,
     ),
     _CreationTool(
       icon: Icons.auto_fix_high_outlined,

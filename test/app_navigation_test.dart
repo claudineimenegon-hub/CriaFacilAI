@@ -47,4 +47,36 @@ void main() {
     expect(find.text('Imagens com sua ideia'), findsOneWidget);
     expect(find.text('GERAR IMAGEM'), findsOneWidget);
   });
+
+  testWidgets(
+    'Foto Publicitária está disponível com Creative Director oficial',
+    (tester) async {
+      await tester.pumpWidget(const LogoFacilApp());
+      await tester.scrollUntilVisible(
+        find.text('Foto Publicitária'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      final card = find.ancestor(
+        of: find.text('Foto Publicitária'),
+        matching: find.byType(Card),
+      );
+      expect(
+        find.descendant(of: card, matching: find.text('Disponível')),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Foto Publicitária'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Creative Director'), findsOneWidget);
+      expect(find.text('Creative Director V3 — Experimental'), findsNothing);
+      expect(find.byType(SwitchListTile), findsNothing);
+      await tester.scrollUntilVisible(
+        find.text('GERAR 4 CAMPANHAS'),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('GERAR 4 CAMPANHAS'), findsOneWidget);
+    },
+  );
 }

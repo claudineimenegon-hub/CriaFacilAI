@@ -27,7 +27,7 @@ class HttpExperimentalV3GenerationService
   }) async {
     if (_baseUrl.isEmpty) {
       throw const ExperimentalV3GenerationException(
-        'O servidor experimental ainda não foi configurado.',
+        'O servidor do Creative Director ainda não foi configurado.',
       );
     }
     final common = request.generationParameters.common;
@@ -49,7 +49,8 @@ class HttpExperimentalV3GenerationService
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ExperimentalV3GenerationException(
-          body['error'] as String? ?? 'Não foi possível executar o teste V3.',
+          body['error'] as String? ??
+              'Não foi possível executar o Creative Director.',
         );
       }
       final batch = Map<String, dynamic>.from(
@@ -58,7 +59,7 @@ class HttpExperimentalV3GenerationService
       final rawResults = (batch['results'] as List<dynamic>?) ?? const [];
       if (batch['expectedCount'] != 4 || rawResults.length != 4) {
         throw const ExperimentalV3GenerationException(
-          'O servidor retornou um lote V3 inválido.',
+          'O servidor retornou um lote inválido do Creative Director.',
         );
       }
       return rawResults
@@ -83,17 +84,17 @@ class HttpExperimentalV3GenerationService
       rethrow;
     } on TimeoutException {
       throw const ExperimentalV3GenerationException(
-        'O teste V3 demorou demais. Tente novamente.',
+        'O Creative Director demorou demais. Tente novamente.',
       );
     } on FormatException {
       throw const ExperimentalV3GenerationException(
-        'O servidor retornou uma resposta experimental inválida.',
+        'O servidor retornou uma resposta inválida do Creative Director.',
       );
     } on ImageHttpTransportException catch (error) {
       throw ExperimentalV3GenerationException(error.message);
     } catch (_) {
       throw const ExperimentalV3GenerationException(
-        'Não foi possível executar o teste V3 agora.',
+        'Não foi possível executar o Creative Director agora.',
       );
     }
   }

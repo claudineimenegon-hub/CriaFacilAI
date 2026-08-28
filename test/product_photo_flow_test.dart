@@ -8,71 +8,110 @@ import 'package:meu_app/core/assets/asset_upload_service.dart';
 import 'package:meu_app/core/assets/photo_selection_service.dart';
 import 'package:meu_app/core/generation/generation_request.dart';
 import 'package:meu_app/core/generation/generation_types.dart';
-import 'package:meu_app/features/product_photo/domain/product_photo_generation_service.dart';
 import 'package:meu_app/features/product_photo/domain/experimental_v3_generation_service.dart';
 import 'package:meu_app/features/product_photo/product_photo_page.dart';
 
 void main() {
-  testWidgets('mantém loading e só navega após receber quatro propostas', (
+  testWidgets('usa somente V3 e só navega após quatro campanhas completas', (
     tester,
   ) async {
-    final generation = _ControlledGenerationService();
+    tester.view.physicalSize = const Size(1200, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final generation = _ControlledExperimentalV3Service();
+    final stopwatch = _FakeStopwatch();
     await tester.pumpWidget(
       MaterialApp(
         home: ProductPhotoPage(
           photoSelectionService: _FakePhotoSelectionService(),
           uploadService: _FakeUploadService(),
-          generationService: generation,
+          experimentalV3GenerationService: generation,
+          generationStopwatchFactory: () => stopwatch,
         ),
       ),
     );
     await tester.tap(find.text('SELECIONAR FOTO'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.text('GERAR 4 PROPOSTAS'),
+      find.text('GERAR 4 CAMPANHAS'),
       500,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('GERAR 4 PROPOSTAS'));
+    await tester.tap(find.text('GERAR 4 CAMPANHAS'));
     await tester.pump();
 
-    expect(find.text('CRIANDO 4 PROPOSTAS...'), findsOneWidget);
-    expect(find.text('Propostas publicitárias'), findsNothing);
+    expect(find.text('Gerando quatro campanhas...'), findsOneWidget);
+    expect(find.text('Tempo decorrido: 00:00'), findsOneWidget);
+    expect(find.text('Isso pode levar alguns minutos.'), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNull,
+    );
     expect(generation.request?.operation, GenerationOperation.imageToImage);
     expect(generation.request?.outputSpecification.count, 4);
+    expect(generation.calls, 1);
 
-    generation.complete(List.filled(4, _png));
+    await tester.tap(find.text('AGUARDE...'), warnIfMissed: false);
+    stopwatch.elapsedValue = const Duration(seconds: 2);
+    await tester.pump(const Duration(seconds: 2));
+    expect(generation.calls, 1);
+    expect(find.text('Tempo decorrido: 00:02'), findsOneWidget);
+
+    generation.complete(_completedCampaigns());
     await tester.pumpAndSettle();
 
-    expect(find.text('Propostas publicitárias'), findsOneWidget);
+    expect(find.text('Creative Director'), findsOneWidget);
+    expect(find.text('Quatro campanhas concluídas em 00:02'), findsOneWidget);
     expect(find.byType(Image), findsNWidgets(4));
-    expect(find.text('Proposta 1'), findsOneWidget);
-    expect(find.text('Proposta 4'), findsOneWidget);
+    expect(find.text('Hero Comercial — concluído'), findsOneWidget);
+    expect(find.text('Lifestyle — concluído'), findsOneWidget);
+    expect(find.text('Detalhes / Editorial — concluído'), findsOneWidget);
+    expect(find.text('Campanha Conceitual — concluído'), findsOneWidget);
   });
 
-  testWidgets('erro não navega e volta a habilitar geração', (tester) async {
+  testWidgets('falha V3 não navega, não faz fallback e reabilita o botão', (
+    tester,
+  ) async {
+    final generation = _ControlledExperimentalV3Service();
+    final stopwatch = _FakeStopwatch();
     await tester.pumpWidget(
       MaterialApp(
         home: ProductPhotoPage(
           photoSelectionService: _FakePhotoSelectionService(),
           uploadService: _FakeUploadService(),
-          generationService: _FailingGenerationService(),
+          experimentalV3GenerationService: generation,
+          generationStopwatchFactory: () => stopwatch,
         ),
       ),
     );
     await tester.tap(find.text('SELECIONAR FOTO'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.text('GERAR 4 PROPOSTAS'),
+      find.text('GERAR 4 CAMPANHAS'),
       500,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('GERAR 4 PROPOSTAS'));
+    await tester.tap(find.text('GERAR 4 CAMPANHAS'));
+    await tester.pump();
+    stopwatch.elapsedValue = const Duration(seconds: 3);
+    await tester.pump(const Duration(seconds: 3));
+    generation.fail(
+      const ExperimentalV3GenerationException(
+        'Falha controlada no Creative Director.',
+      ),
+    );
     await tester.pumpAndSettle();
 
-    expect(find.text('Falha controlada na transformação.'), findsOneWidget);
-    expect(find.text('Propostas publicitárias'), findsNothing);
-    expect(find.text('GERAR 4 PROPOSTAS'), findsOneWidget);
+    expect(
+      find.text(
+        'Não foi possível gerar as quatro campanhas após 00:03. '
+        'Falha controlada no Creative Director.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('GERAR 4 CAMPANHAS'), findsOneWidget);
+    expect(generation.calls, 1);
     expect(
       tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
       isNotNull,
@@ -80,7 +119,7 @@ void main() {
   });
 
   testWidgets(
-    'modo V3 abre resultados imediatamente, mostra loading e preserva erro parcial',
+    'não aceita sucesso quando uma das quatro campanhas está incompleta',
     (tester) async {
       tester.view.physicalSize = const Size(1200, 900);
       tester.view.devicePixelRatio = 1;
@@ -92,7 +131,6 @@ void main() {
           home: ProductPhotoPage(
             photoSelectionService: _FakePhotoSelectionService(),
             uploadService: _FakeUploadService(),
-            generationService: _FailingGenerationService(),
             experimentalV3GenerationService: experimental,
           ),
         ),
@@ -100,18 +138,11 @@ void main() {
       await tester.tap(find.text('SELECIONAR FOTO'));
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('Creative Director V3 — Experimental'),
-        400,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.tap(find.text('Creative Director V3 — Experimental'));
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('GERAR 4 IMAGENS'),
+        find.text('GERAR 4 CAMPANHAS'),
         600,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.ensureVisible(find.text('GERAR 4 IMAGENS'));
+      await tester.ensureVisible(find.text('GERAR 4 CAMPANHAS'));
       await tester.pumpAndSettle();
       final generateButton = tester.widget<FilledButton>(
         find.byType(FilledButton),
@@ -121,13 +152,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
 
-      expect(find.text('Creative Director V3'), findsOneWidget);
-      expect(
-        find.text(
-          'Preparando produto • Criando direção criativa • Gerando imagens',
-        ),
-        findsOneWidget,
-      );
+      expect(find.text('Gerando quatro campanhas...'), findsOneWidget);
       expect(experimental.calls, 1);
       expect(experimental.quality, 'medium');
 
@@ -150,11 +175,13 @@ void main() {
       ]);
       await tester.pumpAndSettle();
 
-      expect(find.text('Hero Comercial — concluído'), findsOneWidget);
-      expect(find.text('Lifestyle — concluído'), findsOneWidget);
-      expect(find.text('Detalhes / Editorial — concluído'), findsOneWidget);
-      expect(find.text('Campanha Conceitual — erro'), findsOneWidget);
-      expect(find.byType(Image), findsNWidgets(3));
+      expect(
+        find.textContaining(
+          'O Creative Director não retornou as quatro campanhas completas.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Hero Comercial — concluído'), findsNothing);
     },
   );
 
@@ -166,7 +193,6 @@ void main() {
             () async => null,
           ),
           uploadService: _FakeUploadService(),
-          generationService: _FailingGenerationService(),
         ),
       ),
     );
@@ -191,7 +217,6 @@ void main() {
             );
           }),
           uploadService: upload,
-          generationService: _FailingGenerationService(),
         ),
       ),
     );
@@ -218,7 +243,6 @@ void main() {
             ),
           ),
           uploadService: upload,
-          generationService: _FailingGenerationService(),
         ),
       ),
     );
@@ -243,7 +267,6 @@ void main() {
         home: ProductPhotoPage(
           photoSelectionService: _FakePhotoSelectionService(),
           uploadService: upload,
-          generationService: _FailingGenerationService(),
         ),
       ),
     );
@@ -254,7 +277,7 @@ void main() {
     expect(find.text('Enviando foto...'), findsNothing);
     expect(find.text('SELECIONAR FOTO'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('GERAR 4 PROPOSTAS'),
+      find.text('GERAR 4 CAMPANHAS'),
       500,
       scrollable: find.byType(Scrollable).first,
     );
@@ -274,7 +297,7 @@ void main() {
     expect(upload.calls, 2);
 
     await tester.scrollUntilVisible(
-      find.text('GERAR 4 PROPOSTAS'),
+      find.text('GERAR 4 CAMPANHAS'),
       500,
       scrollable: find.byType(Scrollable).first,
     );
@@ -282,6 +305,71 @@ void main() {
       tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
       isNotNull,
     );
+  });
+
+  testWidgets('dispose cancela timer e conclusão tardia não chama setState', (
+    tester,
+  ) async {
+    final generation = _ControlledExperimentalV3Service();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProductPhotoPage(
+          photoSelectionService: _FakePhotoSelectionService(),
+          uploadService: _FakeUploadService(),
+          experimentalV3GenerationService: generation,
+        ),
+      ),
+    );
+    await tester.tap(find.text('SELECIONAR FOTO'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('GERAR 4 CAMPANHAS'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('GERAR 4 CAMPANHAS'));
+    await tester.pump();
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    await tester.pump(const Duration(seconds: 2));
+    generation.complete(_completedCampaigns());
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('nova geração reinicia o cronômetro em zero', (tester) async {
+    final generation = _SequencedExperimentalV3Service();
+    final stopwatch = _FakeStopwatch();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProductPhotoPage(
+          photoSelectionService: _FakePhotoSelectionService(),
+          uploadService: _FakeUploadService(),
+          experimentalV3GenerationService: generation,
+          generationStopwatchFactory: () => stopwatch,
+        ),
+      ),
+    );
+    await tester.tap(find.text('SELECIONAR FOTO'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('GERAR 4 CAMPANHAS'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('GERAR 4 CAMPANHAS'));
+    stopwatch.elapsedValue = const Duration(seconds: 2);
+    await tester.pump(const Duration(seconds: 2));
+    expect(find.text('Tempo decorrido: 00:02'), findsOneWidget);
+    generation.failCurrent();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('GERAR 4 CAMPANHAS'));
+    await tester.pump();
+    expect(find.text('Tempo decorrido: 00:00'), findsOneWidget);
+    expect(generation.calls, 2);
+    generation.completeCurrent(_completedCampaigns());
+    await tester.pumpAndSettle();
   });
 }
 
@@ -353,36 +441,18 @@ class _RetryUploadService implements AssetUploadService {
   }
 }
 
-class _ControlledGenerationService implements ProductPhotoGenerationService {
-  final _completer = Completer<List<Uint8List>>();
-  GenerationRequest? request;
-
-  void complete(List<Uint8List> images) => _completer.complete(images);
-
-  @override
-  Future<List<Uint8List>> generateFour(GenerationRequest request) {
-    this.request = request;
-    return _completer.future;
-  }
-}
-
-class _FailingGenerationService implements ProductPhotoGenerationService {
-  @override
-  Future<List<Uint8List>> generateFour(GenerationRequest request) {
-    throw const ProductPhotoGenerationException(
-      'Falha controlada na transformação.',
-    );
-  }
-}
-
 class _ControlledExperimentalV3Service
     implements ExperimentalV3GenerationService {
   final _completer = Completer<List<ExperimentalV3ImageResult>>();
   int calls = 0;
   String? quality;
+  GenerationRequest? request;
 
   void complete(List<ExperimentalV3ImageResult> results) =>
       _completer.complete(results);
+
+  void fail(ExperimentalV3GenerationException error) =>
+      _completer.completeError(error);
 
   @override
   Future<List<ExperimentalV3ImageResult>> generateFour(
@@ -391,6 +461,76 @@ class _ControlledExperimentalV3Service
   }) {
     calls += 1;
     this.quality = quality;
+    this.request = request;
     return _completer.future;
   }
+}
+
+class _SequencedExperimentalV3Service
+    implements ExperimentalV3GenerationService {
+  Completer<List<ExperimentalV3ImageResult>>? _current;
+  int calls = 0;
+
+  void failCurrent() => _current!.completeError(
+    const ExperimentalV3GenerationException('Falha controlada.'),
+  );
+
+  void completeCurrent(List<ExperimentalV3ImageResult> results) =>
+      _current!.complete(results);
+
+  @override
+  Future<List<ExperimentalV3ImageResult>> generateFour(
+    GenerationRequest request, {
+    required String quality,
+  }) {
+    calls += 1;
+    _current = Completer<List<ExperimentalV3ImageResult>>();
+    return _current!.future;
+  }
+}
+
+List<ExperimentalV3ImageResult> _completedCampaigns() => [
+  for (final role in const [
+    'hero_commercial',
+    'contextual_lifestyle',
+    'editorial_craft_detail',
+    'concept_campaign',
+  ])
+    ExperimentalV3ImageResult(
+      campaignRole: role,
+      status: 'completed',
+      imageBytes: _png,
+    ),
+];
+
+class _FakeStopwatch implements Stopwatch {
+  Duration elapsedValue = Duration.zero;
+  bool _running = false;
+
+  @override
+  Duration get elapsed => elapsedValue;
+
+  @override
+  int get elapsedMicroseconds => elapsedValue.inMicroseconds;
+
+  @override
+  int get elapsedMilliseconds => elapsedValue.inMilliseconds;
+
+  @override
+  int get elapsedTicks => elapsedValue.inMicroseconds;
+
+  @override
+  int get frequency => Duration.microsecondsPerSecond;
+
+  @override
+  bool get isRunning => _running;
+
+  @override
+  void reset() => elapsedValue = Duration.zero;
+
+  @override
+  void start() => _running = true;
+
+  @override
+  void stop() => _running = false;
 }
