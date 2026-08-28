@@ -213,19 +213,12 @@ export function validateCreativeDirectorV3Input(input) {
   });
 }
 
-function explicitlyRequestsHumanUse(userIntent) {
-  const intent = [userIntent.objective, userIntent.requestedStyle, userIntent.additionalInstructions]
-    .filter(Boolean).join(' ').toLowerCase();
-  return /\b(wear|wearing|worn|use|using|held|holding|human|person|model|vestir|vestido|usando|uso|pessoa|modelo)\b/.test(intent);
-}
-
-function humanInteraction(direction, semantics, userIntent) {
+function humanInteraction(direction, semantics) {
   if (direction.humanMode === 'forbidden') {
     return Object.freeze({ presence: 'none', mode: 'forbidden', usageDescription: null });
   }
   if (semantics.affordances.includes('wearable')) {
-    const presence = explicitlyRequestsHumanUse(userIntent) ? 'required' : 'recommended';
-    return Object.freeze({ presence, mode: presence === 'required' ? 'required' : 'allowed', usageDescription: 'Natural wearing only at the functionally valid body placement established by product semantics; keep human presentation gender-neutral unless supported by explicit evidence or user intent.' });
+    return Object.freeze({ presence: 'required', mode: 'required', usageDescription: 'Include one realistic human using at least one wearable unit at the functionally valid body placement established by product semantics; keep human presentation gender-neutral unless supported by explicit evidence or user intent.' });
   }
   if (semantics.affordances.some((value) => ['handheld', 'consumable', 'vehicle_or_mobility', 'digital_or_screen_based'].includes(value))) {
     return Object.freeze({ presence: 'optional', mode: 'allowed', usageDescription: 'Natural interaction is optional and limited to the product established function and valid contexts; prefer a product-only scene whenever a person adds no demonstrative value.' });
@@ -233,17 +226,42 @@ function humanInteraction(direction, semantics, userIntent) {
   return Object.freeze({ presence: 'none', mode: 'forbidden', usageDescription: null });
 }
 
+function semanticAnatomicalAnchor(item) {
+  const type = item.functionalType.toLowerCase();
+  const anchors = [
+    [/\b(?:ear|earring|auricular)\b/, 'ear or earlobe compatible with the product function'],
+    [/\b(?:neck|necklace|collar|pendant)\b/, 'neck or upper chest compatible with the product function'],
+    [/\b(?:finger|ring)\b/, 'finger compatible with the product function'],
+    [/\b(?:wrist|watch|bracelet|bangle)\b/, 'wrist compatible with the product function'],
+    [/\b(?:face|eyewear|glasses|spectacles)\b/, 'face compatible with the product function'],
+    [/\b(?:foot|footwear|shoe|boot|sneaker)\b/, 'foot compatible with the product function'],
+    [/\b(?:garment|clothing|apparel|dress|shirt|trouser|jacket)\b/, 'body region naturally covered by this garment type'],
+    [/\b(?:bag|handbag|purse)\b/, 'hand or shoulder compatible with the product function'],
+  ];
+  return anchors.find(([pattern]) => pattern.test(type))?.[1] ??
+    'functionally valid body anchor established by the product semantics';
+}
+
 function visibilityFor(role, identity) {
-  const requiredVisibleItems = identity.items.map(({ id, quantity }) => ({ itemId: id, quantity }));
+  const atomicRelationship = role === 'concept_campaign'
+    ? identity.relationships.find(({ type }) => /pair|atomic/i.test(type)) : null;
+  const selectedIds = role === 'concept_campaign'
+    ? new Set(atomicRelationship?.itemIds ?? [identity.items[0].id]) : null;
+  const requiredVisibleItems = identity.items
+    .filter(({ id }) => selectedIds == null || selectedIds.has(id))
+    .map(({ id, quantity }) => ({ itemId: id, quantity }));
   return Object.freeze({
-    mode: role === 'contextual_lifestyle' ? 'contextual_use' : 'full_identity',
+    mode: role === 'contextual_lifestyle' ? 'contextual_use'
+      : role === 'concept_campaign' ? 'selective_concept' : 'full_identity',
     requiredVisibleItems: Object.freeze(requiredVisibleItems), optionalVisibleItems: Object.freeze([]),
-    heroItemIds: Object.freeze([identity.items[0].id]),
-    pairPolicy: identity.relationships.some(({ type }) => /pair/i.test(type)) ? 'preserve_pair' : 'not_applicable',
+    heroItemIds: Object.freeze([requiredVisibleItems[0].itemId]),
+    pairPolicy: atomicRelationship ? 'preserve_pair'
+      : role === 'concept_campaign' ? 'not_selected'
+        : identity.relationships.some(({ type }) => /pair/i.test(type)) ? 'preserve_pair' : 'not_applicable',
   });
 }
 
-function structuredHumanPlan(human, identity, visibilityIntent) {
+function structuredHumanPlan(human, identity, visibilityIntent, semantics) {
   if (human.mode === 'forbidden') {
     return Object.freeze({ unitAllocation: Object.freeze([]), physicalPlacement: Object.freeze([]) });
   }
@@ -264,7 +282,8 @@ function structuredHumanPlan(human, identity, visibilityIntent) {
     .map(({ itemId }) => Object.freeze({
       itemId,
       interactionMode: 'functionally valid human use',
-      anatomicalAnchor: null,
+      anatomicalAnchor: semantics.affordances.includes('wearable')
+        ? semanticAnatomicalAnchor(identity.items.find(({ id }) => id === itemId)) : null,
       orientation: 'preserve the product native functional orientation',
     }));
   return Object.freeze({ unitAllocation: Object.freeze(allocations), physicalPlacement: Object.freeze(physicalPlacement) });
@@ -277,8 +296,8 @@ export function createDeterministicCreativeDirectorV3Model() {
       const { productIdentity: identity, productSemantics: semantics, userIntent } = input;
       return ROLE_DIRECTIONS.map((direction, index) => {
         const visibilityIntent = visibilityFor(direction.campaignRole, identity);
-        const human = humanInteraction(direction, semantics, userIntent);
-        const humanPlan = structuredHumanPlan(human, identity, visibilityIntent);
+        const human = humanInteraction(direction, semantics);
+        const humanPlan = structuredHumanPlan(human, identity, visibilityIntent, semantics);
         const context = semantics.validContexts[0] ?? 'a conservative, physically credible commercial setting';
         return {
           proposalId: index + 1,
@@ -288,11 +307,17 @@ export function createDeterministicCreativeDirectorV3Model() {
           visualStory: `The intact product anchors ${direction.environment}; spatial layers and physical materials create a single readable advertising narrative rather than a background replacement.`,
           productPresentation: {
             heroItemIds: visibilityIntent.heroItemIds,
-            supportingItemIds: Object.freeze(identity.items.slice(1).map(({ id }) => id)),
+            supportingItemIds: Object.freeze(visibilityIntent.requiredVisibleItems
+              .slice(1).map(({ itemId }) => itemId)),
             requiredVisibleItems: visibilityIntent.requiredVisibleItems,
             optionalVisibleItems: visibilityIntent.optionalVisibleItems,
             presentationMode: direction.presentationMode,
-            presentationScope: 'complete_set',
+            presentationScope: direction.campaignRole === 'concept_campaign'
+              ? (identity.relationships.some(({ type, itemIds }) => /pair|atomic/i.test(type) &&
+                  itemIds.length === visibilityIntent.requiredVisibleItems.length &&
+                  itemIds.every((id) => visibilityIntent.requiredVisibleItems.some(({ itemId }) => itemId === id)))
+                  ? 'selected_subset' : 'single_item_detail')
+              : 'complete_set',
           },
           visibilityIntent,
           humanInteraction: Object.freeze({ ...human, ...humanPlan }),
@@ -400,6 +425,21 @@ function validateRelationships(brief, input, selected) {
   }
 }
 
+function validateConceptSelection(brief, identity, selected) {
+  if (brief.campaignRole !== 'concept_campaign') return;
+  const exactAtomicMatches = identity.relationships.filter(({ type, itemIds }) =>
+    /pair|atomic/i.test(type) && itemIds.length === selected.size &&
+    itemIds.every((itemId) => selected.has(itemId)));
+  if (selected.size !== 1 && exactAtomicMatches.length !== 1) {
+    fail('INVALID_V3_OUTPUT', 'Concept campaign must select exactly one canonical item or one complete atomic relationship.');
+  }
+  const selectedTypes = new Set(identity.items
+    .filter(({ id }) => selected.has(id)).map(({ functionalType }) => functionalType));
+  if (selectedTypes.size > 1) {
+    fail('INVALID_V3_OUTPUT', 'Concept campaign cannot mix different canonical functional types.');
+  }
+}
+
 function validateHumanPlan(brief, identity, selected) {
   const interaction = brief.humanInteraction;
   const hasAllocation = interaction.unitAllocation !== undefined;
@@ -421,8 +461,8 @@ function validateHumanPlan(brief, identity, selected) {
       fail('INVALID_V3_OUTPUT', 'Human unit allocation violates a canonical quantity lock.');
     }
     if (allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits +
-        allocation.occludedOrOutOfFrameUnits > expected) {
-      fail('INVALID_V3_OUTPUT', 'Human unit allocation exceeds canonical quantity.');
+        allocation.occludedOrOutOfFrameUnits !== expected) {
+      fail('INVALID_V3_OUTPUT', 'Human unit allocation must partition the complete canonical quantity exactly once.');
     }
     if (required.has(itemId) && allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits < 1) {
       fail('INVALID_V3_OUTPUT', 'A required visible item must have at least one unit presented to the human or scene.');
@@ -510,8 +550,16 @@ export function validateCreativeDirectorV3Output(rawBriefs, normalizedInput) {
     const bodilyAllowed = input.productSemantics.affordances.includes('wearable');
     if (!bodilyAllowed && /wear|ear|finger|body attachment/i.test(brief.humanInteraction.usageDescription ?? '')) fail('INVALID_V3_OUTPUT', 'Human interaction conflicts with product affordance.');
     validateHumanPlan(brief, input.productIdentity, selected);
+    if (brief.campaignRole === 'contextual_lifestyle' &&
+        input.productSemantics.affordances.includes('wearable')) {
+      if (presence !== 'required' || brief.humanInteraction.mode !== 'required' ||
+          !brief.humanInteraction.unitAllocation?.some(({ humanAllocatedUnits }) => humanAllocatedUnits > 0)) {
+        fail('INVALID_V3_OUTPUT', 'Wearable contextual lifestyle requires realistic human presence with at least one body-worn canonical unit.');
+      }
+    }
     if (!V3_COLOR_STRATEGIES.includes(brief.artDirection.colorStrategy)) fail('INVALID_V3_OUTPUT', 'Invalid color strategy.');
     if (brief.creativeFreedom?.productTransformation !== 'forbidden') fail('INVALID_V3_OUTPUT', 'Product transformation must be forbidden.');
+    validateConceptSelection(brief, input.productIdentity, selected);
     validateRelationships(brief, input, selected);
   }
   const activeHumanProposals = rawBriefs.filter((brief) => (brief.humanInteraction.presence ??

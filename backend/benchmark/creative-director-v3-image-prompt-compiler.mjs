@@ -41,6 +41,45 @@ function section(label, values) {
   return [label, ...values].join('\n');
 }
 
+const TERMINAL_ASSEMBLY_PATTERN = /\b(?:closure|clasp|connector|attachment|fasten(?:er|ing)?|buckle|hook|terminal|extension|extender|termination|connection|fecho|fechamento|conector|engate|gancho|terminal|extens(?:ão|ao)|extensor|termina(?:ção|cao)|conex(?:ão|ao))\b/i;
+
+function sourceVisibleTerminalAssemblies(structuralComponents) {
+  const components = structuralComponents.filter(({ name, value }) =>
+    TERMINAL_ASSEMBLY_PATTERN.test(`${name} ${value}`));
+  if (!components.length) return null;
+  return section('A6. SOURCE-VISIBLE TERMINAL / CLOSURE ASSEMBLIES', [
+    ...components.map(({ componentId, parentItemId }) =>
+      `- Preserve source-visible terminal/extension assembly ${componentId} with its canonical parent ${parentItemId}.`),
+    'When its parent product is substantially visible, keep the evidenced assembly visibly connected in its source-consistent role and placement. Do not omit, detach, transfer, duplicate, simplify or turn it into a separate product.',
+    'This lock applies only to explicitly observed assemblies listed above. Do not infer a hidden mechanism or invent an unobserved component; if the precise mechanism is uncertain, preserve it generically as the source-visible terminal/extension assembly.',
+  ]);
+}
+
+function campaignVisualDiversityPolicy(campaignRole) {
+  const policies = {
+    hero_commercial: [
+      'Use a predominantly light, high-key commercial treatment with a light neutral support and clean controlled contrast.',
+      'Keep the source-observed intrinsic product colors unchanged; visual brightness comes from scene, surface and lighting.',
+    ],
+    contextual_lifestyle: [
+      'Use natural or ambient motivated light, a credible contextual surface and balanced warm-to-neutral color temperature.',
+      'Keep the scene lived-in and materially distinct from a studio display without changing intrinsic product colors.',
+    ],
+    editorial_craft_detail: [
+      'Use a clearly editorial material palette, tactile surface and precise medium-key lighting distinct from both Hero and Lifestyle.',
+      'Let material and component detail create the distinction; preserve intrinsic product colors.',
+    ],
+    concept_campaign: [
+      'Use the set’s distinct conceptual palette and material world. This is the only campaign role that may be predominantly dark when the concept benefits from it.',
+      'Maintain product legibility and intrinsic colors even under dramatic environmental lighting.',
+    ],
+  };
+  return section('E2. DETERMINISTIC CROSS-CAMPAIGN DIVERSITY', [
+    ...policies[campaignRole],
+    'This role-specific exposure, surface, color-temperature and contrast policy takes precedence over conflicting generic scene adjectives while leaving the campaign idea intact.',
+  ]);
+}
+
 function onBodyWearableFidelity(brief, productSemantics) {
   const presence = brief.humanInteraction.presence ??
     (brief.humanInteraction.mode === 'required' ? 'required' : 'optional');
@@ -164,6 +203,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
     .filter(({ itemId }) => selectedIds.has(itemId));
   const structuralComponents = (productIdentity.structuralComponents ?? [])
     .filter(({ parentItemId }) => selectedIds.has(parentItemId));
+  const terminalAssemblies = sourceVisibleTerminalAssemblies(structuralComponents);
   const selectedObservedFeatures = (productIdentity.observedFeatureEvidence?.length ?? 0) > 0
     ? productIdentity.observedFeatureEvidence
       .filter(({ itemId }) => selectedIds.has(itemId))
@@ -205,6 +245,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
         `- ${componentId} belongs physically to ${parentItemId}: ${name}=${value}. Preserve it with that parent whenever the parent is substantially visible.`),
       'Do not detach, transfer, duplicate or attach these components to another canonical item. These locks come only from explicit source evidence.',
     ])] : []),
+    ...(terminalAssemblies ? [terminalAssemblies] : []),
     section('B. VISIBLE INVENTORY FOR THIS PROPOSAL', [
       wearablePlacement
         ? 'CANONICAL / EXISTING INVENTORY SELECTED FOR THIS PROPOSAL:'
@@ -229,7 +270,8 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
           ? [`  MAXIMUM ADDITIONAL UNITS ALLOWED ELSEWHERE IN THE SCENE: ${maxSceneAllocated}.`]
           : [`  ALLOCATED TO SCENE: ${sceneAllocated}.`, `  NATURALLY OCCLUDED OR OUT OF FRAME: ${occludedOrOutOfFrame}.`]),
       ]),
-      'Human-allocated and scene-displayed units are parts of the same canonical inventory. Never repeat one unit in multiple locations, and never let their sum exceed the canonical quantity. Occluded or out-of-frame units do not create additional inventory; the remaining allowance is a maximum, not a requirement to display it.',
+      'Human-allocated, scene-displayed and intentionally occluded or out-of-frame units are mutually exclusive parts of the same canonical inventory and must sum exactly to its canonical quantity. Count every physical unit once and only once.',
+      'Never repeat a human-worn, held, applied or otherwise human-allocated unit on a surface, tray or elsewhere in the scene. Occluded or out-of-frame units do not create additional inventory and must not be rendered again.',
       'preserve_pair protects the canonical relationship and never authorizes an additional pair.',
     ])] : []),
     section('C2. PRODUCT SCALE LOCK', [
@@ -245,6 +287,15 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
     ...(selectedIds.size > 1 ? [section('C5. CANONICAL PRODUCT INDEPENDENCE', [
       `Keep these canonical IDs as independent physical products: ${[...selectedIds].join(', ')}.`,
       'Physically plausible overlap is allowed, but never fuse their geometry, components, materials or functions into one hybrid object.',
+    ])] : []),
+    ...(brief.campaignRole === 'concept_campaign' ? [section('C6. CONCEPT CAMPAIGN — ISOLATED CANONICAL SUBJECT', [
+      `Selected canonical IDs only: ${[...selectedIds].join(', ')}.`,
+      `Exact selected visible quantity: ${[...required, ...optional].reduce((sum, item) => sum + item.quantity, 0)} physical unit(s).`,
+      `Explicitly omitted canonical IDs: ${omitted.length ? omitted.map(({ id }) => id).join(', ') : 'none'}.`,
+      'Render only the selected canonical subject or complete selected atomic relationship. Never add a third unit to a pair, duplicate a selected unit, or fuse selected units together.',
+      'No prop, decoration, reflection, shadow, sculptural motif or environmental object may imitate the functional type, silhouette or geometry of an omitted product.',
+      'Do not migrate any component, chain, terminal, stone, loop, rim, band, attachment or distinctive motif from an omitted item onto the selected subject, and do not turn any component into a new product unit.',
+      'Creative freedom remains high only for scene, lighting, surface, environmental color and framing.',
     ])] : []),
     section('D. HUMAN INTERACTION / VALID USE', [
       `Human presence decision: ${brief.humanInteraction.presence ?? (brief.humanInteraction.mode === 'forbidden' ? 'none' : 'optional')}.`,
@@ -269,6 +320,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       `Campaign idea: ${brief.campaignIdea}`,
       `Commercial objective: ${brief.commercialObjective}`,
     ]),
+    campaignVisualDiversityPolicy(brief.campaignRole),
     section('F. VISUAL STORY', [brief.visualStory]),
     section('G. SCENE', [
       `Environment: ${brief.scene.environment}`, `Surface: ${brief.scene.surface}`,

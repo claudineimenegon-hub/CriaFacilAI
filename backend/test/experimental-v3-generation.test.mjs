@@ -264,7 +264,8 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
   assert.equal(lifestyleItem.occludedOrOutOfFrameUnits, 1);
   assert.equal(lifestyleItem.requestedVisibleUnits, 1);
   assert.deepEqual(lifestyleItem.placement, {
-    interactionMode: 'functionally valid human use', anatomicalAnchor: null,
+    interactionMode: 'functionally valid human use',
+    anatomicalAnchor: 'functionally valid body anchor established by the product semantics',
     orientation: 'preserve the product native functional orientation',
   });
   const serialized = JSON.stringify(events);
@@ -340,7 +341,7 @@ test('identidade ausente falha antes de Creative Director ou imagem', async () =
   await assert.rejects(() => instance.generate(request()), { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 });
 });
 
-test('Human Presence recomenda contexto humano somente no Lifestyle de vestíveis', async () => {
+test('Human Presence exige contexto humano somente no Lifestyle de vestíveis', async () => {
   const cases = [
     ['jewelry', 'jewelry set', 'wearable'],
     ['clothing', 'garment', 'wearable'],
@@ -351,8 +352,11 @@ test('Human Presence recomenda contexto humano somente no Lifestyle de vestívei
       humanPresenceInput({ category, functionalType, affordance }),
     );
     assert.deepEqual(briefs.map(({ humanInteraction }) => humanInteraction.presence), [
-      'none', 'recommended', 'none', 'none',
+      'none', 'required', 'none', 'none',
     ]);
+    assert.equal(briefs[1].humanInteraction.mode, 'required');
+    assert.ok(briefs[1].humanInteraction.unitAllocation.some(({ humanAllocatedUnits }) => humanAllocatedUnits > 0));
+    assert.ok(briefs[1].humanInteraction.physicalPlacement.length > 0);
     assert.match(briefs[1].humanInteraction.usageDescription, /gender-neutral/);
   }
 });
@@ -371,6 +375,9 @@ test('Human Presence não força pessoas em perfume, eletrônico, alimento ou ca
     assert.deepEqual(briefs.map(({ humanInteraction }) => humanInteraction.presence), [
       'none', lifestylePresence, 'none', 'none',
     ]);
+    for (const placement of briefs[1].humanInteraction.physicalPlacement) {
+      assert.equal(placement.anatomicalAnchor, null);
+    }
   }
 });
 
@@ -873,7 +880,7 @@ test('alocação validada impede duplicação e exige placement somente para int
   };
   assert.throws(() => validateCreativeDirectorV3Output([
     briefs[0], invalidLifestyle, briefs[2], briefs[3],
-  ], input), /exceeds canonical quantity/);
+  ], input), /partition the complete canonical quantity/);
 });
 
 test('requiredVisible exige apresentação mínima sem restaurar opcionais ou omitidos', async () => {
@@ -997,8 +1004,12 @@ test('requiredVisible exige apresentação mínima sem restaurar opcionais ou om
     humanInteraction: {
       ...lifestyle.humanInteraction,
       unitAllocation: [{ itemId: 'hand-item', canonicalQuantity: 1,
-        humanAllocatedUnits: 0, sceneAllocatedUnits: 1, occludedOrOutOfFrameUnits: 0 }],
-      physicalPlacement: [],
+        humanAllocatedUnits: 1, sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 0 }],
+      physicalPlacement: [{
+        itemId: 'hand-item', interactionMode: 'functionally valid human use',
+        anatomicalAnchor: 'functionally valid body anchor established by the product semantics',
+        orientation: 'preserve the product native functional orientation',
+      }],
     },
   };
   assert.doesNotThrow(() => validateCreativeDirectorV3Output([
@@ -1068,4 +1079,240 @@ test('conjunto misto preserva independência física e pair sem obrigar inventá
   assert.doesNotThrow(() => validateCreativeDirectorV3Output([
     briefs[0], briefs[1], editorial, briefs[3],
   ], mixed));
+});
+
+test('Lifestyle wearable usa âncora semântica, não duplica worn units e preserva oclusão de par', async () => {
+  const cases = [
+    ['ear-compatible wearable', /ear or earlobe/],
+    ['neck-compatible wearable', /neck or upper chest/],
+    ['finger-compatible wearable', /finger compatible/],
+    ['wrist-compatible wearable', /wrist compatible/],
+    ['face-compatible eyewear', /face compatible/],
+    ['protective footwear', /foot compatible/],
+  ];
+  for (const [functionalType, expectedAnchor] of cases) {
+    const input = humanPresenceInput({ category: 'general', functionalType, affordance: 'wearable' });
+    const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+    assert.match(briefs[1].humanInteraction.physicalPlacement[0].anatomicalAnchor, expectedAnchor);
+    assert.deepEqual(briefs.filter(({ humanInteraction }) => humanInteraction.presence !== 'none')
+      .map(({ campaignRole }) => campaignRole), ['contextual_lifestyle']);
+  }
+
+  const pairInput = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'wearable set',
+      items: [{ id: 'pair-product', functionalType: 'ear-compatible wearable', quantity: 2 }],
+      relationships: [{ type: 'pair', itemIds: ['pair-product'] }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'ear-compatible wearable', affordances: ['wearable'],
+      validContexts: ['realistic human use'], invalidContexts: ['invalid placement'],
+    },
+    userIntent: { objective: 'Natural premium campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(pairInput);
+  const allocation = briefs[1].humanInteraction.unitAllocation[0];
+  assert.deepEqual(allocation, {
+    itemId: 'pair-product', canonicalQuantity: 2, humanAllocatedUnits: 1,
+    sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 1,
+  });
+  assert.equal(allocation.humanAllocatedUnits + allocation.sceneAllocatedUnits +
+    allocation.occludedOrOutOfFrameUnits, allocation.canonicalQuantity);
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, pairInput));
+  const lifestylePrompt = compileCreativeDirectorV3ImagePrompt({
+    brief: briefs[1], productIdentity: pairInput.productIdentity,
+    productSemantics: pairInput.productSemantics, userIntent: pairInput.userIntent,
+  });
+  assert.match(lifestylePrompt, /natural or ambient motivated light/);
+  assert.match(lifestylePrompt, /Never repeat a human-worn, held, applied/);
+  assert.match(lifestylePrompt, /only the naturally anchored unit may be clearly visible/);
+});
+
+test('assemblies terminais explicitamente observados permanecem ligados ao pai em Hero e Concept', async () => {
+  const normalized = validateExperimentalV3Request(request({ category: 'general' }));
+  const input = validateCreativeDirectorV3Input(buildCreativeDirectorV3Input({
+    analysis: {
+      state: 'known',
+      items: [{
+        id: 'parent-product', functionalType: { state: 'known', value: 'wearable product' },
+        quantity: { state: 'known', value: 1 }, observationCompleteness: 'partial',
+        observedFeatures: [{
+          id: 'terminal-assembly', name: 'source-visible terminal assembly',
+          value: 'observed closure and extension connector',
+        }],
+        ambiguousFeatures: [{
+          id: 'hidden-mechanism', name: 'internal mechanism', visibility: 'hidden',
+          observedConstraint: null, plausibleHypotheses: ['concealed mechanism'],
+        }],
+      }],
+      relationships: [],
+    },
+    request: normalized,
+  }));
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  for (const index of [0, 3]) {
+    const prompt = compileCreativeDirectorV3ImagePrompt({
+      brief: briefs[index], productIdentity: input.productIdentity,
+      productSemantics: input.productSemantics, userIntent: input.userIntent,
+    });
+    assert.match(prompt, /SOURCE-VISIBLE TERMINAL \/ CLOSURE ASSEMBLIES/);
+    assert.match(prompt, /terminal-assembly with its canonical parent parent-product/);
+    assert.match(prompt, /Do not omit, detach, transfer, duplicate, simplify/);
+    assert.match(prompt, /Do not infer a hidden mechanism/);
+    assert.doesNotMatch(prompt, /concealed mechanism/);
+  }
+});
+
+test('alocação física particiona toda quantidade canônica uma única vez', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'paired wearable',
+      items: [{ id: 'paired-product', functionalType: 'paired wearable product', quantity: 2 }],
+      relationships: [{ type: 'pair', itemIds: ['paired-product'] }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'paired wearable product', affordances: ['wearable'],
+      validContexts: ['valid human use'], invalidContexts: ['invalid placement'],
+    },
+    userIntent: { objective: 'Premium campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const lifestyle = briefs[1];
+  const validAllocation = [{
+    itemId: 'paired-product', canonicalQuantity: 2, humanAllocatedUnits: 1,
+    sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 1,
+  }];
+  const validLifestyle = {
+    ...lifestyle,
+    humanInteraction: { ...lifestyle.humanInteraction, unitAllocation: validAllocation },
+  };
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output([
+    briefs[0], validLifestyle, briefs[2], briefs[3],
+  ], input));
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: validLifestyle, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.match(prompt, /must sum exactly to its canonical quantity/);
+  assert.match(prompt, /Never repeat a human-worn, held, applied/);
+  assert.throws(() => validateCreativeDirectorV3Output([
+    briefs[0], {
+      ...validLifestyle,
+      humanInteraction: {
+        ...validLifestyle.humanInteraction,
+        unitAllocation: [{ ...validAllocation[0], occludedOrOutOfFrameUnits: 0 }],
+      },
+    }, briefs[2], briefs[3],
+  ], input), /partition the complete canonical quantity/);
+});
+
+test('quatro campanhas recebem diversidade visual determinística sem recolorir o produto', async () => {
+  const input = humanPresenceInput({
+    category: 'electronics', functionalType: 'portable electronic device', affordance: 'handheld',
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const prompts = briefs.map((brief) => compileCreativeDirectorV3ImagePrompt({
+    brief, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  }));
+  assert.match(prompts[0], /predominantly light, high-key/);
+  assert.match(prompts[1], /natural or ambient motivated light/);
+  assert.match(prompts[2], /clearly editorial material palette/);
+  assert.match(prompts[3], /only campaign role that may be predominantly dark/);
+  assert.equal(prompts.filter((prompt) => /only campaign role that may be predominantly dark/.test(prompt)).length, 1);
+  for (const prompt of prompts) assert.match(prompt, /intrinsic (?:product )?colors/);
+});
+
+test('Campanha Conceitual isola um item ou uma relação atômica sem duplicação, fusão ou imitação', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'mixed product set',
+      items: [
+        { id: 'main-product', functionalType: 'neck-compatible wearable', quantity: 1 },
+        { id: 'paired-product', functionalType: 'ear-compatible wearable', quantity: 2 },
+        { id: 'independent-product', functionalType: 'finger-compatible wearable', quantity: 1 },
+      ],
+      relationships: [{ type: 'pair', itemIds: ['paired-product'] }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'wearable product set', affordances: ['wearable'],
+      validContexts: ['premium campaign'], invalidContexts: ['hybrid products'],
+    },
+    userIntent: { objective: 'Premium mixed-set campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const [hero, lifestyle, editorial, concept] = briefs;
+  assert.deepEqual(hero.productPresentation.requiredVisibleItems.map(({ itemId }) => itemId),
+    ['main-product', 'paired-product', 'independent-product']);
+  assert.equal(lifestyle.humanInteraction.presence, 'required');
+  assert.equal(editorial.productPresentation.presentationScope, 'complete_set');
+  assert.deepEqual(concept.productPresentation.requiredVisibleItems,
+    [{ itemId: 'paired-product', quantity: 2 }]);
+  assert.equal(concept.productPresentation.presentationScope, 'selected_subset');
+  assert.equal(concept.visibilityIntent.pairPolicy, 'preserve_pair');
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input));
+
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: concept, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.match(prompt, /Selected canonical IDs only: paired-product/);
+  assert.match(prompt, /Exact selected visible quantity: 2 physical unit/);
+  assert.match(prompt, /Explicitly omitted canonical IDs: main-product, independent-product/);
+  assert.match(prompt, /Never add a third unit to a pair/);
+  assert.match(prompt, /No prop, decoration, reflection, shadow, sculptural motif or environmental object may imitate/);
+  assert.match(prompt, /Do not migrate any component, chain, terminal, stone, loop, rim, band/);
+
+  const mixedConcept = {
+    ...concept,
+    productPresentation: {
+      ...concept.productPresentation,
+      heroItemIds: ['paired-product'], supportingItemIds: ['independent-product'],
+      requiredVisibleItems: [
+        { itemId: 'paired-product', quantity: 2 },
+        { itemId: 'independent-product', quantity: 1 },
+      ],
+    },
+    visibilityIntent: {
+      ...concept.visibilityIntent,
+      heroItemIds: ['paired-product'], requiredVisibleItems: [
+        { itemId: 'paired-product', quantity: 2 },
+        { itemId: 'independent-product', quantity: 1 },
+      ],
+    },
+  };
+  assert.throws(() => validateCreativeDirectorV3Output([
+    hero, lifestyle, editorial, mixedConcept,
+  ], input), /exactly one canonical item or one complete atomic relationship/);
+});
+
+test('Campanha Conceitual sem relação atômica seleciona somente um canonical item', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'independent products',
+      items: [
+        { id: 'product-a', functionalType: 'portable electronic device', quantity: 1 },
+        { id: 'product-b', functionalType: 'cosmetic container', quantity: 1 },
+      ],
+      relationships: [], observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'independent product set', affordances: ['surface_supported'],
+      validContexts: ['commercial set'], invalidContexts: ['hybrid object'],
+    },
+    userIntent: { objective: 'Concept campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  assert.deepEqual(briefs[3].productPresentation.requiredVisibleItems,
+    [{ itemId: 'product-a', quantity: 1 }]);
+  assert.equal(briefs[3].productPresentation.presentationScope, 'single_item_detail');
+  assert.equal(briefs[3].visibilityIntent.pairPolicy, 'not_selected');
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input));
 });
