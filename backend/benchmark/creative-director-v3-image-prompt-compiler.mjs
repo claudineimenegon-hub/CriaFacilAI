@@ -195,6 +195,16 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
   const optional = brief.productPresentation.optionalVisibleItems;
   const selectedIds = new Set([...required, ...optional].map(({ itemId }) => itemId));
   const omitted = productIdentity.items.filter(({ id }) => !selectedIds.has(id));
+  const selectiveRole = ['editorial_craft_detail', 'concept_campaign'].includes(brief.campaignRole);
+  const identityItemsForPrompt = selectiveRole
+    ? productIdentity.items.filter(({ id }) => selectedIds.has(id)) : productIdentity.items;
+  const proposalFidelityRequirements = selectiveRole
+    ? [
+      'Preserve every selected canonical item ID, functional type and locked quantity.',
+      ...brief.fidelityRequirements.filter((requirement) =>
+        !/preserve every canonical item id/i.test(requirement)),
+    ]
+    : brief.fidelityRequirements;
   const interactionFidelity = humanProductInteractionFidelity(brief);
   const wearablePlacement = humanWearablePlacement(brief, productSemantics);
   const mandatoryWearableHuman = brief.campaignRole === 'contextual_lifestyle' &&
@@ -211,17 +221,24 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
     ? productIdentity.observedFeatureEvidence
       .filter(({ itemId }) => selectedIds.has(itemId))
       .map(({ itemId, name, value }) => `${itemId}: ${name}=${value}`)
-    : productIdentity.observedFeatures;
+    : (productIdentity.observedFeatures ?? []).filter((feature) => !selectiveRole ||
+      [...selectedIds].some((itemId) => typeof feature === 'string' && feature.startsWith(`${itemId}:`)));
   const prompt = [
     ...(mandatoryWearableHuman ? [section('LIFESTYLE HUMAN PRESENCE — EXECUTION PRIORITY', [
       'A realistic human person is mandatory and must be visibly present in the final image. At least one selected wearable canonical unit must be visibly worn at its anatomically correct anchor.',
       'Supports and surfaces may appear only as secondary context; they must not become a product-only or tabletop still-life composition.',
     ])] : []),
+    ...(selectiveRole ? [section('DETERMINISTIC ROLE SELECTION — EXECUTION PRIORITY', [
+      `Selected canonical IDs: ${[...selectedIds].join(', ')}.`,
+      `Selected canonical quantities: ${[...required, ...optional].map(({ itemId, quantity }) => `${itemId}=${quantity}`).join(', ')}.`,
+      `Omitted canonical IDs: ${omitted.length ? omitted.map(({ id }) => id).join(', ') : 'none'}.`,
+      'This local deterministic selection overrides any conflicting selection implied by creative prose. Scene, narrative, props and composition must not restore, imitate or borrow details from omitted items.',
+    ])] : []),
     section('A. PRODUCT IDENTITY — HIGHEST PRIORITY', [
       'The supplied source photograph is the canonical visual reference for the product.',
       'Use it to preserve geometry, design, observable materials, colors, finish and distinctive details—not its original photographic composition.',
       `Canonical category: ${requireText(productIdentity.category, 'productIdentity.category')}.`,
-      ...productIdentity.items.map(({ id, functionalType, quantity }) => `- ${id}: canonical functional type ${functionalType}; global locked quantity ${quantity}.`),
+      ...identityItemsForPrompt.map(({ id, functionalType, quantity }) => `- ${id}: canonical functional type ${functionalType}; global locked quantity ${quantity}.`),
       ...(selectedObservedFeatures.length ? [`Observed identity facts: ${selectedObservedFeatures.join('; ')}.`] : []),
       'Preserve the identity of every selected canonical item. Never transform one canonical item into another product type, invent additional products, duplicate beyond visible quantity, fuse separate products, redesign the product, or replace it with a similar substitute.',
       'Product identity has priority over scene creativity.',
@@ -299,7 +316,8 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       `Selected canonical IDs only: ${[...selectedIds].join(', ')}.`,
       `Exact selected visible quantity: ${[...required, ...optional].reduce((sum, item) => sum + item.quantity, 0)} physical unit(s).`,
       `Explicitly omitted canonical IDs: ${omitted.length ? omitted.map(({ id }) => id).join(', ') : 'none'}.`,
-      'Render only the selected canonical subject or complete selected atomic relationship. Never add a third unit to a pair, duplicate a selected unit, or fuse selected units together.',
+       'Render only the deterministically selected canonical subjects or complete selected atomic relationship. Never add a third unit to a pair, duplicate a selected unit, or fuse selected units together.',
+       'When multiple independent units are selected, keep them physically separate, independently countable and supported on distinct planes or supports; do not stack, interlace, entangle or merge them.',
       'No prop, decoration, reflection, shadow, sculptural motif or environmental object may imitate the functional type, silhouette or geometry of an omitted product.',
       'Do not migrate any component, chain, terminal, stone, loop, rim, band, attachment or distinctive motif from an omitted item onto the selected subject, and do not turn any component into a new product unit.',
       'Creative freedom remains high only for scene, lighting, surface, environmental color and framing.',
@@ -349,7 +367,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       `Contrast: ${brief.photography.contrast}`,
     ]),
     section('J. FIDELITY REQUIREMENTS', [
-      ...brief.fidelityRequirements.map((requirement) => `- ${requirement}`),
+      ...proposalFidelityRequirements.map((requirement) => `- ${requirement}`),
       '- productTransformation is forbidden.',
     ]),
     section('J2. PHOTOGRAPHIC ENHANCEMENT', [

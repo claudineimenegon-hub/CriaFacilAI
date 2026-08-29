@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDeterministicCreativeDirectorV3Model, validateCreativeDirectorV3Input, validateCreativeDirectorV3Output } from '../benchmark/creative-director-v3.mjs';
+import {
+  createDeterministicCreativeDirectorV3Model,
+  runCreativeDirectorV3,
+  selectDeterministicV3RoleItems,
+  validateCreativeDirectorV3Input,
+  validateCreativeDirectorV3Output,
+} from '../benchmark/creative-director-v3.mjs';
 import {
   compileCreativeDirectorV3ImagePrompt,
   deriveProposalUnitAllocation,
@@ -242,6 +248,12 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
     'schemaValid', 'diversityValid',
   ]);
   assert.equal(proposals.every((event) => Object.keys(event).every((key) => allowed.has(key))), true);
+  const selection = events.find(({ component }) => component === 'ExperimentalV3DeterministicRoleSelection');
+  assert.equal(selection.selectionDeterministic, true);
+  assert.deepEqual(selection.editorialSelectedIds, ['product-pair']);
+  assert.deepEqual(selection.conceptualSelectedIds, ['product-pair']);
+  assert.deepEqual(Object.keys(selection.selectionStrategy).sort(), ['conceptual', 'editorial']);
+  assert.doesNotMatch(JSON.stringify(selection), /prompt|base64|authorization|api[_-]?key/i);
   const lifestylePolicy = events.find(({ component }) => component === 'ExperimentalV3LifestylePolicy');
   assert.deepEqual(lifestylePolicy, {
     component: 'ExperimentalV3LifestylePolicy', requestedCategory: 'jewelry',
@@ -345,6 +357,40 @@ test('identidade ausente falha antes de Creative Director ou imagem', async () =
     imageProvider: { generate: async () => { throw new Error('must not run'); } },
   });
   await assert.rejects(() => instance.generate(request()), { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 });
+});
+
+test('timeout do Analyzer encerra o V3 sem fallback ou chamada visual', async () => {
+  let analyzerCalls = 0;
+  let directorCalls = 0;
+  let visualCalls = 0;
+  const timeoutError = Object.assign(new Error('Product identity provider timed out.'), {
+    code: 'GEMINI_TIMEOUT', attempt: 1, retryUsed: false,
+  });
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async () => ({ bytes: sourceBytes, mimeType: 'image/jpeg', metadata: {} }) },
+    productIdentityAnalyzer: {
+      async analyze() {
+        analyzerCalls += 1;
+        throw timeoutError;
+      },
+    },
+    creativeDirectorAdapterFactory: () => {
+      directorCalls += 1;
+      return createDeterministicCreativeDirectorV3Model();
+    },
+    imageProvider: {
+      async generate() {
+        visualCalls += 1;
+        return { imageBase64: 'must-not-run' };
+      },
+    },
+  });
+
+  await assert.rejects(() => instance.generate(request()), (error) =>
+    error === timeoutError && error.code === 'GEMINI_TIMEOUT');
+  assert.equal(analyzerCalls, 1);
+  assert.equal(directorCalls, 0);
+  assert.equal(visualCalls, 0);
 });
 
 test('Human Presence exige contexto humano somente no Lifestyle de vestíveis', async () => {
@@ -745,7 +791,7 @@ test('unit allocation estruturada é fonte de verdade e não muda com usageDescr
   assert.match(prompt, /Occluded or out-of-frame units do not create additional inventory/);
 });
 
-test('Editorial subset exige finalidade real de detalhe e separa múltiplos produtos', async () => {
+test('Editorial determinístico exige finalidade real de detalhe para um único produto', async () => {
   const normalized = validateExperimentalV3Request(request());
   const second = {
     id: 'second-product', functionalType: { state: 'known', value: 'independent product' },
@@ -761,8 +807,9 @@ test('Editorial subset exige finalidade real de detalhe e separa múltiplos prod
     brief: editorial, productIdentity: input.productIdentity,
     productSemantics: input.productSemantics, userIntent: input.userIntent,
   });
-  assert.match(multiPrompt, /EDITORIAL PRODUCT SEPARATION/);
-  assert.match(multiPrompt, /independent physical object/);
+  assert.equal(editorial.productPresentation.requiredVisibleItems.length, 1);
+  assert.doesNotMatch(multiPrompt, /EDITORIAL PRODUCT SEPARATION/);
+  assert.match(multiPrompt, /NOT VISIBLE IN THIS IMAGE/);
 
   const selected = [{ itemId: 'second-product', quantity: 1 }];
   const validDetail = {
@@ -1260,7 +1307,8 @@ test('Campanha Conceitual isola um item ou uma relação atômica sem duplicaç�
   assert.deepEqual(hero.productPresentation.requiredVisibleItems.map(({ itemId }) => itemId),
     ['main-product', 'paired-product', 'independent-product']);
   assert.equal(lifestyle.humanInteraction.presence, 'required');
-  assert.equal(editorial.productPresentation.presentationScope, 'complete_set');
+  assert.equal(editorial.productPresentation.presentationScope, 'single_item_detail');
+  assert.equal(editorial.productPresentation.requiredVisibleItems.length, 1);
   assert.deepEqual(concept.productPresentation.requiredVisibleItems,
     [{ itemId: 'paired-product', quantity: 2 }]);
   assert.equal(concept.productPresentation.presentationScope, 'selected_subset');
@@ -1296,12 +1344,12 @@ test('Campanha Conceitual isola um item ou uma relação atômica sem duplicaç�
       ],
     },
   };
-  assert.throws(() => validateCreativeDirectorV3Output([
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output([
     hero, lifestyle, editorial, mixedConcept,
-  ], input), /exactly one canonical item or one complete atomic relationship/);
+  ], input));
 });
 
-test('Campanha Conceitual sem relação atômica seleciona somente um canonical item', async () => {
+test('Campanha Conceitual sem relação atômica seleciona duas unidades independentes', async () => {
   const input = validateCreativeDirectorV3Input({
     productIdentity: {
       category: 'independent products',
@@ -1320,8 +1368,8 @@ test('Campanha Conceitual sem relação atômica seleciona somente um canonical 
   });
   const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
   assert.deepEqual(briefs[3].productPresentation.requiredVisibleItems,
-    [{ itemId: 'product-a', quantity: 1 }]);
-  assert.equal(briefs[3].productPresentation.presentationScope, 'single_item_detail');
+    [{ itemId: 'product-b', quantity: 1 }, { itemId: 'product-a', quantity: 1 }]);
+  assert.equal(briefs[3].productPresentation.presentationScope, 'selected_subset');
   assert.equal(briefs[3].visibilityIntent.pairPolicy, 'not_selected');
   assert.doesNotThrow(() => validateCreativeDirectorV3Output(briefs, input));
 });
@@ -1406,4 +1454,171 @@ test('inventário misto aloca ao corpo somente item confirmado como wearable', a
   assert.match(scene, /realistic human visibly wearing/);
   assert.doesNotMatch(scene, /complete required product identity on stable|tabletop|product-only/i);
   assert.match(prompt, /natural or ambient motivated light/);
+});
+
+test('seleção por role é determinística, usa riqueza observada e desempata por canonical ID', () => {
+  const identity = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'general product set',
+      items: [
+        { id: 'item-z', functionalType: 'portable product', quantity: 1 },
+        { id: 'item-b', functionalType: 'portable product', quantity: 1 },
+        { id: 'item-a', functionalType: 'portable product', quantity: 1 },
+      ],
+      relationships: [], observedFeatures: [], ambiguousFeatures: [],
+      observedFeatureEvidence: [
+        { itemId: 'item-z', name: 'surface', value: 'observed finish' },
+        { itemId: 'item-z', name: 'geometry', value: 'observed geometry' },
+        { itemId: 'item-b', featureId: 'feature-b', name: 'connector', value: 'observed connector' },
+      ],
+      criticalFeatures: [
+        { itemId: 'item-b', featureId: 'feature-b', name: 'connector', value: 'observed connector', evidence: 'observed' },
+      ],
+      structuralComponents: [{
+        componentId: 'feature-b', parentItemId: 'item-b', name: 'connector',
+        value: 'observed connector', evidence: 'observed', requiredWhenParentVisible: true,
+      }],
+    },
+    productSemantics: {
+      functionalType: 'portable products', affordances: ['surface_supported'],
+      validContexts: ['commercial display'], invalidContexts: ['hybrid object'],
+    },
+    userIntent: { objective: 'Campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  }).productIdentity;
+  const first = selectDeterministicV3RoleItems(identity);
+  const second = selectDeterministicV3RoleItems(identity);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.editorialSelectedIds, ['item-b']);
+  assert.deepEqual(first.conceptualSelectedIds, ['item-a', 'item-z']);
+
+  const structuralWins = selectDeterministicV3RoleItems({
+    ...identity,
+    criticalFeatures: [],
+  });
+  assert.deepEqual(structuralWins.editorialSelectedIds, ['item-b']);
+
+  const observedWins = selectDeterministicV3RoleItems({
+    ...identity,
+    criticalFeatures: [], structuralComponents: [],
+  });
+  assert.deepEqual(observedWins.editorialSelectedIds, ['item-z']);
+
+  const tie = selectDeterministicV3RoleItems({
+    ...identity,
+    items: identity.items.filter(({ id }) => ['item-a', 'item-z'].includes(id)),
+    observedFeatureEvidence: [], criticalFeatures: [], structuralComponents: [],
+  });
+  assert.deepEqual(tie.editorialSelectedIds, ['item-a']);
+});
+
+test('Conceitual prefere relação atômica completa e evita repetir Editorial quando possível', () => {
+  const selection = selectDeterministicV3RoleItems({
+    category: 'general set',
+    items: [
+      { id: 'detail-rich', functionalType: 'product', quantity: 1 },
+      { id: 'pair-member-a', functionalType: 'matching product', quantity: 1 },
+      { id: 'pair-member-b', functionalType: 'matching product', quantity: 1 },
+    ],
+    relationships: [{ type: 'pair', itemIds: ['pair-member-a', 'pair-member-b'] }],
+    observedFeatures: [], ambiguousFeatures: [], observedFeatureEvidence: [],
+    criticalFeatures: [{
+      itemId: 'detail-rich', featureId: 'detail-1', name: 'construction',
+      value: 'observed construction', evidence: 'observed',
+    }],
+    structuralComponents: [],
+  });
+  assert.deepEqual(selection.editorialSelectedIds, ['detail-rich']);
+  assert.deepEqual(selection.conceptualSelectedIds, ['pair-member-a', 'pair-member-b']);
+  assert.equal(selection.selectionStrategy.conceptual, 'complete_atomic_relationship');
+});
+
+test('seleção local substitui seleção criativa do LLM sem alterar Hero ou Lifestyle', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'wearable set',
+      items: [
+        { id: 'wearable-a', functionalType: 'wrist-compatible wearable', quantity: 1 },
+        { id: 'product-b', functionalType: 'surface-supported accessory', quantity: 1 },
+        { id: 'product-c', functionalType: 'surface-supported accessory', quantity: 1 },
+      ],
+      relationships: [], observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'wearable set', affordances: ['wearable'], wearableItemIds: ['wearable-a'],
+      validContexts: ['commercial context'], invalidContexts: ['invalid use'],
+    },
+    userIntent: { objective: 'Campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const base = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const rogue = base.map((brief) => brief.campaignRole === 'editorial_craft_detail' || brief.campaignRole === 'concept_campaign'
+    ? {
+      ...brief,
+      productPresentation: {
+        ...brief.productPresentation, heroItemIds: ['wearable-a'], supportingItemIds: [],
+        requiredVisibleItems: [{ itemId: 'wearable-a', quantity: 1 }], optionalVisibleItems: [],
+        presentationScope: 'single_item_detail',
+      },
+      visibilityIntent: {
+        ...brief.visibilityIntent, heroItemIds: ['wearable-a'],
+        requiredVisibleItems: [{ itemId: 'wearable-a', quantity: 1 }], optionalVisibleItems: [], pairPolicy: 'not_selected',
+      },
+    } : brief);
+  const result = await runCreativeDirectorV3({
+    input,
+    modelAdapter: { name: 'rogue-selection-adapter', generate: async () => rogue },
+  });
+  assert.deepEqual(result.briefs[0].productPresentation.requiredVisibleItems.map(({ itemId }) => itemId),
+    ['wearable-a', 'product-b', 'product-c']);
+  assert.equal(result.briefs[1].humanInteraction.presence, 'required');
+  assert.deepEqual(result.editorialSelectedIds, ['product-b']);
+  assert.deepEqual(result.conceptualSelectedIds, ['product-c', 'wearable-a']);
+  assert.deepEqual(result.briefs[2].productPresentation.requiredVisibleItems.map(({ itemId }) => itemId), ['product-b']);
+  assert.deepEqual(result.briefs[3].productPresentation.requiredVisibleItems.map(({ itemId }) => itemId), ['product-c', 'wearable-a']);
+});
+
+test('prompt Editorial contém somente fatos do item selecionado e IDs omitidos', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'general set',
+      items: [
+        { id: 'selected-item', functionalType: 'precision product', quantity: 1 },
+        { id: 'omitted-item', functionalType: 'different omitted type', quantity: 1 },
+      ],
+      relationships: [], observedFeatures: [], ambiguousFeatures: [],
+      observedFeatureEvidence: [
+        { itemId: 'selected-item', featureId: 'selected-feature', name: 'precision joint', value: 'selected construction' },
+        { itemId: 'omitted-item', name: 'secret omitted ornament', value: 'must never migrate' },
+      ],
+      criticalFeatures: [{
+        itemId: 'selected-item', featureId: 'selected-feature', name: 'precision joint',
+        value: 'selected construction', evidence: 'observed',
+      }],
+      structuralComponents: [{
+        componentId: 'selected-feature', parentItemId: 'selected-item', name: 'precision joint',
+        value: 'selected construction', evidence: 'observed', requiredWhenParentVisible: true,
+      }],
+    },
+    productSemantics: {
+      functionalType: 'product set', affordances: ['surface_supported'],
+      validContexts: ['commercial display'], invalidContexts: ['fusion'],
+    },
+    userIntent: { objective: 'Editorial detail', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const result = await runCreativeDirectorV3({
+    input,
+    modelAdapter: createDeterministicCreativeDirectorV3Model(),
+  });
+  const editorial = result.briefs.find(({ campaignRole }) => campaignRole === 'editorial_craft_detail');
+  const prompt = compileCreativeDirectorV3ImagePrompt({
+    brief: editorial, productIdentity: input.productIdentity,
+    productSemantics: input.productSemantics, userIntent: input.userIntent,
+  });
+  assert.match(prompt, /selected-item: canonical functional type precision product; global locked quantity 1/);
+  assert.match(prompt, /selected-feature belongs physically to selected-item/);
+  assert.match(prompt, /NOT VISIBLE IN THIS IMAGE:\n- omitted-item/);
+  assert.doesNotMatch(prompt, /different omitted type|secret omitted ornament|must never migrate/);
+  assert.match(prompt, /Do not add, imply, substitute or transform another item into this omitted item/);
 });

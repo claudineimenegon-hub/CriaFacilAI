@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import {
   DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL,
   GEMINI_GENERATE_CONTENT_BASE_URL,
+  GEMINI_PRODUCT_IDENTITY_TIMEOUT_MS,
   GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA,
   GeminiProductIdentityAnalyzer,
   GeminiProductIdentityAnalyzerError,
@@ -25,6 +26,13 @@ const assetId = '00000000-0000-4000-8000-000000000001';
 const imageBytes = await sharp({
   create: { width: 1200, height: 900, channels: 3, background: '#808080' },
 }).jpeg().toBuffer();
+
+test('runtime V3 usa timeout padrão de 60 segundos para Product Identity', () => {
+  const analyzer = new GeminiProductIdentityAnalyzer({ apiKey });
+  assert.equal(GEMINI_PRODUCT_IDENTITY_TIMEOUT_MS, 60_000);
+  assert.equal(analyzer.timeoutMs, 60_000);
+  assert.ok(analyzer.timeoutMs > 20_000);
+});
 
 function genericItem({
   id = 'item-1', typeState = 'known', type = 'generic product',
@@ -311,7 +319,7 @@ test('canonicaliza enums seguros de toda a análise usando uma única fonte can�
   assert.deepEqual(PRODUCT_IDENTITY_ENUMS.state, ['known', 'uncertain', 'unknown']);
 });
 
-test('enum semanticamente ambíguo é rejeitado e retry informa campo e valores permitidos', async () => {
+test('enum semanticamente ambíguo é rejeitado sem retry', async () => {
   const requests = [];
   const events = [];
   const secret = 'sensitive-value-that-must-not-appear';
@@ -336,21 +344,11 @@ test('enum semanticamente ambíguo é rejeitado e retry informa campo e valores 
   await assert.rejects(analyzer.analyze(analyzerInput()), {
     code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS',
   });
-  assert.equal(requests.length, 2);
-  const retryInstruction = requests[1].contents[0].parts[0].text;
-  assert.match(retryInstruction,
-    /items\[0\]\.ambiguousFeatures\[0\]\.visibility must use exactly one canonical value from \[partial, hidden\]/);
-  assert.doesNotMatch(retryInstruction, /received(?: value| token)?[:=].*visible|sensitive-value-that-must-not-appear/i);
+  assert.equal(requests.length, 1);
   assert.equal(events.length, 1);
   assert.deepEqual(events[0].attemptDiagnostics, [
     {
       attempt: 1,
-      validationField: 'items[0].ambiguousFeatures[0].visibility',
-      validationReason: 'invalid_enum', retryUsed: true,
-      normalizationApplied: false, receivedEnumToken: 'visible',
-    },
-    {
-      attempt: 2,
       validationField: 'items[0].ambiguousFeatures[0].visibility',
       validationReason: 'invalid_enum', retryUsed: false,
       normalizationApplied: false, receivedEnumToken: 'visible',
@@ -389,27 +387,25 @@ test('relativeScale desconhecido ou inválido é omitido sem abortar a identidad
   }
 });
 
-test('primeira saída inválida recebe um único retry estrito e segunda válida é aceita', async () => {
+test('saída estrutural inválida não recebe retry', async () => {
   let calls = 0;
   const requestBodies = [];
-  const valid = { state: 'known', items: [genericItem()], relationships: [] };
   const analyzer = new GeminiProductIdentityAnalyzer({
     apiKey,
     fetchImpl: async (_url, options) => {
       calls += 1;
       requestBodies.push(JSON.parse(options.body));
-      return calls === 1
-        ? geminiResponse({ state: 'known', items: 'invalid', relationships: [] })
-        : geminiResponse(valid);
+      return geminiResponse({ state: 'known', items: 'invalid', relationships: [] });
     },
   });
-  assert.equal((await analyzer.analyze(analyzerInput())).items.length, 1);
-  assert.equal(calls, 2);
+  await assert.rejects(analyzer.analyze(analyzerInput()), {
+    code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS',
+  });
+  assert.equal(calls, 1);
   assert.doesNotMatch(requestBodies[0].contents[0].parts[0].text, /Technical correction/);
-  assert.match(requestBodies[1].contents[0].parts[0].text, /Technical correction/);
 });
 
-test('duas saídas inválidas usam somente fallback canônico suficiente', async () => {
+test('saída inválida não promove fallback para Product Identity', async () => {
   let calls = 0;
   const events = [];
   const fallbackAnalysis = {
@@ -425,18 +421,16 @@ test('duas saídas inválidas usam somente fallback canônico suficiente', async
     },
     logger: { info: (event) => events.push(event) },
   });
-  const result = await analyzer.analyze({ ...analyzerInput(), fallbackAnalysis });
-  assert.equal(calls, 2);
-  assert.equal(result.items[0].id, 'confirmed-id');
-  assert.equal(result.items[0].functionalType.value, 'confirmed type');
-  assert.equal(result.items[0].quantity.value, 2);
-  assert.deepEqual(result.relationships, []);
-  assert.equal(events[0].fallbackUsed, true);
-  assert.equal(events[0].retryUsed, true);
-  assert.equal(events[0].attempt, 2);
+  await assert.rejects(analyzer.analyze({ ...analyzerInput(), fallbackAnalysis }), {
+    code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS',
+  });
+  assert.equal(calls, 1);
+  assert.equal(events[0].fallbackUsed, false);
+  assert.equal(events[0].retryUsed, false);
+  assert.equal(events[0].attempt, 1);
 });
 
-test('duas saídas inválidas e evidência insuficiente falham sem inventar identidade', async () => {
+test('saída inválida e evidência insuficiente falham sem inventar identidade', async () => {
   let calls = 0;
   const analyzer = new GeminiProductIdentityAnalyzer({
     apiKey,
@@ -449,7 +443,7 @@ test('duas saídas inválidas e evidência insuficiente falham sem inventar iden
     ...analyzerInput(),
     fallbackAnalysis: { state: 'unknown', items: [], relationships: [] },
   }), { code: 'INVALID_PRODUCT_IDENTITY_ANALYSIS' });
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
 });
 
 test('telemetria classifica validações locais sem incluir conteúdo da resposta', async (t) => {
@@ -576,18 +570,30 @@ test('rejeita JSON inválido, schema inválido e resposta excessiva', async () =
 });
 
 test('converte timeout, erro de rede e erro HTTP em erros sanitizados', async () => {
+  let timeoutCalls = 0;
+  const timeoutEvents = [];
   const timeoutAnalyzer = new GeminiProductIdentityAnalyzer({
     apiKey, timeoutMs: 5,
+    backoff: async () => {},
     fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+      timeoutCalls += 1;
       signal.addEventListener('abort', () => {
         const error = new Error('aborted');
         error.name = 'AbortError';
         reject(error);
       });
     }),
+    logger: { info: (event) => timeoutEvents.push(event) },
   });
   await assert.rejects(timeoutAnalyzer.analyze(analyzerInput()),
     (error) => error.code === 'GEMINI_TIMEOUT');
+  assert.equal(timeoutCalls, 2);
+  assert.equal(timeoutEvents.length, 1);
+  assert.equal(timeoutEvents[0].timeoutMs, 5);
+  assert.equal(timeoutEvents[0].errorCode, 'GEMINI_TIMEOUT');
+  assert.equal(timeoutEvents[0].attempt, 2);
+  assert.equal(timeoutEvents[0].retryUsed, true);
+  assert.equal(timeoutEvents[0].items, 0);
 
   const networkAnalyzer = new GeminiProductIdentityAnalyzer({
     apiKey, fetchImpl: async () => { throw new Error('sensitive network details'); },
@@ -609,6 +615,168 @@ test('converte timeout, erro de rede e erro HTTP em erros sanitizados', async ()
   assert.equal(httpCalls, 1);
 });
 
+test('retry transitório é restrito a duas tentativas e registra backoff sanitizado', async () => {
+  const valid = { state: 'known', items: [genericItem()], relationships: [] };
+  const events = [];
+  const waits = [];
+  let calls = 0;
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    random: () => 0.5,
+    backoff: async (ms) => waits.push(ms),
+    fetchImpl: async () => {
+      calls += 1;
+      return calls === 1
+        ? geminiResponse(null, {
+          status: 503,
+          rawText: JSON.stringify({ error: { status: 'UNAVAILABLE', message: 'high demand' } }),
+        })
+        : geminiResponse(valid);
+    },
+    logger: { info: (event) => events.push(event) },
+  });
+  assert.equal((await analyzer.analyze(analyzerInput())).items.length, 1);
+  assert.equal(calls, 2);
+  assert.deepEqual(waits, [2250]);
+  assert.equal(events[0].attempt, 2);
+  assert.equal(events[0].maxAttempts, 2);
+  assert.equal(events[0].retryUsed, true);
+  assert.equal(events[0].retryReason, 'HTTP_503');
+  assert.equal(events[0].backoffMs, 2250);
+  assert.equal(events[0].timeoutMs, 60_000);
+  assert.equal(typeof events[0].totalLatencyMs, 'number');
+});
+
+test('timeout transitório pode obter sucesso somente na segunda tentativa', async () => {
+  let calls = 0;
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey, timeoutMs: 5, backoff: async () => {}, random: () => 0,
+    fetchImpl: async (_url, { signal }) => {
+      calls += 1;
+      if (calls === 2) {
+        return geminiResponse({ state: 'known', items: [genericItem()], relationships: [] });
+      }
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true }));
+    },
+  });
+  assert.equal((await analyzer.analyze(analyzerInput())).items.length, 1);
+  assert.equal(calls, 2);
+});
+
+test('HTTP não transitório e segunda falha transitória não excedem o máximo', async () => {
+  let badRequestCalls = 0;
+  const badRequest = new GeminiProductIdentityAnalyzer({
+    apiKey, backoff: async () => {},
+    fetchImpl: async () => {
+      badRequestCalls += 1;
+      return geminiResponse(null, { status: 400, rawText: '{}' });
+    },
+  });
+  await assert.rejects(badRequest.analyze(analyzerInput()), { code: 'GEMINI_HTTP_ERROR' });
+  assert.equal(badRequestCalls, 1);
+
+  let unavailableCalls = 0;
+  const unavailable = new GeminiProductIdentityAnalyzer({
+    apiKey, backoff: async () => {},
+    fetchImpl: async () => {
+      unavailableCalls += 1;
+      return geminiResponse(null, { status: 503, rawText: '{}' });
+    },
+  });
+  await assert.rejects(unavailable.analyze(analyzerInput()), { code: 'GEMINI_HTTP_ERROR' });
+  assert.equal(unavailableCalls, 2);
+});
+
+test('cache de sucesso respeita hit, TTL, limite e não armazena falhas', async () => {
+  let now = 1_000;
+  let calls = 0;
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey, cacheTtlMs: 10, cacheMaxEntries: 2, now: () => now,
+    backoff: async () => {},
+    fetchImpl: async () => {
+      calls += 1;
+      return geminiResponse({ state: 'known', items: [genericItem()], relationships: [] });
+    },
+  });
+  const withHash = (character) => ({ ...analyzerInput(), cacheKey: character.repeat(64) });
+  await analyzer.analyze(withHash('a'));
+  const cached = await analyzer.analyze(withHash('a'));
+  assert.equal(calls, 1);
+  assert.throws(() => { cached.items.push(genericItem()); }, TypeError);
+  now += 11;
+  await analyzer.analyze(withHash('a'));
+  assert.equal(calls, 2);
+  await analyzer.analyze(withHash('b'));
+  await analyzer.analyze(withHash('c'));
+  await analyzer.analyze(withHash('a'));
+  assert.equal(calls, 5);
+
+  let failedCalls = 0;
+  const failed = new GeminiProductIdentityAnalyzer({
+    apiKey, backoff: async () => {},
+    fetchImpl: async () => {
+      failedCalls += 1;
+      return failedCalls <= 2
+        ? geminiResponse(null, { status: 503, rawText: '{}' })
+        : geminiResponse({ state: 'known', items: [genericItem()], relationships: [] });
+    },
+  });
+  await assert.rejects(failed.analyze(withHash('d')), { code: 'GEMINI_HTTP_ERROR' });
+  await failed.analyze(withHash('d'));
+  assert.equal(failedCalls, 3);
+});
+
+test('requisições simultâneas do mesmo hash compartilham in-flight', async () => {
+  let calls = 0;
+  let release;
+  const responseReady = new Promise((resolve) => { release = resolve; });
+  const events = [];
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => {
+      calls += 1;
+      await responseReady;
+      return geminiResponse({ state: 'known', items: [genericItem()], relationships: [] });
+    },
+    logger: { info: (event) => events.push(event) },
+  });
+  const input = { ...analyzerInput(), cacheKey: 'e'.repeat(64) };
+  const first = analyzer.analyze(input);
+  const second = analyzer.analyze(input);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a, b);
+  assert.equal(calls, 1);
+  assert.ok(events.some(({ inFlightShared }) => inFlightShared === true));
+});
+
+test('cancelamento durante backoff impede segunda chamada', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async () => {
+      calls += 1;
+      return geminiResponse(null, { status: 503, rawText: '{}' });
+    },
+    backoff: async (_ms, { signal }) => {
+      controller.abort();
+      assert.equal(signal.aborted, true);
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      throw error;
+    },
+  });
+  await assert.rejects(analyzer.analyze({ ...analyzerInput(), signal: controller.signal }), {
+    code: 'GEMINI_TIMEOUT',
+  });
+  assert.equal(calls, 1);
+});
+
 test('logging contém somente metadados sanitizados', async () => {
   const events = [];
   const analyzer = new GeminiProductIdentityAnalyzer({
@@ -624,6 +792,7 @@ test('logging contém somente metadados sanitizados', async () => {
   }]);
   assert.equal(events[0].errorCode, null);
   assert.equal(events[0].statusHttp, 200);
+  assert.equal(events[0].timeoutMs, GEMINI_PRODUCT_IDENTITY_TIMEOUT_MS);
   assert.equal(events[0].inputCount, 1);
   assert.equal(events[0].state, 'unknown');
   assert.equal(events[0].items, 0);
@@ -713,6 +882,7 @@ test('telemetria distingue todas as categorias de falha Gemini', async (t) => {
       name: 'timeout', code: 'GEMINI_TIMEOUT', statusHttp: null,
       options: {
         apiKey, timeoutMs: 5,
+        backoff: async () => {},
         fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
           signal.addEventListener('abort', () => {
             const error = new Error('aborted');

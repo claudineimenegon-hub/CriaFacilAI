@@ -236,6 +236,120 @@ function humanInteraction(direction, semantics) {
   return Object.freeze({ presence: 'none', mode: 'forbidden', usageDescription: null });
 }
 
+function stableIdCompare(left, right) {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function evidenceCountByItem(entries, field = 'itemId') {
+  const counts = new Map();
+  for (const entry of entries ?? []) {
+    const itemId = entry?.[field];
+    if (typeof itemId === 'string') counts.set(itemId, (counts.get(itemId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export function selectDeterministicV3RoleItems(productIdentity) {
+  const critical = evidenceCountByItem(productIdentity.criticalFeatures);
+  const components = evidenceCountByItem(productIdentity.structuralComponents, 'parentItemId');
+  const observedEvidence = evidenceCountByItem(productIdentity.observedFeatureEvidence);
+  const observedStrings = new Map(productIdentity.items.map(({ id }) => [id,
+    (productIdentity.observedFeatures ?? []).filter((feature) =>
+      typeof feature === 'string' && feature.startsWith(`${id}:`)).length]));
+  const ranked = [...productIdentity.items].sort((left, right) =>
+    (critical.get(right.id) ?? 0) - (critical.get(left.id) ?? 0) ||
+    (components.get(right.id) ?? 0) - (components.get(left.id) ?? 0) ||
+    ((observedEvidence.get(right.id) ?? observedStrings.get(right.id) ?? 0) -
+      (observedEvidence.get(left.id) ?? observedStrings.get(left.id) ?? 0)) ||
+    stableIdCompare(left, right));
+  const editorialSelectedIds = Object.freeze([ranked[0].id]);
+  const editorialId = editorialSelectedIds[0];
+  const atomic = productIdentity.relationships
+    .filter(({ type, itemIds }) => /pair|atomic/i.test(type) && itemIds.length > 0)
+    .map((relationship) => ({
+      ...relationship,
+      stableKey: [...relationship.itemIds].sort().join('|'),
+      overlapsEditorial: relationship.itemIds.includes(editorialId),
+    }))
+    .sort((left, right) => Number(left.overlapsEditorial) - Number(right.overlapsEditorial) ||
+      (left.stableKey < right.stableKey ? -1 : left.stableKey > right.stableKey ? 1 : 0));
+  let conceptualSelectedIds;
+  let conceptualStrategy;
+  if (atomic.length > 0) {
+    conceptualSelectedIds = [...atomic[0].itemIds];
+    conceptualStrategy = 'complete_atomic_relationship';
+  } else {
+    const alternativesFirst = [...productIdentity.items].sort((left, right) =>
+      Number(left.id === editorialId) - Number(right.id === editorialId) || stableIdCompare(left, right));
+    const totalUnits = productIdentity.items.reduce((sum, { quantity }) => sum + quantity, 0);
+    conceptualSelectedIds = alternativesFirst.length >= 2
+      ? alternativesFirst.slice(0, 2).map(({ id }) => id)
+      : [alternativesFirst[0].id];
+    conceptualStrategy = totalUnits === 1 ? 'single_global_unit' : 'independent_canonical_units';
+  }
+  return Object.freeze({
+    editorialSelectedIds,
+    conceptualSelectedIds: Object.freeze(conceptualSelectedIds),
+    selectionStrategy: Object.freeze({
+      editorial: 'critical_features_then_structural_components_then_observed_features_then_canonical_id',
+      conceptual: conceptualStrategy,
+    }),
+    selectionDeterministic: true,
+  });
+}
+
+function pairPolicyForSelection(productIdentity, selectedIds) {
+  const selected = new Set(selectedIds);
+  return productIdentity.relationships.some(({ type, itemIds }) =>
+    /pair|atomic/i.test(type) && itemIds.length === selected.size && itemIds.every((id) => selected.has(id)))
+    ? 'preserve_pair' : 'not_selected';
+}
+
+function applySelectionToBrief(brief, productIdentity, selectedIds, role) {
+  const canonical = new Map(productIdentity.items.map((item) => [item.id, item]));
+  const requiredVisibleItems = selectedIds.map((id) => ({ itemId: id, quantity: canonical.get(id).quantity }));
+  const heroItemIds = [requiredVisibleItems[0].itemId];
+  const supportingItemIds = requiredVisibleItems.slice(1).map(({ itemId }) => itemId);
+  const pairPolicy = pairPolicyForSelection(productIdentity, selectedIds);
+  const presentationScope = role === 'editorial_craft_detail'
+    ? 'single_item_detail'
+    : requiredVisibleItems.length === 1 && requiredVisibleItems[0].quantity === 1
+      ? 'single_item_detail' : 'selected_subset';
+  return {
+    ...brief,
+    productPresentation: {
+      ...brief.productPresentation,
+      heroItemIds,
+      supportingItemIds,
+      requiredVisibleItems,
+      optionalVisibleItems: [],
+      presentationScope,
+    },
+    visibilityIntent: {
+      ...brief.visibilityIntent,
+      mode: role === 'editorial_craft_detail' ? 'single_item_detail' : 'selective_concept',
+      heroItemIds,
+      requiredVisibleItems,
+      optionalVisibleItems: [],
+      pairPolicy,
+    },
+  };
+}
+
+export function applyDeterministicV3RoleSelection(rawBriefs, productIdentity) {
+  const selection = selectDeterministicV3RoleItems(productIdentity);
+  const briefs = rawBriefs.map((brief) => {
+    if (brief.campaignRole === 'editorial_craft_detail') {
+      return applySelectionToBrief(brief, productIdentity, selection.editorialSelectedIds, brief.campaignRole);
+    }
+    if (brief.campaignRole === 'concept_campaign') {
+      return applySelectionToBrief(brief, productIdentity, selection.conceptualSelectedIds, brief.campaignRole);
+    }
+    return brief;
+  });
+  return Object.freeze({ briefs, ...selection });
+}
+
 function semanticAnatomicalAnchor(item) {
   const type = item.functionalType.toLowerCase();
   const anchors = [
@@ -253,21 +367,22 @@ function semanticAnatomicalAnchor(item) {
 }
 
 function visibilityFor(role, identity) {
-  const atomicRelationship = role === 'concept_campaign'
-    ? identity.relationships.find(({ type }) => /pair|atomic/i.test(type)) : null;
-  const selectedIds = role === 'concept_campaign'
-    ? new Set(atomicRelationship?.itemIds ?? [identity.items[0].id]) : null;
-  const requiredVisibleItems = identity.items
-    .filter(({ id }) => selectedIds == null || selectedIds.has(id))
-    .map(({ id, quantity }) => ({ itemId: id, quantity }));
+  const deterministic = selectDeterministicV3RoleItems(identity);
+  const roleSelectedIds = role === 'editorial_craft_detail'
+    ? deterministic.editorialSelectedIds
+    : role === 'concept_campaign' ? deterministic.conceptualSelectedIds : null;
+  const canonical = new Map(identity.items.map((item) => [item.id, item]));
+  const requiredVisibleItems = roleSelectedIds == null
+    ? identity.items.map(({ id, quantity }) => ({ itemId: id, quantity }))
+    : roleSelectedIds.map((id) => ({ itemId: id, quantity: canonical.get(id).quantity }));
   return Object.freeze({
     mode: role === 'contextual_lifestyle' ? 'contextual_use'
       : role === 'concept_campaign' ? 'selective_concept' : 'full_identity',
     requiredVisibleItems: Object.freeze(requiredVisibleItems), optionalVisibleItems: Object.freeze([]),
     heroItemIds: Object.freeze([requiredVisibleItems[0].itemId]),
-    pairPolicy: atomicRelationship ? 'preserve_pair'
-      : role === 'concept_campaign' ? 'not_selected'
-        : identity.relationships.some(({ type }) => /pair/i.test(type)) ? 'preserve_pair' : 'not_applicable',
+    pairPolicy: ['editorial_craft_detail', 'concept_campaign'].includes(role)
+      ? pairPolicyForSelection(identity, roleSelectedIds)
+      : identity.relationships.some(({ type }) => /pair/i.test(type)) ? 'preserve_pair' : 'not_applicable',
   });
 }
 
@@ -330,12 +445,13 @@ export function createDeterministicCreativeDirectorV3Model() {
             requiredVisibleItems: visibilityIntent.requiredVisibleItems,
             optionalVisibleItems: visibilityIntent.optionalVisibleItems,
             presentationMode: direction.presentationMode,
-            presentationScope: direction.campaignRole === 'concept_campaign'
-              ? (identity.relationships.some(({ type, itemIds }) => /pair|atomic/i.test(type) &&
-                  itemIds.length === visibilityIntent.requiredVisibleItems.length &&
-                  itemIds.every((id) => visibilityIntent.requiredVisibleItems.some(({ itemId }) => itemId === id)))
-                  ? 'selected_subset' : 'single_item_detail')
-              : 'complete_set',
+            presentationScope: direction.campaignRole === 'editorial_craft_detail'
+              ? 'single_item_detail'
+              : direction.campaignRole === 'concept_campaign'
+                ? (visibilityIntent.requiredVisibleItems.length === 1 &&
+                    visibilityIntent.requiredVisibleItems[0].quantity === 1
+                    ? 'single_item_detail' : 'selected_subset')
+                : 'complete_set',
           },
           visibilityIntent,
           humanInteraction: Object.freeze({ ...human, ...humanPlan }),
@@ -453,13 +569,14 @@ function validateConceptSelection(brief, identity, selected) {
   const exactAtomicMatches = identity.relationships.filter(({ type, itemIds }) =>
     /pair|atomic/i.test(type) && itemIds.length === selected.size &&
     itemIds.every((itemId) => selected.has(itemId)));
-  if (selected.size !== 1 && exactAtomicMatches.length !== 1) {
-    fail('INVALID_V3_OUTPUT', 'Concept campaign must select exactly one canonical item or one complete atomic relationship.');
+  const globalUnits = identity.items.reduce((sum, { quantity }) => sum + quantity, 0);
+  const selectedUnits = identity.items.filter(({ id }) => selected.has(id))
+    .reduce((sum, { quantity }) => sum + quantity, 0);
+  if (exactAtomicMatches.length === 0 && globalUnits > 1 && selectedUnits < 2) {
+    fail('INVALID_V3_OUTPUT', 'Concept campaign must select an atomic relationship or at least two canonical units when available.');
   }
-  const selectedTypes = new Set(identity.items
-    .filter(({ id }) => selected.has(id)).map(({ functionalType }) => functionalType));
-  if (selectedTypes.size > 1) {
-    fail('INVALID_V3_OUTPUT', 'Concept campaign cannot mix different canonical functional types.');
+  if (globalUnits === 1 && selectedUnits !== 1) {
+    fail('INVALID_V3_OUTPUT', 'Single-unit inventory must remain exactly one conceptual unit.');
   }
 }
 
@@ -621,10 +738,15 @@ export async function runCreativeDirectorV3({ input, modelAdapter }) {
   const normalizedInput = validateCreativeDirectorV3Input(input);
   const startedAt = Date.now();
   const rawBriefs = await modelAdapter.generate(normalizedInput);
-  const briefs = validateCreativeDirectorV3Output(rawBriefs, normalizedInput);
+  const selection = applyDeterministicV3RoleSelection(rawBriefs, normalizedInput.productIdentity);
+  const briefs = validateCreativeDirectorV3Output(selection.briefs, normalizedInput);
   return Object.freeze({
     creativeDirectorVersion: 'v3-experimental', modelAdapterName: text(modelAdapter.name, 'modelAdapter.name'),
     latencyMs: Date.now() - startedAt, proposalCount: briefs.length,
     schemaValid: true, diversityValid: true, fallback: modelAdapter.name.includes('deterministic'), briefs,
+    editorialSelectedIds: selection.editorialSelectedIds,
+    conceptualSelectedIds: selection.conceptualSelectedIds,
+    selectionStrategy: selection.selectionStrategy,
+    selectionDeterministic: true,
   });
 }

@@ -9,7 +9,11 @@ import { prepareGeminiAnalysisImages } from './gemini-analysis-preprocessor.mjs'
 export const DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL = 'gemini-3.5-flash-lite';
 export const GEMINI_GENERATE_CONTENT_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/models';
-const DEFAULT_TIMEOUT_MS = 20_000;
+export const GEMINI_PRODUCT_IDENTITY_TIMEOUT_MS = 60_000;
+export const GEMINI_PRODUCT_IDENTITY_MAX_ATTEMPTS = 2;
+export const GEMINI_PRODUCT_IDENTITY_CACHE_TTL_MS = 5 * 60_000;
+export const GEMINI_PRODUCT_IDENTITY_CACHE_MAX_ENTRIES = 100;
+export const GEMINI_PRODUCT_IDENTITY_CACHE_KEY_VERSION = 'product-identity-v3-policy-1';
 const MAX_HTTP_RESPONSE_BYTES = 128 * 1024;
 // The Gemini response schema intentionally contains only its supported structural
 // subset. All limits, enums and cross-field invariants remain locally authoritative.
@@ -249,13 +253,6 @@ function normalizeStructuredAnalysis(value) {
   return { analysis: clone, applied, invalidEnums };
 }
 
-function isSafeFallbackAnalysis(analysis) {
-  return analysis.state !== 'unknown' && analysis.items.length > 0 && analysis.items.every((item) =>
-    item.functionalType.state !== 'unknown' && typeof item.functionalType.value === 'string' &&
-    item.quantity.state !== 'unknown' && Number.isSafeInteger(item.quantity.value) &&
-    item.quantity.value > 0);
-}
-
 function validationDiagnostics(error) {
   if (error?.code !== 'INVALID_PRODUCT_IDENTITY_ANALYSIS') return {};
   const message = typeof error.message === 'string' ? error.message : '';
@@ -321,14 +318,48 @@ function safeGeminiUpstreamDiagnostics(rawResponse) {
   }
 }
 
+function abortError() {
+  const error = new Error('Operation aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function defaultBackoff(ms, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(abortError());
+    }, { once: true });
+  });
+}
+
+function transientRetryReason(error) {
+  if (error?.code === 'GEMINI_TIMEOUT') return 'GEMINI_TIMEOUT';
+  if (error?.code !== 'GEMINI_HTTP_ERROR') return undefined;
+  if ([429, 502, 503, 504].includes(error.statusHttp)) return `HTTP_${error.statusHttp}`;
+  if (error.upstreamStatus === 'UNAVAILABLE') return 'UPSTREAM_UNAVAILABLE';
+  return undefined;
+}
+
+function safeValidatedCopy(analysis) {
+  return validateProductIdentityAnalysis(structuredClone(analysis));
+}
+
 export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
   constructor({
     apiKey = process.env.GEMINI_API_KEY,
     model = process.env.PRODUCT_IDENTITY_ANALYZER_MODEL ??
       DEFAULT_GEMINI_PRODUCT_IDENTITY_MODEL,
     fetchImpl = globalThis.fetch,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
+    timeoutMs = GEMINI_PRODUCT_IDENTITY_TIMEOUT_MS,
     prepareInputs = prepareGeminiAnalysisImages,
+    backoff = defaultBackoff,
+    random = Math.random,
+    cacheTtlMs = GEMINI_PRODUCT_IDENTITY_CACHE_TTL_MS,
+    cacheMaxEntries = GEMINI_PRODUCT_IDENTITY_CACHE_MAX_ENTRIES,
+    now = Date.now,
     logger,
   } = {}) {
     super();
@@ -337,18 +368,70 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
     this.prepareInputs = prepareInputs;
+    this.backoff = backoff;
+    this.random = random;
+    this.cacheTtlMs = cacheTtlMs;
+    this.cacheMaxEntries = cacheMaxEntries;
+    this.now = now;
     this.logger = logger;
+    this.successCache = new Map();
+    this.inFlight = new Map();
   }
 
   get isConfigured() {
     return typeof this.apiKey === 'string' && this.apiKey.trim().length > 0;
   }
 
-  async analyze({ inputs, declaredCategory, userBrief, cacheKey, fallbackAnalysis } = {}) {
-    void cacheKey;
+  async analyze(options = {}) {
+    const sourceHash = typeof options.cacheKey === 'string' && /^[a-f0-9]{64}$/i.test(options.cacheKey)
+      ? options.cacheKey : undefined;
+    if (!sourceHash) return this.#analyzeUncached(options, { cacheHit: false, inFlightShared: false });
+    const compositeKey = `${GEMINI_PRODUCT_IDENTITY_CACHE_KEY_VERSION}:${this.model}:${sourceHash}`;
+    const cached = this.successCache.get(compositeKey);
+    if (cached && cached.expiresAt > this.now()) {
+      this.logger?.info?.({
+        component: 'ProductIdentityAnalyzer', provider: 'gemini', model: this.model,
+        errorCode: null, statusHttp: null, timeoutMs: this.timeoutMs, latencyMs: 0,
+        totalLatencyMs: 0, attempt: 0, maxAttempts: GEMINI_PRODUCT_IDENTITY_MAX_ATTEMPTS,
+        retryUsed: false, retryReason: null, backoffMs: 0, cacheHit: true,
+        cacheKeyVersion: GEMINI_PRODUCT_IDENTITY_CACHE_KEY_VERSION, inFlightShared: false,
+        state: cached.analysis.state, items: cached.analysis.items.length,
+        relationships: cached.analysis.relationships.length, fallback: false,
+      });
+      return safeValidatedCopy(cached.analysis);
+    }
+    if (cached) this.successCache.delete(compositeKey);
+    const active = this.inFlight.get(compositeKey);
+    if (active) {
+      this.logger?.info?.({
+        component: 'ProductIdentityAnalyzer', provider: 'gemini', model: this.model,
+        errorCode: null, statusHttp: null, timeoutMs: this.timeoutMs, latencyMs: 0,
+        totalLatencyMs: 0, attempt: 0, maxAttempts: GEMINI_PRODUCT_IDENTITY_MAX_ATTEMPTS,
+        retryUsed: false, retryReason: null, backoffMs: 0, cacheHit: false,
+        cacheKeyVersion: GEMINI_PRODUCT_IDENTITY_CACHE_KEY_VERSION, inFlightShared: true,
+      });
+      return safeValidatedCopy(await active);
+    }
+    const pending = this.#analyzeUncached(options, { cacheHit: false, inFlightShared: false })
+      .then((analysis) => {
+        const stored = safeValidatedCopy(analysis);
+        this.successCache.set(compositeKey, {
+          analysis: stored, expiresAt: this.now() + this.cacheTtlMs,
+        });
+        while (this.successCache.size > this.cacheMaxEntries) {
+          this.successCache.delete(this.successCache.keys().next().value);
+        }
+        return stored;
+      })
+      .finally(() => this.inFlight.delete(compositeKey));
+    this.inFlight.set(compositeKey, pending);
+    return safeValidatedCopy(await pending);
+  }
+
+  async #analyzeUncached({
+    inputs, declaredCategory, userBrief, signal,
+  } = {}, cacheTelemetry = {}) {
     const startedAt = performance.now();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const endpoint = `${GEMINI_GENERATE_CONTENT_BASE_URL}/${encodeURIComponent(this.model)}:generateContent`;
     let outcome = { statusHttp: null, fallback: true };
     let terminalError;
@@ -356,9 +439,10 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     let attemptCount = 0;
     let normalizationApplied = false;
     let retryUsed = false;
+    let retryReason = null;
+    let backoffMs = 0;
     let fallbackUsed = false;
     const attemptDiagnostics = [];
-    let retryCorrection;
     try {
       if (!this.isConfigured) {
         throw new GeminiProductIdentityAnalyzerError(
@@ -378,8 +462,12 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         );
       }
       let recoverableError;
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
+      for (let attempt = 1; attempt <= GEMINI_PRODUCT_IDENTITY_MAX_ATTEMPTS; attempt += 1) {
         attemptCount = attempt;
+        const controller = new AbortController();
+        const onExternalAbort = () => controller.abort();
+        signal?.addEventListener('abort', onExternalAbort, { once: true });
+        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
         const requestBody = {
           contents: [{
             role: 'user',
@@ -387,9 +475,6 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
               {
                 text: [
                   analysisInstruction,
-                  ...(attempt === 2 ? [
-                    retryCorrection ?? 'Technical correction: return exactly the schema fields and types; do not wrap, rename, add, or omit fields.',
-                  ] : []),
                   `Declared category (context only, not evidence): ${String(declaredCategory ?? 'unknown').slice(0, 80)}`,
                   `User brief (context only, not evidence): ${String(userBrief ?? '').slice(0, 4000)}`,
                 ].join('\n'),
@@ -408,6 +493,7 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
             },
           },
         };
+        try {
         const response = await this.fetchImpl(endpoint, {
           method: 'POST',
           headers: {
@@ -430,10 +516,11 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
             'GEMINI_RESPONSE_TOO_LARGE', 'Product identity response exceeded the safe limit.',
           );
         }
-        if (!response.ok) {
+          if (!response.ok) {
           const diagnostics = safeGeminiUpstreamDiagnostics(rawResponse);
-          const httpError = new GeminiProductIdentityAnalyzerError(
+            const httpError = new GeminiProductIdentityAnalyzerError(
             'GEMINI_HTTP_ERROR', 'Product identity provider request failed.',
+            { statusHttp: response.status },
           );
           Object.assign(httpError, diagnostics);
           throw httpError;
@@ -465,42 +552,39 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
           const diagnostics = validationDiagnostics(recoverableError);
           const invalidEnum = diagnostics.validationField
             ? invalidEnums.find(({ path }) => path === diagnostics.validationField) : undefined;
-          const willRetry = attempt === 1;
           attemptDiagnostics.push(Object.freeze({
             attempt,
             validationField: diagnostics.validationField ?? 'response',
             validationReason: diagnostics.validationReason ??
               (recoverableError.code === 'GEMINI_INVALID_JSON' ? 'invalid_json' : 'other_allowlisted_reason'),
-            retryUsed: willRetry,
+            retryUsed: false,
             normalizationApplied: attemptNormalizationApplied,
             ...(invalidEnum?.receivedEnumToken
               ? { receivedEnumToken: invalidEnum.receivedEnumToken } : {}),
           }));
-          if (attempt === 1) {
+          throw recoverableError;
+        }
+        } catch (error) {
+          let attemptError = error;
+          if (error?.name === 'AbortError') {
+            attemptError = new GeminiProductIdentityAnalyzerError(
+              'GEMINI_TIMEOUT', 'Product identity provider timed out.',
+            );
+          }
+          const reason = transientRetryReason(attemptError);
+          if (reason && attempt < GEMINI_PRODUCT_IDENTITY_MAX_ATTEMPTS && !signal?.aborted) {
             retryUsed = true;
-            retryCorrection = diagnostics.validationField && diagnostics.allowedEnumValues
-              ? `Technical correction: field ${diagnostics.validationField} must use exactly one canonical value from [${diagnostics.allowedEnumValues.join(', ')}]. Return exactly the schema fields and types; do not wrap, rename, add, or omit fields.`
-              : 'Technical correction: return exactly the schema fields and types; do not wrap, rename, add, or omit fields.';
+            retryReason = reason;
+            backoffMs = Math.round(1_500 + Math.max(0, Math.min(1, this.random())) * 1_500);
+            clearTimeout(timeout);
+            signal?.removeEventListener('abort', onExternalAbort);
+            await this.backoff(backoffMs, { signal });
             continue;
           }
-        }
-      }
-      if (fallbackAnalysis !== undefined) {
-        try {
-          const validatedFallback = validateProductIdentityAnalysis(fallbackAnalysis);
-          if (isSafeFallbackAnalysis(validatedFallback)) {
-            fallbackUsed = true;
-            outcome = {
-              statusHttp: outcome.statusHttp,
-              fallback: true,
-              state: validatedFallback.state,
-              items: validatedFallback.items.length,
-              relationships: validatedFallback.relationships.length,
-            };
-            return validatedFallback;
-          }
-        } catch {
-          // Invalid or incomplete evidence is never promoted into a product identity.
+          throw attemptError;
+        } finally {
+          clearTimeout(timeout);
+          signal?.removeEventListener('abort', onExternalAbort);
         }
       }
       throw recoverableError;
@@ -527,14 +611,15 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
       terminalError = normalizedError;
       throw normalizedError;
     } finally {
-      clearTimeout(timeout);
       const event = {
         component: 'ProductIdentityAnalyzer',
         provider: 'gemini',
         model: this.model,
         errorCode: terminalError?.code ?? null,
         statusHttp: outcome.statusHttp,
+        timeoutMs: this.timeoutMs,
         latencyMs: Math.round(performance.now() - startedAt),
+        totalLatencyMs: Math.round(performance.now() - startedAt),
         inputCount: Array.isArray(inputs) ? inputs.length : 0,
         inputs: Array.isArray(preparedInputs) ? sanitizedInputMetadata(preparedInputs) : [],
         state: outcome.state ?? 'unknown',
@@ -542,8 +627,14 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         relationships: outcome.relationships ?? 0,
         fallback: outcome.fallback,
         attempt: attemptCount,
+        maxAttempts: GEMINI_PRODUCT_IDENTITY_MAX_ATTEMPTS,
         normalizationApplied,
         retryUsed,
+        retryReason,
+        backoffMs,
+        cacheHit: cacheTelemetry.cacheHit === true,
+        cacheKeyVersion: GEMINI_PRODUCT_IDENTITY_CACHE_KEY_VERSION,
+        inFlightShared: cacheTelemetry.inFlightShared === true,
         fallbackUsed,
         finalState: outcome.state ?? 'unknown',
         itemCount: outcome.items ?? 0,

@@ -334,6 +334,13 @@ export function createExperimentalV3GenerationService({
         logger: effectiveLogger,
       });
       const briefs = direction.briefs;
+      effectiveLogger.info({
+        component: 'ExperimentalV3DeterministicRoleSelection',
+        editorialSelectedIds: direction.editorialSelectedIds,
+        conceptualSelectedIds: direction.conceptualSelectedIds,
+        selectionStrategy: direction.selectionStrategy,
+        selectionDeterministic: direction.selectionDeterministic === true,
+      });
       const lifestyle = briefs.find(({ campaignRole }) => campaignRole === 'contextual_lifestyle');
       effectiveLogger.info({
         component: 'ExperimentalV3LifestylePolicy',
