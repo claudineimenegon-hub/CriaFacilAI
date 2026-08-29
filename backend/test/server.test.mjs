@@ -121,6 +121,30 @@ test('endpoint experimental V3 devolve quatro resultados consumíveis sem creden
   assert.equal(JSON.stringify(body).includes('Authorization'), false);
 });
 
+test('endpoint V3 de análise devolve IDs canônicos originados no backend', async () => {
+  const calls = [];
+  const expected = {
+    items: [{ id: 'canonical-product', functionalType: 'generic product', quantity: 1 }],
+    source: {
+      assetId: transformAssetId, mimeType: 'image/png', width: 600, height: 600,
+      sha256: 'a'.repeat(64),
+    },
+  };
+  const baseUrl = await start({
+    experimentalV3Service: {
+      async analyze(payload) { calls.push(payload); return expected; },
+      async generate() { throw new Error('must not generate'); },
+    },
+  });
+  const response = await fetch(`${baseUrl}/api/experimental/v3/analyze`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputAssetId: transformAssetId, category: 'general', objective: 'Campanha premium', aspectRatio: '1:1' }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.deepEqual((await response.json()).inventory, expected);
+});
+
 test('geração responde 503 sem chave e não chama o provedor', async () => {
   let called = false;
   const baseUrl = await start({

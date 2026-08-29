@@ -267,6 +267,7 @@ void main() {
         home: ProductPhotoPage(
           photoSelectionService: _FakePhotoSelectionService(),
           uploadService: upload,
+          experimentalV3GenerationService: _ControlledExperimentalV3Service(),
         ),
       ),
     );
@@ -336,6 +337,63 @@ void main() {
 
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'inventário múltiplo bloqueia geração até vincular referências isoladas',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 4000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final service = _MultiInventoryExperimentalV3Service();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ProductPhotoPage(
+            photoSelectionService: _FakePhotoSelectionService(),
+            uploadService: _HashUploadService(),
+            experimentalV3GenerationService: service,
+          ),
+        ),
+      );
+      await tester.tap(find.text('SELECIONAR FOTO'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('wearable product'),
+        400,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        find.byKey(const ValueKey('canonical-item-canonical-a')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('canonical-item-canonical-b')),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.text('GERAR 4 CAMPANHAS'),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNull,
+      );
+      for (var index = 0; index < 2; index += 1) {
+        await tester.tap(find.text('VINCULAR FOTO').first);
+        await tester.pumpAndSettle();
+      }
+      await tester.scrollUntilVisible(
+        find.text('GERAR 4 CAMPANHAS'),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNotNull,
+      );
+    },
+  );
 
   testWidgets('nova geração reinicia o cronômetro em zero', (tester) async {
     final generation = _SequencedExperimentalV3Service();
@@ -441,12 +499,50 @@ class _RetryUploadService implements AssetUploadService {
   }
 }
 
+class _HashUploadService implements AssetUploadService {
+  int calls = 0;
+  @override
+  Future<AssetReference> uploadImage({
+    required Uint8List bytes,
+    required String mimeType,
+    AssetRole role = AssetRole.product,
+  }) async {
+    calls += 1;
+    final suffix = calls.toString().padLeft(12, '0');
+    return AssetReference(
+      id: '00000000-0000-4000-8000-$suffix',
+      mediaType: AssetMediaType.image,
+      mimeType: mimeType,
+      role: role,
+      width: 1,
+      height: 1,
+      hash: calls.toRadixString(16).padLeft(64, '0'),
+      internalReference: 'asset:$suffix',
+      retentionPolicy: AssetRetentionPolicy.temporary,
+    );
+  }
+}
+
 class _ControlledExperimentalV3Service
     implements ExperimentalV3GenerationService {
   final _completer = Completer<List<ExperimentalV3ImageResult>>();
   int calls = 0;
   String? quality;
   GenerationRequest? request;
+
+  @override
+  Future<CanonicalInventory> analyzeInventory(
+    GenerationRequest request,
+  ) async => CanonicalInventory(
+    items: const [
+      CanonicalInventoryItem(
+        id: 'product-1',
+        functionalType: 'product',
+        quantity: 1,
+      ),
+    ],
+    source: request.inputs.single,
+  );
 
   void complete(List<ExperimentalV3ImageResult> results) =>
       _completer.complete(results);
@@ -458,6 +554,7 @@ class _ControlledExperimentalV3Service
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
     required String quality,
+    List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) {
     calls += 1;
     this.quality = quality;
@@ -471,6 +568,20 @@ class _SequencedExperimentalV3Service
   Completer<List<ExperimentalV3ImageResult>>? _current;
   int calls = 0;
 
+  @override
+  Future<CanonicalInventory> analyzeInventory(
+    GenerationRequest request,
+  ) async => CanonicalInventory(
+    items: const [
+      CanonicalInventoryItem(
+        id: 'product-1',
+        functionalType: 'product',
+        quantity: 1,
+      ),
+    ],
+    source: request.inputs.single,
+  );
+
   void failCurrent() => _current!.completeError(
     const ExperimentalV3GenerationException('Falha controlada.'),
   );
@@ -482,11 +593,41 @@ class _SequencedExperimentalV3Service
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
     required String quality,
+    List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) {
     calls += 1;
     _current = Completer<List<ExperimentalV3ImageResult>>();
     return _current!.future;
   }
+}
+
+class _MultiInventoryExperimentalV3Service
+    implements ExperimentalV3GenerationService {
+  @override
+  Future<CanonicalInventory> analyzeInventory(
+    GenerationRequest request,
+  ) async => CanonicalInventory(
+    items: const [
+      CanonicalInventoryItem(
+        id: 'canonical-a',
+        functionalType: 'wearable product',
+        quantity: 1,
+      ),
+      CanonicalInventoryItem(
+        id: 'canonical-b',
+        functionalType: 'paired product',
+        quantity: 2,
+      ),
+    ],
+    source: request.inputs.single,
+  );
+
+  @override
+  Future<List<ExperimentalV3ImageResult>> generateFour(
+    GenerationRequest request, {
+    required String quality,
+    List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
+  }) => throw UnimplementedError();
 }
 
 List<ExperimentalV3ImageResult> _completedCampaigns() => [

@@ -393,6 +393,109 @@ test('timeout do Analyzer encerra o V3 sem fallback ou chamada visual', async ()
   assert.equal(visualCalls, 0);
 });
 
+test('referências canônicas bloqueiam full_set contaminado e roteiam somente IDs selecionados', async () => {
+  const sourceId = assetId;
+  const isolatedA = '00000000-0000-4000-8000-00000000000a';
+  const isolatedB = '00000000-0000-4000-8000-00000000000b';
+  const hashes = { [sourceId]: '1'.repeat(64), [isolatedA]: 'a'.repeat(64), [isolatedB]: 'b'.repeat(64) };
+  const assets = new Map(Object.keys(hashes).map((id) => [id, {
+    bytes: Buffer.from(id), mimeType: 'image/png',
+    metadata: { id, hash: hashes[id], width: 640, height: 640 },
+  }]));
+  const multiAnalysis = {
+    state: 'known',
+    items: [
+      {
+        id: 'canonical-a', functionalType: { state: 'known', value: 'wearable device' },
+        quantity: { state: 'known', value: 1 }, observationCompleteness: 'complete',
+        observedFeatures: [
+          { id: 'a-1', name: 'visible structure', value: 'distinct body' },
+          { id: 'a-2', name: 'visible connector', value: 'confirmed attachment' },
+        ], ambiguousFeatures: [],
+      },
+      {
+        id: 'canonical-b', functionalType: { state: 'known', value: 'paired wearable accessory' },
+        quantity: { state: 'known', value: 2 }, observationCompleteness: 'complete',
+        observedFeatures: [{ id: 'b-1', name: 'visible structure', value: 'matching pair' }],
+        ambiguousFeatures: [],
+      },
+    ],
+    relationships: [{ type: 'pair', memberIds: ['canonical-b'], state: 'known' }],
+  };
+  const calls = [];
+  const create = () => createExperimentalV3GenerationService({
+    assetStore: { readImage: async (id) => assets.get(id) },
+    productIdentityAnalyzer: { analyze: async () => multiAnalysis },
+    creativeDirectorAdapterFactory: () => createDeterministicCreativeDirectorV3Model(),
+    imageProvider: { generate: async (input) => {
+      calls.push(input);
+      return { imageBase64: 'aW1hZ2U=' };
+    } },
+  });
+  await assert.rejects(create().generate(request()), (error) =>
+    error.code === 'CANONICAL_REFERENCE_REQUIRED' &&
+    Array.isArray(error.details?.missingCanonicalItemIds));
+  assert.equal(calls.length, 0);
+
+  const binding = (canonicalItemId, id) => ({
+    canonicalItemId, assetId: id, sourceKind: 'isolated_item', isolationState: 'isolated',
+    isolationConfidence: 1, userConfirmed: true, mimeType: 'image/png',
+    width: 640, height: 640, sha256: hashes[id],
+  });
+  const batch = await create().generate(request({ canonicalVisualAssets: [
+    binding('canonical-a', isolatedA), binding('canonical-b', isolatedB),
+  ] }));
+  assert.equal(batch.status, 'completed');
+  assert.equal(calls.length, 4);
+  const byRole = Object.fromEntries(calls.map((call) => [
+    /Campaign role: ([a-z_]+)/.exec(call.prompt)?.[1],
+    call.inputs.map(({ metadata }) => metadata.id),
+  ]));
+  assert.deepEqual(byRole.hero_commercial, [sourceId]);
+  assert.deepEqual(byRole.editorial_craft_detail, [isolatedA]);
+  assert.deepEqual(byRole.concept_campaign, [isolatedB]);
+  assert.ok(byRole.contextual_lifestyle.every((id) => [isolatedA, isolatedB].includes(id)));
+  assert.equal(Object.values(byRole).slice(1).flat().includes(sourceId), false);
+});
+
+test('referência canônica duplicada ou com SHA divergente falha antes do provider', async () => {
+  const secondAssetId = '00000000-0000-4000-8000-00000000000c';
+  const multiAnalysis = {
+    state: 'known',
+    items: [
+      { ...analysis.items[0], id: 'generic-a', quantity: { state: 'known', value: 1 } },
+      {
+        ...analysis.items[0], id: 'generic-b', quantity: { state: 'known', value: 1 },
+        observedFeatures: analysis.items[0].observedFeatures.map((feature) => ({
+          ...feature, id: `${feature.id}-b`,
+        })),
+      },
+    ], relationships: [],
+  };
+  let visualCalls = 0;
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async (id) => ({
+      bytes: sourceBytes, mimeType: 'image/jpeg',
+      metadata: { id, hash: 'a'.repeat(64), width: 100, height: 100 },
+    }) },
+    productIdentityAnalyzer: { analyze: async () => multiAnalysis },
+    creativeDirectorAdapterFactory: () => createDeterministicCreativeDirectorV3Model(),
+    imageProvider: { generate: async () => { visualCalls += 1; return { imageBase64: 'x' }; } },
+  });
+  const make = (canonicalItemId, asset = secondAssetId, sha256 = 'a'.repeat(64)) => ({
+    canonicalItemId, assetId: asset, sourceKind: 'isolated_item', isolationState: 'isolated',
+    isolationConfidence: 1, userConfirmed: true, mimeType: 'image/jpeg',
+    width: 100, height: 100, sha256,
+  });
+  await assert.rejects(instance.generate(request({ canonicalVisualAssets: [
+    make('generic-a'), make('generic-b'),
+  ] })), { code: 'INVALID_CANONICAL_VISUAL_ASSET' });
+  await assert.rejects(instance.generate(request({ canonicalVisualAssets: [
+    make('generic-a'), make('generic-b', '00000000-0000-4000-8000-00000000000d', 'b'.repeat(64)),
+  ] })), { code: 'INVALID_CANONICAL_VISUAL_ASSET' });
+  assert.equal(visualCalls, 0);
+});
+
 test('Human Presence exige contexto humano somente no Lifestyle de vestíveis', async () => {
   const cases = [
     ['jewelry', 'jewelry set', 'wearable'],

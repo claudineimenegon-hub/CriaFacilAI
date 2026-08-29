@@ -7,6 +7,7 @@ import '../../core/assets/asset_upload_service.dart';
 import '../../core/assets/data/http_asset_upload_service.dart';
 import '../../core/assets/photo_selection_service.dart';
 import '../../core/generation/generation_types.dart';
+import '../../core/generation/generation_request.dart';
 import 'data/http_experimental_v3_generation_service.dart';
 import 'domain/experimental_v3_generation_service.dart';
 import 'domain/product_photo_draft.dart';
@@ -40,11 +41,15 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   late final ExperimentalV3GenerationService _experimentalV3GenerationService;
   Uint8List? _previewBytes;
   AssetReference? _asset;
+  CanonicalInventory? _canonicalInventory;
+  final Map<String, AssetReference> _isolatedReferences = {};
   ProductCategory _category = ProductCategory.general;
   ProductVisualObjective _objective = ProductVisualObjective.premiumStudio;
   String _aspectRatio = '1:1';
   bool _isUploading = false;
   bool _isGenerating = false;
+  bool _isAnalyzingInventory = false;
+  String? _uploadingCanonicalItemId;
   late final Stopwatch _generationStopwatch;
   Timer? _generationTimer;
   Duration _generationElapsed = Duration.zero;
@@ -101,7 +106,10 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
             ? AssetRole.person
             : AssetRole.product,
       );
-      if (mounted) setState(() => _asset = asset);
+      if (mounted) {
+        setState(() => _asset = asset);
+        await _analyzeInventory(asset);
+      }
     } on AssetUploadException catch (error) {
       if (mounted) {
         setState(() {
@@ -122,43 +130,120 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   void _removeImage() => setState(() {
     _previewBytes = null;
     _asset = null;
+    _canonicalInventory = null;
+    _isolatedReferences.clear();
   });
+
+  GenerationRequest _buildRequest(AssetReference asset) =>
+      ProductPhotoDraft(
+        asset: asset,
+        category: _category,
+        objective: _objective,
+        description: _descriptionController.text,
+        aspectRatio: _aspectRatio,
+        preservationOptions: PreservationOptions(
+          preserveProduct: _preserveProduct,
+          preservePackaging: _preservePackaging,
+          preserveLabel: _preserveLabel,
+          preservePrintedText: _preserveLabel,
+          preserveLogo: _preserveLogo,
+          preserveFace: _category == ProductCategory.person && _preserveFace,
+          preserveClothing:
+              _category == ProductCategory.person && _preserveClothing,
+          preserveColors: _preserveColors,
+          preserveProportions: _preserveProportions,
+          changeBackgroundOnly: _quickMode == _QuickMode.background,
+          changeSceneOnly: _quickMode == _QuickMode.scene,
+          changeLightingOnly: _quickMode == _QuickMode.lighting,
+        ),
+      ).buildRequest(
+        idempotencyKey:
+            'product-${asset.id}-${DateTime.now().microsecondsSinceEpoch}',
+      );
+
+  Future<void> _analyzeInventory(AssetReference asset) async {
+    setState(() {
+      _isAnalyzingInventory = true;
+      _canonicalInventory = null;
+      _isolatedReferences.clear();
+    });
+    try {
+      final inventory = await _experimentalV3GenerationService.analyzeInventory(
+        _buildRequest(asset),
+      );
+      if (mounted) setState(() => _canonicalInventory = inventory);
+    } on ExperimentalV3GenerationException catch (error) {
+      if (mounted) _showMessage(error.message);
+    } finally {
+      if (mounted) setState(() => _isAnalyzingInventory = false);
+    }
+  }
+
+  Future<void> _selectIsolatedReference(CanonicalInventoryItem item) async {
+    if (_uploadingCanonicalItemId != null) return;
+    try {
+      final selected = await _photoSelectionService.selectImage();
+      if (selected == null) return;
+      final mimeType = detectSupportedImageMime(selected.bytes);
+      if (mimeType == null) {
+        throw const AssetUploadException(
+          'Selecione uma imagem PNG ou JPEG válida.',
+        );
+      }
+      setState(() => _uploadingCanonicalItemId = item.id);
+      final asset = await _uploadService.uploadImage(
+        bytes: selected.bytes,
+        mimeType: mimeType,
+        role: AssetRole.product,
+      );
+      if (asset.hash == null || asset.hash!.isEmpty) {
+        throw const AssetUploadException(
+          'O servidor não confirmou a integridade da referência.',
+        );
+      }
+      if (mounted) setState(() => _isolatedReferences[item.id] = asset);
+    } on AssetUploadException catch (error) {
+      if (mounted) _showMessage(error.message);
+    } on PhotoSelectionException catch (error) {
+      if (mounted) _showMessage(error.message);
+    } finally {
+      if (mounted) setState(() => _uploadingCanonicalItemId = null);
+    }
+  }
+
+  bool get _canonicalReferencesReady {
+    final inventory = _canonicalInventory;
+    if (inventory == null) return false;
+    return inventory.items.length == 1 ||
+        inventory.items.every(
+          (item) => _isolatedReferences.containsKey(item.id),
+        );
+  }
 
   Future<void> _generate() async {
     if (_isGenerating) return;
     final asset = _asset;
     if (asset == null) return;
-    final request =
-        ProductPhotoDraft(
-          asset: asset,
-          category: _category,
-          objective: _objective,
-          description: _descriptionController.text,
-          aspectRatio: _aspectRatio,
-          preservationOptions: PreservationOptions(
-            preserveProduct: _preserveProduct,
-            preservePackaging: _preservePackaging,
-            preserveLabel: _preserveLabel,
-            preservePrintedText: _preserveLabel,
-            preserveLogo: _preserveLogo,
-            preserveFace: _category == ProductCategory.person && _preserveFace,
-            preserveClothing:
-                _category == ProductCategory.person && _preserveClothing,
-            preserveColors: _preserveColors,
-            preserveProportions: _preserveProportions,
-            changeBackgroundOnly: _quickMode == _QuickMode.background,
-            changeSceneOnly: _quickMode == _QuickMode.scene,
-            changeLightingOnly: _quickMode == _QuickMode.lighting,
-          ),
-        ).buildRequest(
-          idempotencyKey:
-              'product-${asset.id}-${DateTime.now().microsecondsSinceEpoch}',
-        );
+    if (!_canonicalReferencesReady) {
+      _showMessage(
+        'Confirme as referências isoladas que ainda estão pendentes.',
+      );
+      return;
+    }
+    final request = _buildRequest(asset);
     _startGenerationTimer();
     try {
       final results = await _experimentalV3GenerationService.generateFour(
         request,
         quality: _experimentalQuality,
+        canonicalVisualAssets: _isolatedReferences.entries
+            .map(
+              (entry) => CanonicalVisualAssetBinding(
+                canonicalItemId: entry.key,
+                asset: entry.value,
+              ),
+            )
+            .toList(),
       );
       const expectedRoles = {
         'hero_commercial',
@@ -256,6 +341,58 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
               onRemove: _isUploading ? null : _removeImage,
             ),
             const SizedBox(height: 24),
+            if (_isAnalyzingInventory) ...[
+              const LinearProgressIndicator(),
+              const SizedBox(height: 8),
+              const Text('Analisando inventário canônico...'),
+              const SizedBox(height: 20),
+            ],
+            if (_canonicalInventory case final inventory?) ...[
+              const _SectionTitle('Referências canônicas do produto'),
+              const Text(
+                'Confirme uma foto isolada para cada produto detectado.',
+              ),
+              const SizedBox(height: 8),
+              for (final item in inventory.items)
+                ListTile(
+                  key: ValueKey('canonical-item-${item.id}'),
+                  title: Text(item.functionalType),
+                  subtitle: Text(
+                    'ID: ${item.id} · quantidade: ${item.quantity}',
+                  ),
+                  leading: Icon(
+                    inventory.items.length == 1 ||
+                            _isolatedReferences.containsKey(item.id)
+                        ? Icons.check_circle
+                        : Icons.warning_amber,
+                    color:
+                        inventory.items.length == 1 ||
+                            _isolatedReferences.containsKey(item.id)
+                        ? Colors.greenAccent
+                        : Colors.amber,
+                  ),
+                  trailing: inventory.items.length == 1
+                      ? null
+                      : TextButton(
+                          onPressed: _uploadingCanonicalItemId == null
+                              ? () => _selectIsolatedReference(item)
+                              : null,
+                          child: Text(
+                            _uploadingCanonicalItemId == item.id
+                                ? 'ENVIANDO...'
+                                : _isolatedReferences.containsKey(item.id)
+                                ? 'SUBSTITUIR'
+                                : 'VINCULAR FOTO',
+                          ),
+                        ),
+                ),
+              if (!_canonicalReferencesReady)
+                const Text(
+                  'Faltam referências isoladas. A geração permanece bloqueada.',
+                  style: TextStyle(color: Colors.amber),
+                ),
+              const SizedBox(height: 20),
+            ],
             const Text(
               'Creative Director',
               style: TextStyle(fontWeight: FontWeight.bold),
@@ -420,7 +557,12 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
             SizedBox(
               height: 56,
               child: FilledButton.icon(
-                onPressed: _asset == null || _isUploading || _isGenerating
+                onPressed:
+                    _asset == null ||
+                        _isUploading ||
+                        _isGenerating ||
+                        _isAnalyzingInventory ||
+                        !_canonicalReferencesReady
                     ? null
                     : _generate,
                 icon: _isGenerating

@@ -7,6 +7,21 @@ import 'package:meu_app/features/image/data/http_transport.dart';
 import 'package:meu_app/features/product_photo/data/http_experimental_v3_generation_service.dart';
 
 void main() {
+  test('analisa inventário e preserva IDs fornecidos pelo backend', () async {
+    final transport = _Transport();
+    final service = HttpExperimentalV3GenerationService(
+      baseUrl: 'http://api.example',
+      transport: transport,
+    );
+    final inventory = await service.analyzeInventory(_request());
+    expect(transport.uri?.path, '/api/experimental/v3/analyze');
+    expect(inventory.items.single.id, 'canonical-product');
+    expect(
+      inventory.source.hash,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+  });
+
   test('envia contrato V3 amigável e preserva sucessos parciais', () async {
     final transport = _Transport();
     final service = HttpExperimentalV3GenerationService(
@@ -64,6 +79,29 @@ class _Transport implements ImageHttpTransport {
   Future<ImageHttpResponse> postJson(Uri uri, String body) async {
     this.uri = uri;
     payload = jsonDecode(body) as Map<String, dynamic>;
+    if (uri.path.endsWith('/analyze')) {
+      return (
+        statusCode: 200,
+        body: jsonEncode({
+          'inventory': {
+            'items': [
+              {
+                'id': 'canonical-product',
+                'functionalType': 'product',
+                'quantity': 1,
+              },
+            ],
+            'source': {
+              'assetId': 'asset-1',
+              'mimeType': 'image/png',
+              'width': 600,
+              'height': 600,
+              'sha256': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            },
+          },
+        }),
+      );
+    }
     return (
       statusCode: 200,
       body: jsonEncode({

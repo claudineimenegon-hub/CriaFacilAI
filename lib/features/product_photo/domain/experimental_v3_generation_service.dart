@@ -1,6 +1,46 @@
 import 'dart:typed_data';
 
 import '../../../core/generation/generation_request.dart';
+import '../../../core/generation/generation_types.dart';
+
+class CanonicalInventoryItem {
+  const CanonicalInventoryItem({
+    required this.id,
+    required this.functionalType,
+    required this.quantity,
+  });
+  final String id;
+  final String functionalType;
+  final int quantity;
+}
+
+class CanonicalInventory {
+  const CanonicalInventory({required this.items, required this.source});
+  final List<CanonicalInventoryItem> items;
+  final AssetReference source;
+}
+
+class CanonicalVisualAssetBinding {
+  const CanonicalVisualAssetBinding({
+    required this.canonicalItemId,
+    required this.asset,
+  });
+  final String canonicalItemId;
+  final AssetReference asset;
+
+  Map<String, Object?> toJson() => {
+    'canonicalItemId': canonicalItemId,
+    'assetId': asset.id,
+    'sourceKind': 'isolated_item',
+    'isolationState': 'isolated',
+    'isolationConfidence': 1.0,
+    'userConfirmed': true,
+    'mimeType': asset.mimeType,
+    'width': asset.width,
+    'height': asset.height,
+    'sha256': asset.hash,
+  };
+}
 
 class ExperimentalV3ImageResult {
   const ExperimentalV3ImageResult({
@@ -19,9 +59,12 @@ class ExperimentalV3ImageResult {
 }
 
 abstract interface class ExperimentalV3GenerationService {
+  Future<CanonicalInventory> analyzeInventory(GenerationRequest request);
+
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
     required String quality,
+    List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   });
 }
 

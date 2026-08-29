@@ -27,6 +27,10 @@ const CATEGORY_SEMANTICS = Object.freeze({
 const ALLOWED_CATEGORIES = new Set(Object.keys(CATEGORY_SEMANTICS));
 const ALLOWED_QUALITIES = new Set(['medium', 'high']);
 const ALLOWED_RATIOS = new Set(['1:1', '4:5', '9:16', '16:9']);
+const ASSET_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
+const VISUAL_SOURCE_KINDS = new Set(['full_set', 'isolated_item']);
+const ISOLATION_STATES = new Set(['isolated', 'contaminated', 'unknown']);
 const STRUCTURAL_FEATURE_PATTERN = /\b(?:closure|clasp|connector|attachment|fasten(?:er|ing)?|buckle|strap|hinge|hook|joint|terminal|extension chain|extender|cap|fecho|fechamento|conector|engate|fixa(?:ção|cao)|fivela|alça|alca|dobradiça|dobradica|gancho|junta|junção|juncao|terminal|corrente extensora|extensor|tampa)\b/i;
 const WEARABLE_FUNCTIONAL_TYPE_PATTERN = /\b(?:ear(?:ring)?|auricular|neck(?:lace)?|upper[ -]?torso|collar|pendant|finger|hand[ -]?worn|ring|wrist|watch|bracelet|bangle|face|head[ -]?worn|eyewear|glasses|spectacles|foot(?:wear)?|shoe|boot|sneaker|wearable|garment|clothing|apparel|dress|shirt|trouser|jacket|body[ -]?compatible)\b/i;
 const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : Object.freeze({
@@ -34,12 +38,45 @@ const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : Object.freeze(
 });
 
 export class ExperimentalV3ValidationError extends Error {
-  constructor(message, { code = 'INVALID_EXPERIMENTAL_V3_REQUEST', status = 400 } = {}) {
+  constructor(message, { code = 'INVALID_EXPERIMENTAL_V3_REQUEST', status = 400, details } = {}) {
     super(message);
     this.name = 'ExperimentalV3ValidationError';
     this.code = code;
     this.status = status;
+    this.details = details;
   }
+}
+
+function validateCanonicalVisualAssetBinding(value, index) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExperimentalV3ValidationError(`Referência canônica inválida: ${index}.`);
+  }
+  const canonicalItemId = requiredText(value.canonicalItemId, `canonicalVisualAssets[${index}].canonicalItemId`, 120);
+  const assetId = requiredText(value.assetId, `canonicalVisualAssets[${index}].assetId`, 64);
+  if (!ASSET_ID_PATTERN.test(assetId) || !VISUAL_SOURCE_KINDS.has(value.sourceKind) ||
+      !ISOLATION_STATES.has(value.isolationState) || !SHA256_PATTERN.test(value.sha256) ||
+      !['image/jpeg', 'image/png'].includes(value.mimeType) ||
+      !Number.isSafeInteger(value.width) || value.width < 1 ||
+      !Number.isSafeInteger(value.height) || value.height < 1 ||
+      typeof value.userConfirmed !== 'boolean' ||
+      typeof value.isolationConfidence !== 'number' || value.isolationConfidence < 0 ||
+      value.isolationConfidence > 1) {
+    throw new ExperimentalV3ValidationError(`Referência canônica inválida: ${index}.`, {
+      code: 'INVALID_CANONICAL_VISUAL_ASSET',
+    });
+  }
+  if (value.sourceKind === 'isolated_item' &&
+      (value.isolationState !== 'isolated' || value.userConfirmed !== true)) {
+    throw new ExperimentalV3ValidationError('A referência isolada precisa ser confirmada pelo usuário.', {
+      code: 'INVALID_CANONICAL_VISUAL_ASSET',
+    });
+  }
+  return Object.freeze({
+    canonicalItemId, assetId, sourceKind: value.sourceKind,
+    isolationState: value.isolationState, isolationConfidence: value.isolationConfidence,
+    userConfirmed: value.userConfirmed, mimeType: value.mimeType,
+    width: value.width, height: value.height, sha256: value.sha256.toLowerCase(),
+  });
 }
 
 function requiredText(value, field, maxLength = 1000) {
@@ -54,7 +91,7 @@ export function validateExperimentalV3Request(payload) {
     throw new ExperimentalV3ValidationError('Solicitação experimental inválida.');
   }
   const inputAssetId = requiredText(payload.inputAssetId, 'inputAssetId', 64);
-  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(inputAssetId)) {
+  if (!ASSET_ID_PATTERN.test(inputAssetId)) {
     throw new ExperimentalV3ValidationError('Imagem de referência inválida.', { code: 'INVALID_ASSET_ID' });
   }
   if (!ALLOWED_CATEGORIES.has(payload.category)) {
@@ -74,7 +111,87 @@ export function validateExperimentalV3Request(payload) {
     description: typeof payload.description === 'string' ? payload.description.trim().slice(0, 1000) : '',
     aspectRatio: payload.aspectRatio,
     quality,
+    canonicalVisualAssets: Object.freeze((payload.canonicalVisualAssets ?? [])
+      .map(validateCanonicalVisualAssetBinding)),
   });
+}
+
+function selectedIdsForReferences(brief, productIdentity) {
+  if (brief.campaignRole === 'hero_commercial') {
+    return productIdentity.items.map(({ id }) => id);
+  }
+  if (brief.campaignRole !== 'contextual_lifestyle') {
+    return [...new Set([
+      ...brief.productPresentation.requiredVisibleItems,
+      ...brief.productPresentation.optionalVisibleItems,
+    ].map(({ itemId }) => itemId))];
+  }
+  const allocation = deriveProposalUnitAllocation({ brief, productIdentity });
+  return allocation
+    .filter(({ humanAllocated, sceneAllocated }) => humanAllocated + sceneAllocated > 0)
+    .map(({ itemId }) => itemId);
+}
+
+async function resolveCampaignReferences({
+  brief, productIdentity, request, source, assetStore, logger,
+}) {
+  const selectedCanonicalItemIds = selectedIdsForReferences(brief, productIdentity);
+  if (productIdentity.items.length === 1 || brief.campaignRole === 'hero_commercial') {
+    logger?.info?.({
+      component: 'ExperimentalV3CanonicalReferences', campaignRole: brief.campaignRole,
+      selectedCanonicalItemIds, referenceCanonicalItemIds: selectedCanonicalItemIds,
+      referenceCount: 1, isolationStates: ['contaminated'], providerCallBlocked: false,
+    });
+    return [source];
+  }
+  const isolated = request.canonicalVisualAssets.filter(({ sourceKind, isolationState, userConfirmed }) =>
+    sourceKind === 'isolated_item' && isolationState === 'isolated' && userConfirmed);
+  const byItem = new Map();
+  for (const binding of isolated) {
+    if (byItem.has(binding.canonicalItemId) ||
+        [...byItem.values()].some(({ assetId }) => assetId === binding.assetId)) {
+      throw new ExperimentalV3ValidationError('Referência canônica duplicada.', {
+        code: 'INVALID_CANONICAL_VISUAL_ASSET',
+      });
+    }
+    byItem.set(binding.canonicalItemId, binding);
+  }
+  const missingCanonicalItemIds = selectedCanonicalItemIds.filter((id) => !byItem.has(id));
+  if (missingCanonicalItemIds.length) {
+    const details = Object.freeze({
+      campaignRole: brief.campaignRole,
+      missingCanonicalItemIds,
+      reason: 'isolated_item_required',
+    });
+    logger?.info?.({
+      component: 'ExperimentalV3CanonicalReferences', campaignRole: brief.campaignRole,
+      selectedCanonicalItemIds, referenceCanonicalItemIds: [], referenceCount: 0,
+      isolationStates: [], providerCallBlocked: true,
+    });
+    throw new ExperimentalV3ValidationError('São necessárias referências isoladas para esta campanha.', {
+      code: 'CANONICAL_REFERENCE_REQUIRED', status: 409, details,
+    });
+  }
+  const references = [];
+  for (const canonicalItemId of selectedCanonicalItemIds) {
+    const binding = byItem.get(canonicalItemId);
+    const asset = await assetStore.readImage(binding.assetId);
+    if (!asset || asset.metadata?.hash !== binding.sha256 ||
+        asset.mimeType !== binding.mimeType || asset.metadata?.width !== binding.width ||
+        asset.metadata?.height !== binding.height) {
+      throw new ExperimentalV3ValidationError('Referência canônica inválida ou expirada.', {
+        code: 'INVALID_CANONICAL_VISUAL_ASSET',
+      });
+    }
+    references.push({ bytes: Buffer.from(asset.bytes), mimeType: asset.mimeType, metadata: asset.metadata });
+  }
+  logger?.info?.({
+    component: 'ExperimentalV3CanonicalReferences', campaignRole: brief.campaignRole,
+    selectedCanonicalItemIds, referenceCanonicalItemIds: selectedCanonicalItemIds,
+    referenceCount: references.length, isolationStates: selectedCanonicalItemIds.map(() => 'isolated'),
+    providerCallBlocked: false,
+  });
+  return references;
 }
 
 function evidenceValue(evidence, fallback) {
@@ -298,6 +415,36 @@ export function createExperimentalV3GenerationService({
 } = {}) {
   const effectiveLogger = logger ?? defaultLogger ?? { info() {} };
   return Object.freeze({
+    async analyze(rawRequest) {
+      const request = validateExperimentalV3Request(rawRequest);
+      const asset = await assetStore?.readImage(request.inputAssetId);
+      if (!asset) {
+        throw new ExperimentalV3ValidationError('Imagem não encontrada ou expirada.', {
+          code: 'ASSET_NOT_FOUND', status: 404,
+        });
+      }
+      if (!productIdentityAnalyzer || productIdentityAnalyzer.isConfigured === false) {
+        throw new ExperimentalV3ValidationError('A análise do produto não está configurada.', {
+          code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503,
+        });
+      }
+      const analysis = await productIdentityAnalyzer.analyze({
+        inputs: [{ bytes: Buffer.from(asset.bytes), mimeType: asset.mimeType, metadata: asset.metadata }],
+        declaredCategory: request.category,
+        userBrief: [request.objective, request.description].filter(Boolean).join('. '),
+        cacheKey: asset.metadata?.hash,
+      });
+      const input = buildCreativeDirectorV3Input({ analysis, request });
+      return Object.freeze({
+        items: input.productIdentity.items.map(({ id, functionalType, quantity }) =>
+          Object.freeze({ id, functionalType, quantity })),
+        source: Object.freeze({
+          assetId: request.inputAssetId, mimeType: asset.mimeType,
+          width: asset.metadata?.width, height: asset.metadata?.height,
+          sha256: asset.metadata?.hash,
+        }),
+      });
+    },
     async generate(rawRequest) {
       const request = validateExperimentalV3Request(rawRequest);
       const asset = await assetStore?.readImage(request.inputAssetId);
@@ -319,6 +466,12 @@ export function createExperimentalV3GenerationService({
         cacheKey: asset.metadata?.hash ?? request.inputAssetId,
       });
       const input = buildCreativeDirectorV3Input({ analysis, request });
+      const canonicalIds = new Set(input.productIdentity.items.map(({ id }) => id));
+      if (request.canonicalVisualAssets.some(({ canonicalItemId }) => !canonicalIds.has(canonicalItemId))) {
+        throw new ExperimentalV3ValidationError('Referência associada a item canônico inexistente.', {
+          code: 'INVALID_CANONICAL_VISUAL_ASSET',
+        });
+      }
       effectiveLogger.info({
         component: 'ExperimentalV3CanonicalInventory',
         analysisState: analysis.state,
@@ -334,6 +487,13 @@ export function createExperimentalV3GenerationService({
         logger: effectiveLogger,
       });
       const briefs = direction.briefs;
+      const referencesByRole = new Map(await Promise.all(briefs.map(async (brief) => [
+        brief.campaignRole,
+        await resolveCampaignReferences({
+          brief, productIdentity: input.productIdentity, request, source,
+          assetStore, logger: effectiveLogger,
+        }),
+      ])));
       effectiveLogger.info({
         component: 'ExperimentalV3DeterministicRoleSelection',
         editorialSelectedIds: direction.editorialSelectedIds,
@@ -405,7 +565,7 @@ export function createExperimentalV3GenerationService({
           });
           try {
             const image = await imageProvider.generate({
-              prompt, inputs: [source],
+              prompt, inputs: referencesByRole.get(brief.campaignRole),
               parameters: { common: {}, provider: { quality: request.quality } },
               preservation: {}, output: { ...dimensions, count: 1 },
             });
