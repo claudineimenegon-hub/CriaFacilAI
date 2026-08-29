@@ -235,6 +235,7 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
     try {
       final results = await _experimentalV3GenerationService.generateFour(
         request,
+        analysisId: _canonicalInventory!.analysisId,
         quality: _experimentalQuality,
         canonicalVisualAssets: _isolatedReferences.entries
             .map(

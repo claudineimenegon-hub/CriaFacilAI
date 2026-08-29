@@ -17,6 +17,10 @@ void main() {
     expect(transport.uri?.path, '/api/experimental/v3/analyze');
     expect(inventory.items.single.id, 'canonical-product');
     expect(
+      inventory.analysisId,
+      '00000000-0000-4000-8000-000000000099',
+    );
+    expect(
       inventory.source.hash,
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
@@ -28,12 +32,21 @@ void main() {
       baseUrl: 'http://api.example',
       transport: transport,
     );
-    final results = await service.generateFour(_request(), quality: 'high');
+    final results = await service.generateFour(
+      _request(),
+      analysisId: '00000000-0000-4000-8000-000000000099',
+      quality: 'high',
+    );
 
     expect(transport.uri?.path, '/api/experimental/v3/generate');
     expect(transport.payload, containsPair('inputAssetId', 'asset-1'));
     expect(transport.payload, containsPair('category', 'beverages'));
     expect(transport.payload, containsPair('quality', 'high'));
+    expect(
+      transport.payload,
+      containsPair('analysisId', '00000000-0000-4000-8000-000000000099'),
+    );
+    expect(transport.payload, containsPair('idempotencyKey', 'v3-request'));
     expect(transport.payload.toString(), isNot(contains('OPENAI_API_KEY')));
     expect(results, hasLength(4));
     expect(results.where((result) => result.isCompleted), hasLength(3));
@@ -84,6 +97,7 @@ class _Transport implements ImageHttpTransport {
         statusCode: 200,
         body: jsonEncode({
           'inventory': {
+            'analysisId': '00000000-0000-4000-8000-000000000099',
             'items': [
               {
                 'id': 'canonical-product',

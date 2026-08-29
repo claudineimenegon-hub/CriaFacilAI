@@ -4,6 +4,12 @@ export const OPENAI_BENCHMARK_TIMEOUT_MS = 300_000;
 const PROVIDER_NAME = 'openai-gpt-image';
 export const OPENAI_BENCHMARK_QUALITIES = Object.freeze(['medium', 'high']);
 const MAX_INPUT_BYTES = 20 * 1024 * 1024;
+export const OPENAI_GPT_IMAGE_CAPABILITIES = Object.freeze({
+  maxInputImages: 4,
+  acceptedMimeTypes: Object.freeze(['image/jpeg', 'image/png']),
+  maxBytesPerInput: MAX_INPUT_BYTES,
+  supportsMultipleInputs: true,
+});
 const MAX_RESULT_BASE64_LENGTH = 40 * 1024 * 1024;
 const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : console;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -122,7 +128,8 @@ function validateRequest(request) {
   if (typeof request?.prompt !== 'string' || request.prompt.trim().length < 3) {
     throw providerError('A benchmark prompt is required.', { code: 'INVALID_PROMPT' });
   }
-  if (!Array.isArray(request.inputs) || request.inputs.length < 1 || request.inputs.length > 4) {
+  if (!Array.isArray(request.inputs) || request.inputs.length < 1 ||
+      request.inputs.length > OPENAI_GPT_IMAGE_CAPABILITIES.maxInputImages) {
     throw providerError('OpenAI benchmark requires one to four references.', {
       code: 'INVALID_INPUT_COUNT',
     });
@@ -218,6 +225,7 @@ export function createOpenAIGPTImageBenchmarkProvider({
     model: OPENAI_BENCHMARK_IMAGE_MODEL,
     isConfigured: Boolean(normalizedApiKey),
     configurationRequired: normalizedApiKey ? null : 'OPENAI_API_KEY',
+    capabilities: OPENAI_GPT_IMAGE_CAPABILITIES,
     async generate(request) {
       const size = validateRequest(request);
       const quality = selectedQuality(request);

@@ -411,7 +411,8 @@ export function createServer({
         if (error instanceof ExperimentalV3ValidationError) {
           return sendJson(response, error.status, {
             error: error.message,
-            ...(error.details ? { code: error.code, details: error.details } : {}),
+            code: error.code,
+            ...(error.details ? { details: error.details } : {}),
           }, corsOrigin);
         }
         console.error('Experimental V3 request failed', error?.code ?? error?.name ?? 'UnknownError');

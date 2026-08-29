@@ -8,8 +8,17 @@ import {
   editorialDetailPurposeValid,
   V3_CAMPAIGN_ROLES,
 } from '../benchmark/creative-director-v3.mjs';
-import { createOpenAIGPTImageBenchmarkProvider } from '../benchmark/openai-gpt-image-benchmark-provider.mjs';
+import {
+  createOpenAIGPTImageBenchmarkProvider,
+  OPENAI_GPT_IMAGE_CAPABILITIES,
+} from '../benchmark/openai-gpt-image-benchmark-provider.mjs';
 import { validateProductIdentityAnalysis } from '../image-to-image/product-identity-analyzer.mjs';
+import { createHash } from 'node:crypto';
+import {
+  ANALYSIS_POLICY_VERSION,
+  createAnalysisSessionStore,
+  createGenerationIdempotencyStore,
+} from './experimental-v3-session-stores.mjs';
 
 const CATEGORY_SEMANTICS = Object.freeze({
   food: ['consumable', ['tabletop service', 'culinary preparation']],
@@ -111,9 +120,62 @@ export function validateExperimentalV3Request(payload) {
     description: typeof payload.description === 'string' ? payload.description.trim().slice(0, 1000) : '',
     aspectRatio: payload.aspectRatio,
     quality,
+    analysisId: typeof payload.analysisId === 'string' ? payload.analysisId.trim() : '',
+    idempotencyKey: typeof payload.idempotencyKey === 'string' ? payload.idempotencyKey.trim() : '',
     canonicalVisualAssets: Object.freeze((payload.canonicalVisualAssets ?? [])
       .map(validateCanonicalVisualAssetBinding)),
   });
+}
+
+function requireGenerationIdentifiers(request) {
+  if (!ASSET_ID_PATTERN.test(request.analysisId)) {
+    throw new ExperimentalV3ValidationError('Sessão de análise obrigatória.', {
+      code: 'ANALYSIS_SESSION_REQUIRED', status: 409,
+    });
+  }
+  if (request.idempotencyKey.length < 8 || request.idempotencyKey.length > 200) {
+    throw new ExperimentalV3ValidationError('Chave de idempotência inválida.', {
+      code: 'INVALID_IDEMPOTENCY_KEY', status: 400,
+    });
+  }
+}
+
+function generationFingerprint({ request, sourceSha256 }) {
+  const bindings = [...request.canonicalVisualAssets]
+    .map((binding) => ({ ...binding }))
+    .sort((a, b) => a.canonicalItemId.localeCompare(b.canonicalItemId));
+  return createHash('sha256').update(JSON.stringify({
+    analysisId: request.analysisId, sourceSha256, bindings,
+    category: request.category, objective: request.objective,
+    description: request.description, aspectRatio: request.aspectRatio, quality: request.quality,
+  })).digest('hex');
+}
+
+function validateProviderReferences(capabilities, referencesByRole) {
+  if (!capabilities || !Number.isSafeInteger(capabilities.maxInputImages) ||
+      !Array.isArray(capabilities.acceptedMimeTypes) ||
+      !Number.isSafeInteger(capabilities.maxBytesPerInput)) {
+    throw new ExperimentalV3ValidationError('Capacidade do provider indisponível.', {
+      code: 'INVALID_PROVIDER_CAPABILITIES', status: 500,
+    });
+  }
+  for (const [campaignRole, references] of referencesByRole) {
+    if (references.length > capabilities.maxInputImages) {
+      throw new ExperimentalV3ValidationError('Limite de referências do provider excedido.', {
+        code: 'PROVIDER_REFERENCE_LIMIT_EXCEEDED', status: 422,
+        details: Object.freeze({ campaignRole, referenceCount: references.length,
+          maxInputImages: capabilities.maxInputImages }),
+      });
+    }
+    for (const reference of references) {
+      if (!capabilities.acceptedMimeTypes.includes(reference.mimeType) ||
+          !Buffer.isBuffer(reference.bytes) || reference.bytes.length > capabilities.maxBytesPerInput) {
+        throw new ExperimentalV3ValidationError('Referência incompatível com o provider.', {
+          code: 'INVALID_CANONICAL_VISUAL_ASSET', status: 422,
+        });
+      }
+    }
+  }
 }
 
 function selectedIdsForReferences(brief, productIdentity) {
@@ -411,6 +473,9 @@ export function createExperimentalV3GenerationService({
   creativeDirectorAdapterFactory = (sourceImage) => createOpenAICreativeDirectorV3Adapter({ sourceImage }),
   runCreativeDirector = runCreativeDirectorV3WithFailSafe,
   imageProvider = createOpenAIGPTImageBenchmarkProvider(),
+  providerCapabilities = imageProvider.capabilities ?? OPENAI_GPT_IMAGE_CAPABILITIES,
+  analysisSessionStore = createAnalysisSessionStore(),
+  idempotencyStore = createGenerationIdempotencyStore(),
   logger,
 } = {}) {
   const effectiveLogger = logger ?? defaultLogger ?? { info() {} };
@@ -435,7 +500,16 @@ export function createExperimentalV3GenerationService({
         cacheKey: asset.metadata?.hash,
       });
       const input = buildCreativeDirectorV3Input({ analysis, request });
+      const normalizedAnalysis = validateProductIdentityAnalysis(analysis);
+      const snapshot = analysisSessionStore.save({
+        sourceAssetId: request.inputAssetId,
+        sourceSha256: asset.metadata?.hash,
+        productIdentity: normalizedAnalysis,
+        canonicalItemIds: input.productIdentity.items.map(({ id }) => id),
+        policyVersion: ANALYSIS_POLICY_VERSION,
+      });
       return Object.freeze({
+        analysisId: snapshot.analysisId,
         items: input.productIdentity.items.map(({ id, functionalType, quantity }) =>
           Object.freeze({ id, functionalType, quantity })),
         source: Object.freeze({
@@ -447,24 +521,37 @@ export function createExperimentalV3GenerationService({
     },
     async generate(rawRequest) {
       const request = validateExperimentalV3Request(rawRequest);
+      requireGenerationIdentifiers(request);
+      const sessionResult = analysisSessionStore.read(request.analysisId);
+      if (sessionResult.state === 'missing') {
+        throw new ExperimentalV3ValidationError('Sessão de análise obrigatória.', {
+          code: 'ANALYSIS_SESSION_REQUIRED', status: 409,
+        });
+      }
+      if (sessionResult.state === 'expired') {
+        throw new ExperimentalV3ValidationError('Sessão de análise expirada.', {
+          code: 'ANALYSIS_SESSION_EXPIRED', status: 410,
+        });
+      }
+      const snapshot = sessionResult.snapshot;
+      if (snapshot.sourceAssetId !== request.inputAssetId) {
+        throw new ExperimentalV3ValidationError('A imagem não corresponde à análise.', {
+          code: 'ANALYSIS_SOURCE_MISMATCH', status: 409,
+        });
+      }
       const asset = await assetStore?.readImage(request.inputAssetId);
       if (!asset) {
         throw new ExperimentalV3ValidationError('Imagem não encontrada ou expirada.', {
           code: 'ASSET_NOT_FOUND', status: 404,
         });
       }
-      const source = Object.freeze({ bytes: Buffer.from(asset.bytes), mimeType: asset.mimeType, metadata: asset.metadata });
-      if (!productIdentityAnalyzer || productIdentityAnalyzer.isConfigured === false) {
-        throw new ExperimentalV3ValidationError(
-          'A análise do produto ainda não está configurada para o modo experimental.',
-          { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 },
-        );
+      if (asset.metadata?.hash !== snapshot.sourceSha256) {
+        throw new ExperimentalV3ValidationError('A imagem não corresponde à análise.', {
+          code: 'ANALYSIS_SOURCE_MISMATCH', status: 409,
+        });
       }
-      const analysis = await productIdentityAnalyzer.analyze({
-        inputs: [source], declaredCategory: request.category,
-        userBrief: [request.objective, request.description].filter(Boolean).join('. '),
-        cacheKey: asset.metadata?.hash ?? request.inputAssetId,
-      });
+      const source = Object.freeze({ bytes: Buffer.from(asset.bytes), mimeType: asset.mimeType, metadata: asset.metadata });
+      const analysis = snapshot.productIdentity;
       const input = buildCreativeDirectorV3Input({ analysis, request });
       const canonicalIds = new Set(input.productIdentity.items.map(({ id }) => id));
       if (request.canonicalVisualAssets.some(({ canonicalItemId }) => !canonicalIds.has(canonicalItemId))) {
@@ -472,6 +559,15 @@ export function createExperimentalV3GenerationService({
           code: 'INVALID_CANONICAL_VISUAL_ASSET',
         });
       }
+      const fingerprint = generationFingerprint({ request, sourceSha256: snapshot.sourceSha256 });
+      return idempotencyStore.execute({
+        key: request.idempotencyKey,
+        fingerprint,
+        conflictError: () => new ExperimentalV3ValidationError(
+          'Chave de idempotência usada com outro payload.',
+          { code: 'IDEMPOTENCY_CONFLICT', status: 409 },
+        ),
+        operation: async () => {
       effectiveLogger.info({
         component: 'ExperimentalV3CanonicalInventory',
         analysisState: analysis.state,
@@ -494,6 +590,7 @@ export function createExperimentalV3GenerationService({
           assetStore, logger: effectiveLogger,
         }),
       ])));
+      validateProviderReferences(providerCapabilities, referencesByRole);
       effectiveLogger.info({
         component: 'ExperimentalV3DeterministicRoleSelection',
         editorialSelectedIds: direction.editorialSelectedIds,
@@ -585,6 +682,8 @@ export function createExperimentalV3GenerationService({
         quality: request.quality,
         results,
       };
+        },
+      });
     },
   });
 }

@@ -534,6 +534,7 @@ class _ControlledExperimentalV3Service
   Future<CanonicalInventory> analyzeInventory(
     GenerationRequest request,
   ) async => CanonicalInventory(
+    analysisId: '00000000-0000-4000-8000-000000000099',
     items: const [
       CanonicalInventoryItem(
         id: 'product-1',
@@ -553,6 +554,7 @@ class _ControlledExperimentalV3Service
   @override
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
+    required String analysisId,
     required String quality,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) {
@@ -572,6 +574,7 @@ class _SequencedExperimentalV3Service
   Future<CanonicalInventory> analyzeInventory(
     GenerationRequest request,
   ) async => CanonicalInventory(
+    analysisId: '00000000-0000-4000-8000-000000000099',
     items: const [
       CanonicalInventoryItem(
         id: 'product-1',
@@ -592,6 +595,7 @@ class _SequencedExperimentalV3Service
   @override
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
+    required String analysisId,
     required String quality,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) {
@@ -607,6 +611,7 @@ class _MultiInventoryExperimentalV3Service
   Future<CanonicalInventory> analyzeInventory(
     GenerationRequest request,
   ) async => CanonicalInventory(
+    analysisId: '00000000-0000-4000-8000-000000000099',
     items: const [
       CanonicalInventoryItem(
         id: 'canonical-a',
@@ -625,6 +630,7 @@ class _MultiInventoryExperimentalV3Service
   @override
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
+    required String analysisId,
     required String quality,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) => throw UnimplementedError();

@@ -55,6 +55,7 @@ class HttpExperimentalV3GenerationService
       final inventory = Map<String, dynamic>.from(body['inventory'] as Map);
       final source = Map<String, dynamic>.from(inventory['source'] as Map);
       return CanonicalInventory(
+        analysisId: inventory['analysisId'] as String,
         items: (inventory['items'] as List)
             .map((raw) {
               final item = Map<String, dynamic>.from(raw as Map);
@@ -93,6 +94,7 @@ class HttpExperimentalV3GenerationService
   @override
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
+    required String analysisId,
     required String quality,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) async {
@@ -103,6 +105,8 @@ class HttpExperimentalV3GenerationService
     }
     final payload = {
       ..._payload(request),
+      'analysisId': analysisId,
+      'idempotencyKey': request.idempotencyKey,
       'quality': quality,
       'canonicalVisualAssets': canonicalVisualAssets
           .map((binding) => binding.toJson())

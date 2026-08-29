@@ -15,7 +15,12 @@ class CanonicalInventoryItem {
 }
 
 class CanonicalInventory {
-  const CanonicalInventory({required this.items, required this.source});
+  const CanonicalInventory({
+    required this.analysisId,
+    required this.items,
+    required this.source,
+  });
+  final String analysisId;
   final List<CanonicalInventoryItem> items;
   final AssetReference source;
 }
@@ -63,6 +68,7 @@ abstract interface class ExperimentalV3GenerationService {
 
   Future<List<ExperimentalV3ImageResult>> generateFour(
     GenerationRequest request, {
+    required String analysisId,
     required String quality,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   });

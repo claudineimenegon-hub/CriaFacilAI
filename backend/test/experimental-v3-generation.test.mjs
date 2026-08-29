@@ -18,6 +18,8 @@ import {
   validateExperimentalV3Request,
 } from '../experimental-v3/experimental-v3-generation-service.mjs';
 import { OPENAI_CREATIVE_DIRECTOR_V3_SCHEMA } from '../benchmark/creative-director-v3-openai-adapter.mjs';
+import { createOpenAIGPTImageBenchmarkProvider } from '../benchmark/openai-gpt-image-benchmark-provider.mjs';
+import { createAnalysisSessionStore } from '../experimental-v3/experimental-v3-session-stores.mjs';
 
 function humanPresenceInput({ category, functionalType, affordance, objective = 'Create a premium campaign' }) {
   return validateCreativeDirectorV3Input({
@@ -37,6 +39,23 @@ function humanPresenceInput({ category, functionalType, affordance, objective = 
 
 const assetId = '00000000-0000-4000-8000-000000000001';
 const sourceBytes = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+const testProviderCapabilities = Object.freeze({
+  maxInputImages: 4,
+  acceptedMimeTypes: Object.freeze(['image/jpeg', 'image/png']),
+  maxBytesPerInput: 20 * 1024 * 1024,
+  supportsMultipleInputs: true,
+});
+let idempotencySequence = 0;
+
+async function generateAfterAnalysis(instance, rawRequest) {
+  const inventory = await instance.analyze(rawRequest);
+  idempotencySequence += 1;
+  return instance.generate({
+    ...rawRequest,
+    analysisId: inventory.analysisId,
+    idempotencyKey: `test-generation-${idempotencySequence}`,
+  });
+}
 const analysis = {
   state: 'known',
   items: [
@@ -221,7 +240,7 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
     imageProvider: { generate: async () => ({ imageBase64: 'aW1hZ2U=' }) },
     logger: { info: (event) => events.push(event) },
   });
-  await instance.generate(request({ category: 'jewelry' }));
+  await generateAfterAnalysis(instance, request({ category: 'jewelry' }));
   const canonical = events.find(({ component }) => component === 'ExperimentalV3CanonicalInventory');
   assert.equal(canonical.analysisState, 'known');
   assert.equal(canonical.validationState, 'locally_validated');
@@ -292,7 +311,7 @@ test('telemetria sanitizada mostra inventário e contagens sem prompt ou valores
 
 test('telemetria observacional não altera prompt, seleção, resposta ou chamada visual', async () => {
   const baseline = service();
-  const baselineResult = await baseline.instance.generate(request());
+  const baselineResult = await generateAfterAnalysis(baseline.instance, request());
   const events = [];
   const deterministic = createDeterministicCreativeDirectorV3Model();
   const visualCalls = [];
@@ -309,7 +328,7 @@ test('telemetria observacional não altera prompt, seleção, resposta ou chamad
     },
     logger: { info: (event) => events.push(event) },
   });
-  const instrumentedResult = await instrumented.generate(request());
+  const instrumentedResult = await generateAfterAnalysis(instrumented, request());
   assert.deepEqual(instrumentedResult, baselineResult);
   assert.equal(visualCalls.length, baseline.visualCalls.length);
   assert.deepEqual(visualCalls, baseline.visualCalls);
@@ -319,7 +338,7 @@ test('telemetria observacional não altera prompt, seleção, resposta ou chamad
 
 test('uma direção lógica produz quatro briefs, quatro prompts e quatro chamadas visuais', async () => {
   const current = service();
-  const batch = await current.instance.generate(request({ quality: 'high' }));
+  const batch = await generateAfterAnalysis(current.instance, request({ quality: 'high' }));
   assert.equal(current.directorCalls(), 1);
   assert.equal(current.visualCalls.length, 4);
   assert.equal(new Set(current.visualCalls.map(({ prompt }) => prompt)).size, 4);
@@ -332,7 +351,7 @@ test('uma direção lógica produz quatro briefs, quatro prompts e quatro chamad
 
 test('erro individual preserva três sucessos e não repete chamada visual', async () => {
   const current = service({ failRole: 'editorial_craft_detail' });
-  const batch = await current.instance.generate(request());
+  const batch = await generateAfterAnalysis(current.instance, request());
   assert.equal(current.directorCalls(), 1);
   assert.equal(current.visualCalls.length, 4);
   assert.equal(batch.status, 'partial');
@@ -356,7 +375,7 @@ test('identidade ausente falha antes de Creative Director ou imagem', async () =
     creativeDirectorAdapterFactory: () => { throw new Error('must not run'); },
     imageProvider: { generate: async () => { throw new Error('must not run'); } },
   });
-  await assert.rejects(() => instance.generate(request()), { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 });
+  await assert.rejects(() => instance.analyze(request()), { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 });
 });
 
 test('timeout do Analyzer encerra o V3 sem fallback ou chamada visual', async () => {
@@ -386,7 +405,7 @@ test('timeout do Analyzer encerra o V3 sem fallback ou chamada visual', async ()
     },
   });
 
-  await assert.rejects(() => instance.generate(request()), (error) =>
+  await assert.rejects(() => instance.analyze(request()), (error) =>
     error === timeoutError && error.code === 'GEMINI_TIMEOUT');
   assert.equal(analyzerCalls, 1);
   assert.equal(directorCalls, 0);
@@ -432,7 +451,8 @@ test('referências canônicas bloqueiam full_set contaminado e roteiam somente I
       return { imageBase64: 'aW1hZ2U=' };
     } },
   });
-  await assert.rejects(create().generate(request()), (error) =>
+  const missingInstance = create();
+  await assert.rejects(generateAfterAnalysis(missingInstance, request()), (error) =>
     error.code === 'CANONICAL_REFERENCE_REQUIRED' &&
     Array.isArray(error.details?.missingCanonicalItemIds));
   assert.equal(calls.length, 0);
@@ -442,7 +462,8 @@ test('referências canônicas bloqueiam full_set contaminado e roteiam somente I
     isolationConfidence: 1, userConfirmed: true, mimeType: 'image/png',
     width: 640, height: 640, sha256: hashes[id],
   });
-  const batch = await create().generate(request({ canonicalVisualAssets: [
+  const validInstance = create();
+  const batch = await generateAfterAnalysis(validInstance, request({ canonicalVisualAssets: [
     binding('canonical-a', isolatedA), binding('canonical-b', isolatedB),
   ] }));
   assert.equal(batch.status, 'completed');
@@ -487,10 +508,13 @@ test('referência canônica duplicada ou com SHA divergente falha antes do provi
     isolationConfidence: 1, userConfirmed: true, mimeType: 'image/jpeg',
     width: 100, height: 100, sha256,
   });
-  await assert.rejects(instance.generate(request({ canonicalVisualAssets: [
+  const analyzed = await instance.analyze(request());
+  await assert.rejects(instance.generate(request({ analysisId: analyzed.analysisId,
+    idempotencyKey: 'duplicate-binding-1', canonicalVisualAssets: [
     make('generic-a'), make('generic-b'),
   ] })), { code: 'INVALID_CANONICAL_VISUAL_ASSET' });
-  await assert.rejects(instance.generate(request({ canonicalVisualAssets: [
+  await assert.rejects(instance.generate(request({ analysisId: analyzed.analysisId,
+    idempotencyKey: 'duplicate-binding-2', canonicalVisualAssets: [
     make('generic-a'), make('generic-b', '00000000-0000-4000-8000-00000000000d', 'b'.repeat(64)),
   ] })), { code: 'INVALID_CANONICAL_VISUAL_ASSET' });
   assert.equal(visualCalls, 0);
@@ -1724,4 +1748,226 @@ test('prompt Editorial contém somente fatos do item selecionado e IDs omitidos'
   assert.match(prompt, /NOT VISIBLE IN THIS IMAGE:\n- omitted-item/);
   assert.doesNotMatch(prompt, /different omitted type|secret omitted ornament|must never migrate/);
   assert.match(prompt, /Do not add, imply, substitute or transform another item into this omitted item/);
+});
+
+test('snapshot imutável faz generate usar zero chamadas ao Analyzer', async () => {
+  let analyzerCalls = 0;
+  let visualCalls = 0;
+  const sha256 = '1'.repeat(64);
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async () => ({
+      bytes: sourceBytes, mimeType: 'image/jpeg',
+      metadata: { hash: sha256, width: 100, height: 100 },
+    }) },
+    productIdentityAnalyzer: { analyze: async () => { analyzerCalls += 1; return analysis; } },
+    creativeDirectorAdapterFactory: () => createDeterministicCreativeDirectorV3Model(),
+    imageProvider: { capabilities: testProviderCapabilities, generate: async () => {
+      visualCalls += 1; return { imageBase64: 'aW1hZ2U=' };
+    } },
+  });
+  const inventory = await instance.analyze(request());
+  const batch = await instance.generate({
+    ...request(), analysisId: inventory.analysisId, idempotencyKey: 'snapshot-generation',
+  });
+  assert.equal(analyzerCalls, 1);
+  assert.equal(visualCalls, 4);
+  assert.equal(batch.results.length, 4);
+});
+
+test('sessão expirada e source SHA divergente bloqueiam diretor e provider', async () => {
+  let current = 1_000;
+  let directorCalls = 0;
+  let visualCalls = 0;
+  let sourceHash = '1'.repeat(64);
+  const sessions = createAnalysisSessionStore({ ttlMs: 10, now: () => current });
+  const instance = createExperimentalV3GenerationService({
+    analysisSessionStore: sessions,
+    assetStore: { readImage: async () => ({
+      bytes: sourceBytes, mimeType: 'image/jpeg', metadata: { hash: sourceHash, width: 1, height: 1 },
+    }) },
+    productIdentityAnalyzer: { analyze: async () => analysis },
+    creativeDirectorAdapterFactory: () => { directorCalls += 1; return createDeterministicCreativeDirectorV3Model(); },
+    imageProvider: { capabilities: testProviderCapabilities, generate: async () => {
+      visualCalls += 1; return { imageBase64: 'x' };
+    } },
+  });
+  const first = await instance.analyze(request());
+  sourceHash = '2'.repeat(64);
+  await assert.rejects(instance.generate({
+    ...request(), analysisId: first.analysisId, idempotencyKey: 'source-mismatch',
+  }), { code: 'ANALYSIS_SOURCE_MISMATCH' });
+  sourceHash = '1'.repeat(64);
+  const second = await instance.analyze(request());
+  current += 11;
+  await assert.rejects(instance.generate({
+    ...request(), analysisId: second.analysisId, idempotencyKey: 'expired-session',
+  }), { code: 'ANALYSIS_SESSION_EXPIRED' });
+  assert.equal(directorCalls, 0);
+  assert.equal(visualCalls, 0);
+});
+
+test('idempotência compartilha in-flight, conserva resultado e rejeita conflito', async () => {
+  let directorCalls = 0;
+  let visualCalls = 0;
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async () => ({
+      bytes: sourceBytes, mimeType: 'image/jpeg',
+      metadata: { hash: '3'.repeat(64), width: 100, height: 100 },
+    }) },
+    productIdentityAnalyzer: { analyze: async () => analysis },
+    creativeDirectorAdapterFactory: () => ({
+      name: 'mock-director',
+      async generate(input) {
+        directorCalls += 1;
+        await Promise.resolve();
+        return createDeterministicCreativeDirectorV3Model().generate(input);
+      },
+    }),
+    imageProvider: { capabilities: testProviderCapabilities, generate: async () => {
+      visualCalls += 1; return { imageBase64: 'aW1hZ2U=' };
+    } },
+  });
+  const inventory = await instance.analyze(request());
+  const payload = { ...request(), analysisId: inventory.analysisId, idempotencyKey: 'same-action-key' };
+  const [first, second] = await Promise.all([instance.generate(payload), instance.generate(payload)]);
+  assert.deepEqual(first, second);
+  assert.equal(directorCalls, 1);
+  assert.equal(visualCalls, 4);
+  assert.deepEqual(await instance.generate(payload), first);
+  assert.equal(visualCalls, 4);
+  await assert.rejects(instance.generate({ ...payload, objective: 'Outro objetivo' }), {
+    code: 'IDEMPOTENCY_CONFLICT',
+  });
+  await instance.generate({ ...payload, idempotencyKey: 'new-action-key' });
+  assert.equal(directorCalls, 2);
+  assert.equal(visualCalls, 8);
+});
+
+test('preflight global bloqueia limite da quarta campanha antes de qualquer imagem', async () => {
+  let visualCalls = 0;
+  const second = {
+    ...analysis.items[0], id: 'second-item',
+    quantity: { state: 'known', value: 1 },
+    observedFeatures: analysis.items[0].observedFeatures.map((feature) => ({
+      ...feature, id: `${feature.id}-second`,
+    })),
+  };
+  const multi = { ...analysis, items: [{ ...analysis.items[0], quantity: { state: 'known', value: 1 } }, second], relationships: [] };
+  const sourceHash = '4'.repeat(64);
+  const isolatedIds = {
+    'product-pair': '00000000-0000-4000-8000-000000000041',
+    'second-item': '00000000-0000-4000-8000-000000000042',
+  };
+  const hashes = { 'product-pair': '5'.repeat(64), 'second-item': '6'.repeat(64) };
+  const assets = new Map([
+    [assetId, { bytes: sourceBytes, mimeType: 'image/jpeg', metadata: { hash: sourceHash, width: 10, height: 10 } }],
+    ...Object.entries(isolatedIds).map(([itemId, id]) => [id, {
+      bytes: Buffer.from(itemId), mimeType: 'image/png',
+      metadata: { hash: hashes[itemId], width: 10, height: 10 },
+    }]),
+  ]);
+  const deterministic = createDeterministicCreativeDirectorV3Model();
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async (id) => assets.get(id) },
+    productIdentityAnalyzer: { analyze: async () => multi },
+    runCreativeDirector: async ({ input }) => {
+      const briefs = [...await deterministic.generate(input)];
+      const lifestyle = briefs[1];
+      const one = [{ itemId: 'product-pair', quantity: 1 }];
+      briefs[1] = {
+        ...lifestyle,
+        productPresentation: { ...lifestyle.productPresentation, requiredVisibleItems: one, optionalVisibleItems: [] },
+        humanInteraction: {
+          ...lifestyle.humanInteraction,
+          unitAllocation: [{ itemId: 'product-pair', canonicalQuantity: 1,
+            humanAllocatedUnits: 1, sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 0 }],
+        },
+      };
+      return { briefs, schemaValid: true, diversityValid: true };
+    },
+    providerCapabilities: { ...testProviderCapabilities, maxInputImages: 1 },
+    imageProvider: { generate: async () => { visualCalls += 1; return { imageBase64: 'x' }; } },
+  });
+  const inventory = await instance.analyze(request());
+  const bindings = Object.entries(isolatedIds).map(([canonicalItemId, id]) => ({
+    canonicalItemId, assetId: id, sourceKind: 'isolated_item', isolationState: 'isolated',
+    isolationConfidence: 1, userConfirmed: true, mimeType: 'image/png', width: 10, height: 10,
+    sha256: hashes[canonicalItemId],
+  }));
+  await assert.rejects(instance.generate({
+    ...request(), analysisId: inventory.analysisId, idempotencyKey: 'reference-preflight',
+    canonicalVisualAssets: bindings,
+  }), (error) => error.code === 'PROVIDER_REFERENCE_LIMIT_EXCEEDED' &&
+    error.details.referenceCount === 2 && error.details.maxInputImages === 1);
+  assert.equal(visualCalls, 0);
+});
+
+test('boundary V3 preserva múltiplas referências como image[] no FormData real', async () => {
+  const second = {
+    ...analysis.items[0], id: 'second-item', functionalType: { state: 'known', value: 'independent product' },
+    quantity: { state: 'known', value: 1 },
+    observedFeatures: analysis.items[0].observedFeatures.map((feature) => ({
+      ...feature, id: `${feature.id}-second`,
+    })),
+  };
+  const multi = { ...analysis, items: [{ ...analysis.items[0], quantity: { state: 'known', value: 1 } }, second], relationships: [] };
+  const sourceHash = '7'.repeat(64);
+  const isolatedA = '00000000-0000-4000-8000-000000000071';
+  const isolatedB = '00000000-0000-4000-8000-000000000072';
+  const bytesA = Buffer.from('isolated-a');
+  const bytesB = Buffer.from('isolated-b');
+  const assets = new Map([
+    [assetId, { bytes: sourceBytes, mimeType: 'image/jpeg', metadata: { hash: sourceHash, width: 10, height: 10 } }],
+    [isolatedA, { bytes: bytesA, mimeType: 'image/png', metadata: { hash: '8'.repeat(64), width: 10, height: 10 } }],
+    [isolatedB, { bytes: bytesB, mimeType: 'image/png', metadata: { hash: '9'.repeat(64), width: 10, height: 10 } }],
+  ]);
+  const forms = [];
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const provider = createOpenAIGPTImageBenchmarkProvider({
+    apiKey: 'test-key-safe', logger: { warn() {} },
+    fetchImpl: async (_url, options) => {
+      forms.push(options.body);
+      return new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async (id) => assets.get(id) },
+    productIdentityAnalyzer: { analyze: async () => multi },
+    creativeDirectorAdapterFactory: () => createDeterministicCreativeDirectorV3Model(),
+    imageProvider: provider,
+  });
+  const inventory = await instance.analyze(request());
+  await instance.generate({
+    ...request(), analysisId: inventory.analysisId, idempotencyKey: 'real-form-data',
+    canonicalVisualAssets: [
+      { canonicalItemId: 'product-pair', assetId: isolatedA, sourceKind: 'isolated_item',
+        isolationState: 'isolated', isolationConfidence: 1, userConfirmed: true,
+        mimeType: 'image/png', width: 10, height: 10, sha256: '8'.repeat(64) },
+      { canonicalItemId: 'second-item', assetId: isolatedB, sourceKind: 'isolated_item',
+        isolationState: 'isolated', isolationConfidence: 1, userConfirmed: true,
+        mimeType: 'image/png', width: 10, height: 10, sha256: '9'.repeat(64) },
+    ],
+  });
+  assert.equal(forms.length, 4);
+  const records = forms.map((form) => ({
+    role: /Campaign role: ([a-z_]+)/.exec(form.get('prompt'))?.[1],
+    selectedIds: /Selected canonical IDs(?: only)?: ([^\n.]+)/.exec(form.get('prompt'))?.[1]
+      .split(',').map((value) => value.trim()),
+    files: form.getAll('image[]'),
+  }));
+  const byRole = Object.fromEntries(records.map(({ role, files }) => [role, files]));
+  assert.equal(byRole.hero_commercial.length, 1);
+  assert.equal(byRole.editorial_craft_detail.length, 1);
+  assert.equal(byRole.contextual_lifestyle.length, 2);
+  const lifestyleBytes = await Promise.all(byRole.contextual_lifestyle.map(async (file) =>
+    Buffer.from(await file.arrayBuffer())));
+  assert.deepEqual(lifestyleBytes, [bytesA, bytesB]);
+  assert.deepEqual(byRole.contextual_lifestyle.map(({ type }) => type), ['image/png', 'image/png']);
+  const bytesById = new Map([['product-pair', bytesA], ['second-item', bytesB]]);
+  for (const { role, selectedIds, files } of records.filter(({ selectedIds }) => selectedIds != null)) {
+    const actual = await Promise.all(files.map(async (file) => Buffer.from(await file.arrayBuffer())));
+    assert.deepEqual(actual, selectedIds.map((id) => bytesById.get(id)), `${role} must preserve selected ID order`);
+  }
 });
