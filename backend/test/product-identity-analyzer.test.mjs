@@ -60,6 +60,20 @@ test('valida produto único completamente observado', () => {
   assert.ok(Object.isFrozen(result.items[0].observedFeatures));
 });
 
+test('valida localização visual normalizada e preserva contrato antigo', () => {
+  const base = { state: 'known', items: [item()], relationships: [] };
+  assert.equal(Object.hasOwn(validateProductIdentityAnalysis(base).items[0], 'visualLocalization'), false);
+  const localized = structuredClone(base);
+  localized.items[0].visualLocalization = {
+    normalizedBoundingBox: { xMin: 0.1, yMin: 0.2, xMax: 0.8, yMax: 0.9 },
+    positivePoints: [{ x: 0.4, y: 0.5 }], optionalNegativePoints: [{ x: 0.95, y: 0.5 }],
+    localizationConfidence: 0.95, evidenceSource: 'multimodal_analysis',
+  };
+  assert.equal(validateProductIdentityAnalysis(localized).items[0].visualLocalization.localizationConfidence, 0.95);
+  localized.items[0].visualLocalization.positivePoints[0].x = 2;
+  assert.throws(() => validateProductIdentityAnalysis(localized), /normalized coordinates/);
+});
+
 test('valida escala relativa somente entre múltiplos IDs canônicos', () => {
   const result = validateProductIdentityAnalysis({
     state: 'known',

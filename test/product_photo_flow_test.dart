@@ -379,8 +379,13 @@ void main() {
         tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull,
       );
-      for (var index = 0; index < 2; index += 1) {
-        await tester.tap(find.text('VINCULAR FOTO').first);
+      for (final id in ['canonical-a', 'canonical-b']) {
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(ValueKey('canonical-item-$id')),
+            matching: find.text('SUBSTITUIR POR OUTRA FOTO'),
+          ),
+        );
         await tester.pumpAndSettle();
       }
       await tester.scrollUntilVisible(
@@ -429,6 +434,54 @@ void main() {
     generation.completeCurrent(_completedCampaigns());
     await tester.pumpAndSettle();
   });
+
+  testWidgets(
+    'isolamento automático exige confirmação por item e troca de source invalida confirmações',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 4000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final service = _AutomaticIsolationExperimentalV3Service();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ProductPhotoPage(
+            photoSelectionService: _FakePhotoSelectionService(),
+            uploadService: _HashUploadService(),
+            experimentalV3GenerationService: service,
+          ),
+        ),
+      );
+      await tester.tap(find.text('SELECIONAR FOTO'));
+      await tester.pumpAndSettle();
+      expect(service.isolationCalls, 2);
+      expect(find.text('CONFIRMAR'), findsNWidgets(2));
+      final buttonBefore = tester.widget<FilledButton>(
+        find.byType(FilledButton),
+      );
+      expect(buttonBefore.onPressed, isNull);
+      await tester.tap(find.text('CONFIRMAR').first);
+      await tester.pump();
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNull,
+      );
+      await tester.tap(find.text('CONFIRMAR').first);
+      await tester.pump();
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNotNull,
+      );
+      await tester.scrollUntilVisible(
+        find.byTooltip('Remover foto'),
+        -800,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byTooltip('Remover foto'));
+      await tester.pumpAndSettle();
+      expect(find.text('CONFIRMAR'), findsNothing);
+    },
+  );
 }
 
 final Uint8List _png = base64Decode(
@@ -626,6 +679,65 @@ class _MultiInventoryExperimentalV3Service
     ],
     source: request.inputs.single,
   );
+
+  @override
+  Future<List<ExperimentalV3ImageResult>> generateFour(
+    GenerationRequest request, {
+    required String analysisId,
+    required String quality,
+    List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
+  }) => throw UnimplementedError();
+}
+
+class _AutomaticIsolationExperimentalV3Service
+    implements ExperimentalV3GenerationService, CanonicalAssetIsolationClient {
+  int isolationCalls = 0;
+
+  @override
+  Future<CanonicalInventory> analyzeInventory(
+    GenerationRequest request,
+  ) async => CanonicalInventory(
+    analysisId: '00000000-0000-4000-8000-000000000099',
+    items: const [
+      CanonicalInventoryItem(
+        id: 'canonical-a',
+        functionalType: 'wearable product',
+        quantity: 1,
+      ),
+      CanonicalInventoryItem(
+        id: 'canonical-b',
+        functionalType: 'paired product',
+        quantity: 2,
+      ),
+    ],
+    source: request.inputs.single,
+  );
+
+  @override
+  Future<CanonicalIsolationResult> isolateCanonicalAsset({
+    required String analysisId,
+    required String canonicalItemId,
+    bool force = false,
+  }) async {
+    isolationCalls += 1;
+    return CanonicalIsolationResult(
+      canonicalItemId: canonicalItemId,
+      asset: AssetReference(
+        id: '00000000-0000-4000-8000-${isolationCalls.toString().padLeft(12, '0')}',
+        mediaType: AssetMediaType.image,
+        mimeType: 'image/png',
+        role: AssetRole.product,
+        width: 1,
+        height: 1,
+        hash: isolationCalls.toRadixString(16).padLeft(64, '0'),
+        temporaryUrl: 'http://127.0.0.1:1/$canonicalItemId.png',
+        retentionPolicy: AssetRetentionPolicy.temporary,
+      ),
+      isolationState: 'unconfirmed',
+      isolationConfidence: 0.99,
+      confirmable: true,
+    );
+  }
 
   @override
   Future<List<ExperimentalV3ImageResult>> generateFour(

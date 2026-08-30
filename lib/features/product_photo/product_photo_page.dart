@@ -43,6 +43,9 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   AssetReference? _asset;
   CanonicalInventory? _canonicalInventory;
   final Map<String, AssetReference> _isolatedReferences = {};
+  final Map<String, CanonicalIsolationResult> _automaticIsolations = {};
+  final Set<String> _confirmedCanonicalItemIds = {};
+  final Set<String> _isolatingCanonicalItemIds = {};
   ProductCategory _category = ProductCategory.general;
   ProductVisualObjective _objective = ProductVisualObjective.premiumStudio;
   String _aspectRatio = '1:1';
@@ -132,6 +135,9 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
     _asset = null;
     _canonicalInventory = null;
     _isolatedReferences.clear();
+    _automaticIsolations.clear();
+    _confirmedCanonicalItemIds.clear();
+    _isolatingCanonicalItemIds.clear();
   });
 
   GenerationRequest _buildRequest(AssetReference asset) =>
@@ -166,16 +172,78 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
       _isAnalyzingInventory = true;
       _canonicalInventory = null;
       _isolatedReferences.clear();
+      _automaticIsolations.clear();
+      _confirmedCanonicalItemIds.clear();
     });
     try {
       final inventory = await _experimentalV3GenerationService.analyzeInventory(
         _buildRequest(asset),
       );
       if (mounted) setState(() => _canonicalInventory = inventory);
+      await _prepareAutomaticIsolations(inventory);
     } on ExperimentalV3GenerationException catch (error) {
       if (mounted) _showMessage(error.message);
     } finally {
       if (mounted) setState(() => _isAnalyzingInventory = false);
+    }
+  }
+
+  Future<void> _prepareAutomaticIsolations(CanonicalInventory inventory) async {
+    final client = _experimentalV3GenerationService;
+    if (client is! CanonicalAssetIsolationClient) return;
+    final isolationClient = client as CanonicalAssetIsolationClient;
+    for (final item in inventory.items) {
+      if (!mounted || _canonicalInventory?.analysisId != inventory.analysisId) {
+        return;
+      }
+      setState(() => _isolatingCanonicalItemIds.add(item.id));
+      try {
+        final result = await isolationClient.isolateCanonicalAsset(
+          analysisId: inventory.analysisId,
+          canonicalItemId: item.id,
+        );
+        if (mounted &&
+            _canonicalInventory?.analysisId == inventory.analysisId) {
+          setState(() {
+            _automaticIsolations[item.id] = result;
+            _isolatedReferences[item.id] = result.asset;
+          });
+        }
+      } on ExperimentalV3GenerationException catch (error) {
+        if (mounted) _showMessage(error.message);
+      } finally {
+        if (mounted) setState(() => _isolatingCanonicalItemIds.remove(item.id));
+      }
+    }
+  }
+
+  Future<void> _redoIsolation(CanonicalInventoryItem item) async {
+    final inventory = _canonicalInventory;
+    final client = _experimentalV3GenerationService;
+    if (inventory == null ||
+        client is! CanonicalAssetIsolationClient ||
+        _isolatingCanonicalItemIds.contains(item.id)) {
+      return;
+    }
+    final isolationClient = client as CanonicalAssetIsolationClient;
+    setState(() {
+      _confirmedCanonicalItemIds.remove(item.id);
+      _isolatingCanonicalItemIds.add(item.id);
+    });
+    try {
+      final result = await isolationClient.isolateCanonicalAsset(
+        analysisId: inventory.analysisId,
+        canonicalItemId: item.id,
+        force: true,
+      );
+      if (mounted && _canonicalInventory?.analysisId == inventory.analysisId) {
+        setState(() {
+          _automaticIsolations[item.id] = result;
+          _isolatedReferences[item.id] = result.asset;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isolatingCanonicalItemIds.remove(item.id));
     }
   }
 
@@ -201,7 +269,13 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
           'O servidor não confirmou a integridade da referência.',
         );
       }
-      if (mounted) setState(() => _isolatedReferences[item.id] = asset);
+      if (mounted) {
+        setState(() {
+          _isolatedReferences[item.id] = asset;
+          _automaticIsolations.remove(item.id);
+          _confirmedCanonicalItemIds.add(item.id);
+        });
+      }
     } on AssetUploadException catch (error) {
       if (mounted) _showMessage(error.message);
     } on PhotoSelectionException catch (error) {
@@ -214,10 +288,15 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   bool get _canonicalReferencesReady {
     final inventory = _canonicalInventory;
     if (inventory == null) return false;
-    return inventory.items.length == 1 ||
-        inventory.items.every(
-          (item) => _isolatedReferences.containsKey(item.id),
-        );
+    if (_experimentalV3GenerationService is! CanonicalAssetIsolationClient &&
+        inventory.items.length == 1) {
+      return true;
+    }
+    return inventory.items.every(
+      (item) =>
+          _isolatedReferences.containsKey(item.id) &&
+          _confirmedCanonicalItemIds.contains(item.id),
+    );
   }
 
   Future<void> _generate() async {
@@ -358,34 +437,61 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
                 ListTile(
                   key: ValueKey('canonical-item-${item.id}'),
                   title: Text(item.functionalType),
-                  subtitle: Text(
-                    'ID: ${item.id} · quantidade: ${item.quantity}',
-                  ),
                   leading: Icon(
-                    inventory.items.length == 1 ||
-                            _isolatedReferences.containsKey(item.id)
+                    _confirmedCanonicalItemIds.contains(item.id)
                         ? Icons.check_circle
                         : Icons.warning_amber,
-                    color:
-                        inventory.items.length == 1 ||
-                            _isolatedReferences.containsKey(item.id)
+                    color: _confirmedCanonicalItemIds.contains(item.id)
                         ? Colors.greenAccent
                         : Colors.amber,
                   ),
-                  trailing: inventory.items.length == 1
-                      ? null
-                      : TextButton(
-                          onPressed: _uploadingCanonicalItemId == null
-                              ? () => _selectIsolatedReference(item)
-                              : null,
-                          child: Text(
-                            _uploadingCanonicalItemId == item.id
-                                ? 'ENVIANDO...'
-                                : _isolatedReferences.containsKey(item.id)
-                                ? 'SUBSTITUIR'
-                                : 'VINCULAR FOTO',
+                  isThreeLine: true,
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('ID: ${item.id} · quantidade: ${item.quantity}'),
+                      if (_automaticIsolations[item.id]?.asset.temporaryUrl
+                          case final url?)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Image.network(
+                            url,
+                            key: ValueKey('canonical-thumbnail-${item.id}'),
+                            width: 72,
+                            height: 72,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, _, _) =>
+                                const Icon(Icons.broken_image),
                           ),
                         ),
+                      if (_isolatingCanonicalItemIds.contains(item.id))
+                        const Text('ISOLANDO...'),
+                      Wrap(
+                        children: [
+                          if (_automaticIsolations[item.id]?.confirmable ==
+                                  true &&
+                              !_confirmedCanonicalItemIds.contains(item.id))
+                            TextButton(
+                              onPressed: () => setState(
+                                () => _confirmedCanonicalItemIds.add(item.id),
+                              ),
+                              child: const Text('CONFIRMAR'),
+                            ),
+                          if (_automaticIsolations.containsKey(item.id))
+                            TextButton(
+                              onPressed: () => _redoIsolation(item),
+                              child: const Text('REFAZER ISOLAMENTO'),
+                            ),
+                          TextButton(
+                            onPressed: _uploadingCanonicalItemId == null
+                                ? () => _selectIsolatedReference(item)
+                                : null,
+                            child: const Text('SUBSTITUIR POR OUTRA FOTO'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               if (!_canonicalReferencesReady)
                 const Text(

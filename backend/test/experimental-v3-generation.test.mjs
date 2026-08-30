@@ -20,6 +20,7 @@ import {
 import { OPENAI_CREATIVE_DIRECTOR_V3_SCHEMA } from '../benchmark/creative-director-v3-openai-adapter.mjs';
 import { createOpenAIGPTImageBenchmarkProvider } from '../benchmark/openai-gpt-image-benchmark-provider.mjs';
 import { createAnalysisSessionStore } from '../experimental-v3/experimental-v3-session-stores.mjs';
+import sharp from 'sharp';
 
 function humanPresenceInput({ category, functionalType, affordance, objective = 'Create a premium campaign' }) {
   return validateCreativeDirectorV3Input({
@@ -376,6 +377,45 @@ test('identidade ausente falha antes de Creative Director ou imagem', async () =
     imageProvider: { generate: async () => { throw new Error('must not run'); } },
   });
   await assert.rejects(() => instance.analyze(request()), { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 });
+});
+
+test('análise localiza itens e isolamento permanece vinculado ao snapshot e source SHA', async () => {
+  const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#123456' } }).png().toBuffer();
+  const localizedAnalysis = structuredClone(analysis);
+  localizedAnalysis.items[0].visualLocalization = {
+    normalizedBoundingBox: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
+    positivePoints: [{ x: 0.5, y: 0.5 }], optionalNegativePoints: [],
+    localizationConfidence: 1, evidenceSource: 'multimodal_analysis',
+  };
+  let isolationCalls = 0; let visualCalls = 0;
+  const stored = new Map([[assetId, { bytes: png, mimeType: 'image/png', metadata: {
+    hash: '1'.repeat(64), width: 2, height: 2,
+  } }]]);
+  const instance = createExperimentalV3GenerationService({
+    assetStore: {
+      readImage: async (id) => stored.get(id),
+      saveImage: async ({ bytes, mimeType }) => ({ id: '00000000-0000-4000-8000-000000000002',
+        mimeType, width: 2, height: 2, hash: '2'.repeat(64), temporaryUrl: '/asset',
+        expiresAt: new Date().toISOString(), bytes }),
+    },
+    productIdentityAnalyzer: { analyze: async () => localizedAnalysis },
+    isolationService: { isolate: async (input) => {
+      isolationCalls += 1;
+      assert.equal(input.sourceSha256, '1'.repeat(64));
+      assert.equal(input.productIdentity.items[0].id, 'product-pair');
+      return { canonicalItemId: 'product-pair', transparentPng: png,
+        isolationState: 'unconfirmed', segmentationConfidence: 0.99, confirmable: true,
+        visiblePixelIntegrity: true, effectiveBoundingRegion: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
+        provider: 'mock', model: 'mock', version: '1', cacheHit: false, inFlightShared: false };
+    } },
+    imageProvider: { async generate() { visualCalls += 1; } },
+  });
+  const inventory = await instance.analyze(request());
+  assert.equal(inventory.items[0].visualLocalization.localizationConfidence, 1);
+  const isolated = await instance.isolate({ analysisId: inventory.analysisId, canonicalItemId: 'product-pair' });
+  assert.equal(isolated.confirmable, true);
+  assert.equal(isolationCalls, 1);
+  assert.equal(visualCalls, 0);
 });
 
 test('timeout do Analyzer encerra o V3 sem fallback ou chamada visual', async () => {

@@ -119,11 +119,54 @@ function validateAmbiguousFeature(value, path) {
   });
 }
 
+function validateNormalizedPoint(value, path) {
+  assertPlainObject(value, path, ['x', 'y']);
+  if (![value.x, value.y].every((entry) => typeof entry === 'number' && Number.isFinite(entry) && entry >= 0 && entry <= 1)) {
+    fail(`${path} must contain normalized coordinates.`);
+  }
+  return Object.freeze({ x: value.x, y: value.y });
+}
+
+function validateVisualLocalization(value, path) {
+  assertPlainObject(value, path, [
+    'normalizedBoundingBox', 'positivePoints', 'optionalNegativePoints',
+    'localizationConfidence', 'evidenceSource',
+  ]);
+  const box = value.normalizedBoundingBox;
+  assertPlainObject(box, `${path}.normalizedBoundingBox`, ['xMin', 'yMin', 'xMax', 'yMax']);
+  if (![box.xMin, box.yMin, box.xMax, box.yMax]
+    .every((entry) => typeof entry === 'number' && Number.isFinite(entry) && entry >= 0 && entry <= 1) ||
+      box.xMin >= box.xMax || box.yMin >= box.yMax) {
+    fail(`${path}.normalizedBoundingBox is invalid.`);
+  }
+  if (!Array.isArray(value.positivePoints) || value.positivePoints.length < 1 || value.positivePoints.length > 16 ||
+      (value.optionalNegativePoints !== undefined &&
+       (!Array.isArray(value.optionalNegativePoints) || value.optionalNegativePoints.length > 16))) {
+    fail(`${path}.points are invalid.`);
+  }
+  if (typeof value.localizationConfidence !== 'number' || !Number.isFinite(value.localizationConfidence) ||
+      value.localizationConfidence < 0 || value.localizationConfidence > 1) {
+    fail(`${path}.localizationConfidence is invalid.`);
+  }
+  if (!['multimodal_analysis', 'user_provided'].includes(value.evidenceSource)) {
+    fail(`${path}.evidenceSource is invalid.`);
+  }
+  return Object.freeze({
+    normalizedBoundingBox: Object.freeze({ ...box }),
+    positivePoints: Object.freeze(value.positivePoints.map((point, index) =>
+      validateNormalizedPoint(point, `${path}.positivePoints[${index}]`))),
+    optionalNegativePoints: Object.freeze((value.optionalNegativePoints ?? []).map((point, index) =>
+      validateNormalizedPoint(point, `${path}.optionalNegativePoints[${index}]`))),
+    localizationConfidence: value.localizationConfidence,
+    evidenceSource: value.evidenceSource,
+  });
+}
+
 function validateItem(value, index) {
   const path = `items[${index}]`;
   assertPlainObject(value, path, [
     'id', 'functionalType', 'quantity', 'observationCompleteness',
-    'observedFeatures', 'ambiguousFeatures',
+    'observedFeatures', 'ambiguousFeatures', 'visualLocalization',
   ]);
   if (!completenessValues.has(value.observationCompleteness)) {
     fail(`${path}.observationCompleteness is invalid.`);
@@ -150,6 +193,9 @@ function validateItem(value, index) {
       validateObservedFeature(feature, `${path}.observedFeatures[${featureIndex}]`))),
     ambiguousFeatures: Object.freeze(ambiguousFeatures.map((feature, featureIndex) =>
       validateAmbiguousFeature(feature, `${path}.ambiguousFeatures[${featureIndex}]`))),
+    ...(value.visualLocalization === undefined ? {} : {
+      visualLocalization: validateVisualLocalization(value.visualLocalization, `${path}.visualLocalization`),
+    }),
   });
 }
 

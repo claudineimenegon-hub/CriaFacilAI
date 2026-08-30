@@ -52,6 +52,17 @@ void main() {
     expect(results.where((result) => result.isCompleted), hasLength(3));
     expect(results.last.errorMessage, 'Não foi possível gerar esta proposta.');
   });
+
+  test('solicita isolamento automático e interpreta PNG temporário', () async {
+    final transport = _Transport();
+    final service = HttpExperimentalV3GenerationService(baseUrl: 'http://api.example', transport: transport);
+    final result = await service.isolateCanonicalAsset(
+      analysisId: '00000000-0000-4000-8000-000000000099', canonicalItemId: 'canonical-product');
+    expect(transport.uri?.path, '/api/experimental/v3/isolate');
+    expect(transport.payload, containsPair('canonicalItemId', 'canonical-product'));
+    expect(result.confirmable, isTrue);
+    expect(result.asset.temporaryUrl, 'http://api.example/v1/assets/images/00000000-0000-4000-8000-000000000007');
+  });
 }
 
 GenerationRequest _request() => GenerationRequest(
@@ -115,6 +126,19 @@ class _Transport implements ImageHttpTransport {
           },
         }),
       );
+    }
+    if (uri.path.endsWith('/isolate')) {
+      return (statusCode: 200, body: jsonEncode({'isolation': {
+        'canonicalItemId': 'canonical-product', 'isolationState': 'unconfirmed',
+        'isolationConfidence': 0.98, 'confirmable': true,
+        'asset': {
+          'id': '00000000-0000-4000-8000-000000000007', 'mimeType': 'image/png',
+          'width': 600, 'height': 600,
+          'hash': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          'temporaryUrl': '/v1/assets/images/00000000-0000-4000-8000-000000000007',
+          'expiresAt': '2026-08-30T15:00:00.000Z',
+        },
+      }}));
     }
     return (
       statusCode: 200,

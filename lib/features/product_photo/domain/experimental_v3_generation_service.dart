@@ -14,6 +14,29 @@ class CanonicalInventoryItem {
   final int quantity;
 }
 
+class CanonicalIsolationResult {
+  const CanonicalIsolationResult({
+    required this.canonicalItemId,
+    required this.asset,
+    required this.isolationState,
+    required this.isolationConfidence,
+    required this.confirmable,
+  });
+  final String canonicalItemId;
+  final AssetReference asset;
+  final String isolationState;
+  final double isolationConfidence;
+  final bool confirmable;
+}
+
+abstract interface class CanonicalAssetIsolationClient {
+  Future<CanonicalIsolationResult> isolateCanonicalAsset({
+    required String analysisId,
+    required String canonicalItemId,
+    bool force = false,
+  });
+}
+
 class CanonicalInventory {
   const CanonicalInventory({
     required this.analysisId,

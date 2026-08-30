@@ -389,7 +389,7 @@ export function createServer({
       }
     }
     if (request.method === 'POST' &&
-        ['/api/experimental/v3/analyze', '/api/experimental/v3/generate'].includes(request.url)) {
+        ['/api/experimental/v3/analyze', '/api/experimental/v3/isolate', '/api/experimental/v3/generate'].includes(request.url)) {
       if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
         return sendJson(response, 415, { error: 'Envie o conteúdo como JSON.' }, corsOrigin);
       }
@@ -398,6 +398,10 @@ export function createServer({
         if (request.url === '/api/experimental/v3/analyze') {
           const inventory = await v3Service.analyze(payload);
           return sendJson(response, 200, { inventory }, corsOrigin);
+        }
+        if (request.url === '/api/experimental/v3/isolate') {
+          const isolation = await v3Service.isolate(payload);
+          return sendJson(response, 200, { isolation }, corsOrigin);
         }
         const batch = await v3Service.generate(payload);
         return sendJson(response, 200, { batch }, corsOrigin);

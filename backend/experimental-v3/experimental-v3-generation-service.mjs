@@ -13,6 +13,10 @@ import {
   OPENAI_GPT_IMAGE_CAPABILITIES,
 } from '../benchmark/openai-gpt-image-benchmark-provider.mjs';
 import { validateProductIdentityAnalysis } from '../image-to-image/product-identity-analyzer.mjs';
+import {
+  CanonicalAssetIsolationError,
+  createCanonicalAssetIsolationService,
+} from './canonical-asset-isolation-service.mjs';
 import { createHash } from 'node:crypto';
 import {
   ANALYSIS_POLICY_VERSION,
@@ -476,6 +480,7 @@ export function createExperimentalV3GenerationService({
   providerCapabilities = imageProvider.capabilities ?? OPENAI_GPT_IMAGE_CAPABILITIES,
   analysisSessionStore = createAnalysisSessionStore(),
   idempotencyStore = createGenerationIdempotencyStore(),
+  isolationService = createCanonicalAssetIsolationService(),
   logger,
 } = {}) {
   const effectiveLogger = logger ?? defaultLogger ?? { info() {} };
@@ -510,14 +515,67 @@ export function createExperimentalV3GenerationService({
       });
       return Object.freeze({
         analysisId: snapshot.analysisId,
-        items: input.productIdentity.items.map(({ id, functionalType, quantity }) =>
-          Object.freeze({ id, functionalType, quantity })),
+        items: normalizedAnalysis.items.map(({ id, functionalType, quantity, visualLocalization }) =>
+          Object.freeze({ id, functionalType: functionalType.value, quantity: quantity.value,
+            ...(visualLocalization ? { visualLocalization } : {}) })),
         source: Object.freeze({
           assetId: request.inputAssetId, mimeType: asset.mimeType,
           width: asset.metadata?.width, height: asset.metadata?.height,
           sha256: asset.metadata?.hash,
         }),
       });
+    },
+    async isolate(rawRequest) {
+      const analysisId = typeof rawRequest?.analysisId === 'string' ? rawRequest.analysisId.trim() : '';
+      const canonicalItemId = typeof rawRequest?.canonicalItemId === 'string' ? rawRequest.canonicalItemId.trim() : '';
+      if (!ASSET_ID_PATTERN.test(analysisId) || !canonicalItemId) {
+        throw new ExperimentalV3ValidationError('Solicitação de isolamento inválida.', {
+          code: 'INVALID_ISOLATION_REQUEST',
+        });
+      }
+      const sessionResult = analysisSessionStore.read(analysisId);
+      if (sessionResult.state !== 'active') {
+        throw new ExperimentalV3ValidationError('Sessão de análise indisponível.', {
+          code: sessionResult.state === 'expired' ? 'ANALYSIS_SESSION_EXPIRED' : 'ANALYSIS_SESSION_REQUIRED',
+          status: sessionResult.state === 'expired' ? 410 : 409,
+        });
+      }
+      const snapshot = sessionResult.snapshot;
+      const sourceAsset = await assetStore?.readImage(snapshot.sourceAssetId);
+      if (!sourceAsset || sourceAsset.metadata?.hash !== snapshot.sourceSha256) {
+        throw new ExperimentalV3ValidationError('A imagem não corresponde à análise.', {
+          code: 'ANALYSIS_SOURCE_MISMATCH', status: 409,
+        });
+      }
+      try {
+        const isolated = await isolationService.isolate({
+          sourceAsset: { ...sourceAsset, bytes: Buffer.from(sourceAsset.bytes) },
+          sourceSha256: snapshot.sourceSha256,
+          productIdentity: snapshot.productIdentity,
+          canonicalItemId,
+          force: rawRequest.force === true,
+        });
+        const asset = await assetStore.saveImage({
+          bytes: Buffer.from(isolated.transparentPng), mimeType: 'image/png', role: 'product',
+        });
+        return Object.freeze({
+          canonicalItemId, asset,
+          isolationState: isolated.isolationState,
+          isolationConfidence: isolated.segmentationConfidence,
+          confirmable: isolated.confirmable,
+          visiblePixelIntegrity: isolated.visiblePixelIntegrity,
+          effectiveBoundingRegion: isolated.effectiveBoundingRegion,
+          provider: isolated.provider, model: isolated.model, version: isolated.version,
+          cacheHit: isolated.cacheHit, inFlightShared: isolated.inFlightShared,
+        });
+      } catch (error) {
+        if (error instanceof CanonicalAssetIsolationError) {
+          throw new ExperimentalV3ValidationError('Não foi possível isolar esta referência.', {
+            code: error.code, status: error.status,
+          });
+        }
+        throw error;
+      }
     },
     async generate(rawRequest) {
       const request = validateExperimentalV3Request(rawRequest);

@@ -75,6 +75,33 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
               ],
             },
           },
+          visualLocalization: {
+            type: 'object',
+            properties: {
+              normalizedBoundingBox: {
+                type: 'object',
+                properties: {
+                  xMin: { type: 'number' }, yMin: { type: 'number' },
+                  xMax: { type: 'number' }, yMax: { type: 'number' },
+                },
+                required: ['xMin', 'yMin', 'xMax', 'yMax'],
+              },
+              positivePoints: {
+                type: 'array', items: { type: 'object', properties: {
+                  x: { type: 'number' }, y: { type: 'number' },
+                }, required: ['x', 'y'] },
+              },
+              optionalNegativePoints: {
+                type: 'array', items: { type: 'object', properties: {
+                  x: { type: 'number' }, y: { type: 'number' },
+                }, required: ['x', 'y'] },
+              },
+              localizationConfidence: { type: 'number' },
+              evidenceSource: { type: 'string' },
+            },
+            required: ['normalizedBoundingBox', 'positivePoints', 'optionalNegativePoints',
+              'localizationConfidence', 'evidenceSource'],
+          },
         },
         required: [
           'id', 'functionalType', 'quantity', 'observationCompleteness',
@@ -121,6 +148,7 @@ const analysisInstruction = [
   `Use observationCompleteness exactly one of ${PRODUCT_IDENTITY_ENUMS.observationCompleteness.join(', ')}.`,
   `For ambiguous feature visibility, use exactly one of ${PRODUCT_IDENTITY_ENUMS.ambiguousFeatureVisibility.join(', ')}.`,
   'Keep items generic and individually addressable. This policy applies to every product category.',
+  'For every confidently localized canonical item, include visualLocalization with a normalized [0,1] bounding box, one or more positive points inside only that item, optional negative points on nearby different items, localizationConfidence, and evidenceSource="multimodal_analysis". Omit visualLocalization when the item cannot be localized unambiguously. Localization is only segmentation evidence and never changes identity, quantity, or components.',
   'When clearly visible, record small structural or functional components as observedFeatures linked to their canonical item, including clasps, extenders, connectors, closures, joints, hooks, buckles, straps, hinges, fasteners, terminals, attachments, and equivalent visible functional connections. Do not invent hidden components, promote ambiguous micro-details, or require a component that lacks sufficient visual evidence.',
   `When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, relation exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleRelation.join(', ')}, and confidence exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleConfidence.join(', ')}. Omit unknown or uncertain comparisons and never estimate physical measurements.`,
 ].join(' ');

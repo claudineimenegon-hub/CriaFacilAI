@@ -145,6 +145,26 @@ test('endpoint V3 de análise devolve IDs canônicos originados no backend', asy
   assert.deepEqual((await response.json()).inventory, expected);
 });
 
+test('endpoint V3 de isolamento encaminha analysisId e item sem gerar imagem visual', async () => {
+  const calls = [];
+  const expected = {
+    canonicalItemId: 'item-a', isolationState: 'unconfirmed', isolationConfidence: 0.98,
+    confirmable: true, asset: { id: transformAssetId, mimeType: 'image/png', width: 10, height: 10 },
+  };
+  const baseUrl = await start({ experimentalV3Service: {
+    async isolate(payload) { calls.push(payload); return expected; },
+    async analyze() { throw new Error('must not analyze'); },
+    async generate() { throw new Error('must not generate'); },
+  } });
+  const response = await fetch(`${baseUrl}/api/experimental/v3/isolate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ analysisId: transformAssetId, canonicalItemId: 'item-a' }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [{ analysisId: transformAssetId, canonicalItemId: 'item-a' }]);
+  assert.deepEqual((await response.json()).isolation, expected);
+});
+
 test('geração responde 503 sem chave e não chama o provedor', async () => {
   let called = false;
   const baseUrl = await start({
