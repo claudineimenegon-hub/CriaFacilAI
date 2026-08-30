@@ -383,7 +383,7 @@ void main() {
         await tester.tap(
           find.descendant(
             of: find.byKey(ValueKey('canonical-item-$id')),
-            matching: find.text('SUBSTITUIR POR OUTRA FOTO'),
+            matching: find.text('ENVIAR OUTRA FOTO'),
           ),
         );
         await tester.pumpAndSettle();
@@ -480,6 +480,36 @@ void main() {
       await tester.tap(find.byTooltip('Remover foto'));
       await tester.pumpAndSettle();
       expect(find.text('CONFIRMAR'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'uncertain preserva preview e failed oferece retry sem substituição inexistente',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 4000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ProductPhotoPage(
+            photoSelectionService: _FakePhotoSelectionService(),
+            uploadService: _HashUploadService(),
+            experimentalV3GenerationService:
+                _MixedIsolationExperimentalV3Service(),
+          ),
+        ),
+      );
+      await tester.tap(find.text('SELECIONAR FOTO'));
+      await tester.pumpAndSettle();
+      expect(find.text('Estado: uncertain'), findsOneWidget);
+      expect(find.text('Causa: MASK_TRANSFORM_UNPROVEN'), findsOneWidget);
+      expect(find.text('Estado: failed'), findsOneWidget);
+      expect(find.text('Causa: SEGMENTATION_MASK_MISSING'), findsOneWidget);
+      expect(find.text('CONFIRMAR'), findsNothing);
+      expect(find.text('REFAZER ISOLAMENTO'), findsNWidgets(2));
+      expect(find.text('SUBSTITUIR POR OUTRA FOTO'), findsOneWidget);
+      expect(find.text('ENVIAR OUTRA FOTO'), findsOneWidget);
     },
   );
 }
@@ -733,7 +763,7 @@ class _AutomaticIsolationExperimentalV3Service
         temporaryUrl: 'http://127.0.0.1:1/$canonicalItemId.png',
         retentionPolicy: AssetRetentionPolicy.temporary,
       ),
-      isolationState: 'unconfirmed',
+      isolationState: 'awaiting_confirmation',
       isolationConfidence: 0.99,
       confirmable: true,
     );
@@ -746,6 +776,46 @@ class _AutomaticIsolationExperimentalV3Service
     required String quality,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) => throw UnimplementedError();
+}
+
+class _MixedIsolationExperimentalV3Service
+    extends _AutomaticIsolationExperimentalV3Service {
+  @override
+  Future<CanonicalIsolationResult> isolateCanonicalAsset({
+    required String analysisId,
+    required String canonicalItemId,
+    bool force = false,
+  }) async {
+    if (canonicalItemId == 'canonical-b') {
+      return CanonicalIsolationResult(
+        canonicalItemId: canonicalItemId,
+        isolationState: 'failed',
+        isolationConfidence: 0,
+        confirmable: false,
+        errorCode: 'SEGMENTATION_MASK_MISSING',
+        analysisId: analysisId,
+      );
+    }
+    return CanonicalIsolationResult(
+      canonicalItemId: canonicalItemId,
+      asset: AssetReference(
+        id: '00000000-0000-4000-8000-000000000088',
+        mediaType: AssetMediaType.image,
+        mimeType: 'image/png',
+        role: AssetRole.product,
+        width: 1,
+        height: 1,
+        hash: ''.padLeft(64, '8'),
+        temporaryUrl: 'http://127.0.0.1:1/uncertain.png',
+        retentionPolicy: AssetRetentionPolicy.temporary,
+      ),
+      isolationState: 'uncertain',
+      isolationConfidence: 0.7,
+      confirmable: false,
+      errorCode: 'MASK_TRANSFORM_UNPROVEN',
+      analysisId: analysisId,
+    );
+  }
 }
 
 List<ExperimentalV3ImageResult> _completedCampaigns() => [

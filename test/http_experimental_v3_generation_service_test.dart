@@ -16,10 +16,7 @@ void main() {
     final inventory = await service.analyzeInventory(_request());
     expect(transport.uri?.path, '/api/experimental/v3/analyze');
     expect(inventory.items.single.id, 'canonical-product');
-    expect(
-      inventory.analysisId,
-      '00000000-0000-4000-8000-000000000099',
-    );
+    expect(inventory.analysisId, '00000000-0000-4000-8000-000000000099');
     expect(
       inventory.source.hash,
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -55,13 +52,24 @@ void main() {
 
   test('solicita isolamento automático e interpreta PNG temporário', () async {
     final transport = _Transport();
-    final service = HttpExperimentalV3GenerationService(baseUrl: 'http://api.example', transport: transport);
+    final service = HttpExperimentalV3GenerationService(
+      baseUrl: 'http://api.example',
+      transport: transport,
+    );
     final result = await service.isolateCanonicalAsset(
-      analysisId: '00000000-0000-4000-8000-000000000099', canonicalItemId: 'canonical-product');
+      analysisId: '00000000-0000-4000-8000-000000000099',
+      canonicalItemId: 'canonical-product',
+    );
     expect(transport.uri?.path, '/api/experimental/v3/isolate');
-    expect(transport.payload, containsPair('canonicalItemId', 'canonical-product'));
+    expect(
+      transport.payload,
+      containsPair('canonicalItemId', 'canonical-product'),
+    );
     expect(result.confirmable, isTrue);
-    expect(result.asset.temporaryUrl, 'http://api.example/v1/assets/images/00000000-0000-4000-8000-000000000007');
+    expect(
+      result.asset?.temporaryUrl,
+      'http://api.example/v1/assets/images/00000000-0000-4000-8000-000000000007',
+    );
   });
 }
 
@@ -128,17 +136,27 @@ class _Transport implements ImageHttpTransport {
       );
     }
     if (uri.path.endsWith('/isolate')) {
-      return (statusCode: 200, body: jsonEncode({'isolation': {
-        'canonicalItemId': 'canonical-product', 'isolationState': 'unconfirmed',
-        'isolationConfidence': 0.98, 'confirmable': true,
-        'asset': {
-          'id': '00000000-0000-4000-8000-000000000007', 'mimeType': 'image/png',
-          'width': 600, 'height': 600,
-          'hash': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-          'temporaryUrl': '/v1/assets/images/00000000-0000-4000-8000-000000000007',
-          'expiresAt': '2026-08-30T15:00:00.000Z',
-        },
-      }}));
+      return (
+        statusCode: 200,
+        body: jsonEncode({
+          'isolation': {
+            'canonicalItemId': 'canonical-product',
+            'isolationState': 'unconfirmed',
+            'isolationConfidence': 0.98,
+            'confirmable': true,
+            'asset': {
+              'id': '00000000-0000-4000-8000-000000000007',
+              'mimeType': 'image/png',
+              'width': 600,
+              'height': 600,
+              'hash': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              'temporaryUrl':
+                  '/v1/assets/images/00000000-0000-4000-8000-000000000007',
+              'expiresAt': '2026-08-30T15:00:00.000Z',
+            },
+          },
+        }),
+      );
     }
     return (
       statusCode: 200,

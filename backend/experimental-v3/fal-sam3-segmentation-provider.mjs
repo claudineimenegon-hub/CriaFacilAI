@@ -16,8 +16,19 @@ function decodeDataUri(value) {
   return match ? Buffer.from(match[1], 'base64') : undefined;
 }
 
-async function readMask(result, fetchImpl, signal) {
-  const candidate = result?.masks?.[0]?.url;
+function selectMask(result) {
+  const masks = Array.isArray(result?.masks) ? result.masks : [];
+  if (masks.length === 0) throw new SegmentationProviderError('SEGMENTATION_MASK_MISSING');
+  const scoreAt = (index) => Number(result?.scores?.[index] ?? result?.metadata?.[index]?.score ?? 0);
+  let index = 0;
+  for (let candidate = 1; candidate < masks.length; candidate += 1) {
+    if (scoreAt(candidate) > scoreAt(index)) index = candidate;
+  }
+  return { index, candidate: masks[index]?.url, score: scoreAt(index), maskCount: masks.length };
+}
+
+async function readMask(selection, fetchImpl, signal) {
+  const candidate = selection.candidate;
   const inline = decodeDataUri(candidate);
   if (inline) return inline;
   if (typeof candidate !== 'string' || !candidate.startsWith('https://')) {
@@ -76,10 +87,14 @@ export function createFalSam3SegmentationProvider({
         });
         if (!response.ok) throw new SegmentationProviderError('SEGMENTATION_UPSTREAM_ERROR', response.status);
         const result = await response.json();
+        const selection = selectMask(result);
         return Object.freeze({
-          maskBytes: await readMask(result, fetchImpl, controller.signal),
-          confidence: Number(result?.scores?.[0] ?? result?.metadata?.[0]?.score ?? 0),
-          providerBox: result?.boxes?.[0] ?? result?.metadata?.[0]?.box ?? null,
+          maskBytes: await readMask(selection, fetchImpl, controller.signal),
+          confidence: selection.score,
+          providerBox: result?.boxes?.[selection.index] ?? result?.metadata?.[selection.index]?.box ?? null,
+          statusHttp: response.status,
+          maskCount: selection.maskCount,
+          selectedMaskIndex: selection.index,
         });
       } catch (error) {
         if (error?.name === 'AbortError') throw new SegmentationProviderError('SEGMENTATION_TIMEOUT', 504);

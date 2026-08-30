@@ -525,6 +525,8 @@ export function createExperimentalV3GenerationService({
       });
     },
     async isolate(rawRequest) {
+      const startedAt = Date.now();
+      let isolationDiagnostic = { isolationStatus: 'failed', confirmable: false, assetStored: false };
       const analysisId = typeof rawRequest?.analysisId === 'string' ? rawRequest.analysisId.trim() : '';
       const canonicalItemId = typeof rawRequest?.canonicalItemId === 'string' ? rawRequest.canonicalItemId.trim() : '';
       if (!ASSET_ID_PATTERN.test(analysisId) || !canonicalItemId) {
@@ -557,8 +559,21 @@ export function createExperimentalV3GenerationService({
         const asset = await assetStore.saveImage({
           bytes: Buffer.from(isolated.transparentPng), mimeType: 'image/png', role: 'product',
         });
+        isolationDiagnostic = {
+          provider: isolated.provider, model: isolated.model,
+          statusHttp: isolated.statusHttp ?? null,
+          maskCount: isolated.maskCount ?? null,
+          selectedMaskIndex: isolated.selectedMaskIndex ?? null,
+          selectedScore: isolated.selectedScore ?? null,
+          maskWidth: isolated.maskWidth ?? null, maskHeight: isolated.maskHeight ?? null,
+          sourceWidth: isolated.sourceWidth ?? null, sourceHeight: isolated.sourceHeight ?? null,
+          transformCandidate: isolated.transformCandidate ?? null,
+          alignmentValidated: isolated.alignmentValidated === true,
+          isolationStatus: isolated.isolationState, confirmable: isolated.confirmable,
+          assetStored: true, errorCode: isolated.errorCode ?? null,
+        };
         return Object.freeze({
-          canonicalItemId, asset,
+          canonicalItemId, status: isolated.isolationState, asset,
           isolationState: isolated.isolationState,
           isolationConfidence: isolated.segmentationConfidence,
           confirmable: isolated.confirmable,
@@ -566,14 +581,28 @@ export function createExperimentalV3GenerationService({
           effectiveBoundingRegion: isolated.effectiveBoundingRegion,
           provider: isolated.provider, model: isolated.model, version: isolated.version,
           cacheHit: isolated.cacheHit, inFlightShared: isolated.inFlightShared,
+          retryable: true, userConfirmed: false,
+          sourceSha256: snapshot.sourceSha256, analysisId,
+          errorCode: isolated.errorCode,
         });
       } catch (error) {
-        if (error instanceof CanonicalAssetIsolationError) {
-          throw new ExperimentalV3ValidationError('Não foi possível isolar esta referência.', {
-            code: error.code, status: error.status,
+        if (error instanceof CanonicalAssetIsolationError ||
+            (typeof error?.code === 'string' && error.code.startsWith('SEGMENTATION_'))) {
+          isolationDiagnostic = { ...isolationDiagnostic, errorCode: error.code };
+          return Object.freeze({
+            canonicalItemId, status: 'failed', asset: null,
+            isolationState: 'failed', isolationConfidence: null,
+            confirmable: false, retryable: true, userConfirmed: false,
+            sourceSha256: snapshot.sourceSha256, analysisId, errorCode: error.code,
           });
         }
         throw error;
+      } finally {
+        effectiveLogger.info({
+          component: 'CanonicalAssetIsolation', analysisIdHash: createHash('sha256').update(analysisId).digest('hex').slice(0, 16),
+          canonicalItemId, providerCalled: true, elapsedMs: Date.now() - startedAt,
+          ...isolationDiagnostic,
+        });
       }
     },
     async generate(rawRequest) {

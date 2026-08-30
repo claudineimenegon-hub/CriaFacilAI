@@ -192,29 +192,53 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
     final client = _experimentalV3GenerationService;
     if (client is! CanonicalAssetIsolationClient) return;
     final isolationClient = client as CanonicalAssetIsolationClient;
-    for (final item in inventory.items) {
-      if (!mounted || _canonicalInventory?.analysisId != inventory.analysisId) {
-        return;
-      }
-      setState(() => _isolatingCanonicalItemIds.add(item.id));
-      try {
-        final result = await isolationClient.isolateCanonicalAsset(
-          analysisId: inventory.analysisId,
-          canonicalItemId: item.id,
-        );
-        if (mounted &&
-            _canonicalInventory?.analysisId == inventory.analysisId) {
-          setState(() {
-            _automaticIsolations[item.id] = result;
-            _isolatedReferences[item.id] = result.asset;
-          });
-        }
-      } on ExperimentalV3GenerationException catch (error) {
-        if (mounted) _showMessage(error.message);
-      } finally {
-        if (mounted) setState(() => _isolatingCanonicalItemIds.remove(item.id));
-      }
+    if (!mounted || _canonicalInventory?.analysisId != inventory.analysisId) {
+      return;
     }
+    setState(
+      () => _isolatingCanonicalItemIds.addAll(
+        inventory.items.map((item) => item.id),
+      ),
+    );
+    await Future.wait(
+      inventory.items.map((item) async {
+        try {
+          final result = await isolationClient.isolateCanonicalAsset(
+            analysisId: inventory.analysisId,
+            canonicalItemId: item.id,
+          );
+          if (mounted &&
+              _canonicalInventory?.analysisId == inventory.analysisId) {
+            setState(() {
+              _automaticIsolations[item.id] = result;
+              final asset = result.asset;
+              if (asset != null) _isolatedReferences[item.id] = asset;
+            });
+          }
+        } on ExperimentalV3GenerationException catch (error) {
+          if (mounted &&
+              _canonicalInventory?.analysisId == inventory.analysisId) {
+            setState(
+              () => _automaticIsolations[item.id] = CanonicalIsolationResult(
+                canonicalItemId: item.id,
+                isolationState: 'failed',
+                isolationConfidence: 0,
+                confirmable: false,
+                errorCode: 'ISOLATION_REQUEST_FAILED',
+                sourceSha256: inventory.source.hash,
+                analysisId: inventory.analysisId,
+              ),
+            );
+            _showMessage(error.message);
+          }
+        } finally {
+          if (mounted &&
+              _canonicalInventory?.analysisId == inventory.analysisId) {
+            setState(() => _isolatingCanonicalItemIds.remove(item.id));
+          }
+        }
+      }),
+    );
   }
 
   Future<void> _redoIsolation(CanonicalInventoryItem item) async {
@@ -239,8 +263,24 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
       if (mounted && _canonicalInventory?.analysisId == inventory.analysisId) {
         setState(() {
           _automaticIsolations[item.id] = result;
-          _isolatedReferences[item.id] = result.asset;
+          final asset = result.asset;
+          if (asset != null) _isolatedReferences[item.id] = asset;
         });
+      }
+    } on ExperimentalV3GenerationException catch (error) {
+      if (mounted && _canonicalInventory?.analysisId == inventory.analysisId) {
+        setState(
+          () => _automaticIsolations[item.id] = CanonicalIsolationResult(
+            canonicalItemId: item.id,
+            isolationState: 'failed',
+            isolationConfidence: 0,
+            confirmable: false,
+            errorCode: 'ISOLATION_REQUEST_FAILED',
+            sourceSha256: inventory.source.hash,
+            analysisId: inventory.analysisId,
+          ),
+        );
+        _showMessage(error.message);
       }
     } finally {
       if (mounted) setState(() => _isolatingCanonicalItemIds.remove(item.id));
@@ -434,68 +474,104 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
               ),
               const SizedBox(height: 8),
               for (final item in inventory.items)
-                ListTile(
-                  key: ValueKey('canonical-item-${item.id}'),
-                  title: Text(item.functionalType),
-                  leading: Icon(
-                    _confirmedCanonicalItemIds.contains(item.id)
-                        ? Icons.check_circle
-                        : Icons.warning_amber,
-                    color: _confirmedCanonicalItemIds.contains(item.id)
-                        ? Colors.greenAccent
-                        : Colors.amber,
-                  ),
-                  isThreeLine: true,
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('ID: ${item.id} · quantidade: ${item.quantity}'),
-                      if (_automaticIsolations[item.id]?.asset.temporaryUrl
-                          case final url?)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Image.network(
-                            url,
-                            key: ValueKey('canonical-thumbnail-${item.id}'),
-                            width: 72,
-                            height: 72,
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, _, _) =>
-                                const Icon(Icons.broken_image),
-                          ),
-                        ),
-                      if (_isolatingCanonicalItemIds.contains(item.id))
-                        const Text('ISOLANDO...'),
-                      Wrap(
+                Builder(
+                  builder: (context) {
+                    final isolation = _automaticIsolations[item.id];
+                    final confirmed = _confirmedCanonicalItemIds.contains(
+                      item.id,
+                    );
+                    final processing = _isolatingCanonicalItemIds.contains(
+                      item.id,
+                    );
+                    final assetExpired =
+                        isolation?.asset?.expiresAt?.isBefore(DateTime.now()) ??
+                        false;
+                    final status = confirmed
+                        ? (isolation == null ? 'manual' : 'confirmed')
+                        : processing
+                        ? 'processing'
+                        : assetExpired
+                        ? 'failed'
+                        : isolation?.isolationState ?? 'pending';
+                    return ListTile(
+                      key: ValueKey('canonical-item-${item.id}'),
+                      title: Text(item.functionalType),
+                      leading: Icon(
+                        confirmed ? Icons.check_circle : Icons.warning_amber,
+                        color: confirmed ? Colors.greenAccent : Colors.amber,
+                      ),
+                      isThreeLine: true,
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          if (_automaticIsolations[item.id]?.confirmable ==
-                                  true &&
-                              !_confirmedCanonicalItemIds.contains(item.id))
-                            TextButton(
-                              onPressed: () => setState(
-                                () => _confirmedCanonicalItemIds.add(item.id),
+                          Text('ID: ${item.id} · quantidade: ${item.quantity}'),
+                          Text('Estado: $status'),
+                          if (assetExpired)
+                            const Text(
+                              'Causa: ASSET_EXPIRED',
+                              style: TextStyle(color: Colors.amber),
+                            )
+                          else if (isolation?.errorCode case final errorCode?)
+                            Text(
+                              'Causa: $errorCode',
+                              style: const TextStyle(color: Colors.amber),
+                            ),
+                          if (isolation?.asset?.temporaryUrl case final url?)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Container(
+                                width: 72,
+                                height: 72,
+                                color: Colors.white12,
+                                child: Image.network(
+                                  url,
+                                  key: ValueKey(
+                                    'canonical-thumbnail-${item.id}',
+                                  ),
+                                  fit: BoxFit.contain,
+                                  errorBuilder: (_, _, _) =>
+                                      const Icon(Icons.broken_image),
+                                ),
                               ),
-                              child: const Text('CONFIRMAR'),
                             ),
-                          if (_automaticIsolations.containsKey(item.id))
-                            TextButton(
-                              onPressed: () => _redoIsolation(item),
-                              child: const Text('REFAZER ISOLAMENTO'),
-                            ),
-                          TextButton(
-                            onPressed: _uploadingCanonicalItemId == null
-                                ? () => _selectIsolatedReference(item)
-                                : null,
-                            child: const Text('SUBSTITUIR POR OUTRA FOTO'),
+                          if (processing) const Text('ISOLANDO...'),
+                          Wrap(
+                            children: [
+                              if (isolation?.confirmable == true &&
+                                  !assetExpired &&
+                                  !confirmed)
+                                TextButton(
+                                  onPressed: () => setState(
+                                    () =>
+                                        _confirmedCanonicalItemIds.add(item.id),
+                                  ),
+                                  child: const Text('CONFIRMAR'),
+                                ),
+                              if (isolation?.retryable == true)
+                                TextButton(
+                                  onPressed: () => _redoIsolation(item),
+                                  child: const Text('REFAZER ISOLAMENTO'),
+                                ),
+                              TextButton(
+                                onPressed: _uploadingCanonicalItemId == null
+                                    ? () => _selectIsolatedReference(item)
+                                    : null,
+                                child: Text(
+                                  isolation?.asset == null
+                                      ? 'ENVIAR OUTRA FOTO'
+                                      : 'SUBSTITUIR POR OUTRA FOTO',
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                    ],
-                  ),
+                    );
+                  },
                 ),
               if (!_canonicalReferencesReady)
-                const Text(
-                  'Faltam referências isoladas. A geração permanece bloqueada.',
+                Text(
+                  'Faltam referências isoladas: ${inventory.items.where((item) => !_confirmedCanonicalItemIds.contains(item.id)).map((item) => '${item.id} (${_isolatingCanonicalItemIds.contains(item.id) ? 'processing' : _automaticIsolations[item.id]?.isolationState ?? 'pending'})').join(', ')}. A geração permanece bloqueada.',
                   style: TextStyle(color: Colors.amber),
                 ),
               const SizedBox(height: 20),

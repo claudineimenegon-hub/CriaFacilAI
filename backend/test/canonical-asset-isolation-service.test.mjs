@@ -75,20 +75,21 @@ test('máscara vazia é rejeitada e falha não entra no cache', async () => {
   assert.equal(calls, 2);
 });
 
-test('máscara ambígua fica unconfirmed e região de outro item fica contaminated', async () => {
+test('máscara ambígua fica uncertain e região de outro item fica uncertain', async () => {
   const data = await fixture();
   const ambiguousService = createCanonicalAssetIsolationService({ provider: { name: 'mock', model: 'mock', version: '1',
     async segment() { return { maskBytes: data.maskBytes, confidence: 0.5 }; } } });
   const common = { sourceAsset: { bytes: data.sourceBytes, mimeType: 'image/png', metadata: data },
     sourceSha256: 'c'.repeat(64), productIdentity: identity(), canonicalItemId: 'item-a' };
   const ambiguous = await ambiguousService.isolate(common);
-  assert.equal(ambiguous.isolationState, 'unconfirmed');
+  assert.equal(ambiguous.isolationState, 'uncertain');
   assert.equal(ambiguous.confirmable, false);
   const full = await sharp(Buffer.alloc(8, 255), { raw: { width: 4, height: 2, channels: 1 } }).png().toBuffer();
   const contaminatedService = createCanonicalAssetIsolationService({ provider: { name: 'mock', model: 'mock', version: '1',
     async segment() { return { maskBytes: full, confidence: 1 }; } } });
   const contaminated = await contaminatedService.isolate({ ...common, sourceSha256: 'd'.repeat(64) });
-  assert.equal(contaminated.isolationState, 'contaminated');
+  assert.equal(contaminated.isolationState, 'uncertain');
+  assert.equal(contaminated.errorCode, 'MASK_CONTAMINATED');
   assert.equal(contaminated.confirmable, false);
 });
 
@@ -166,7 +167,8 @@ test('transformação desconhecida em máscara de proporção diferente nunca é
     sourceSha256: '8'.repeat(64), productIdentity, canonicalItemId: 'item-a' });
   assert.equal(result.maskAlignment.verified, false);
   assert.equal(result.confirmable, false);
-  assert.equal(result.isolationState, 'unconfirmed');
+  assert.equal(result.isolationState, 'uncertain');
+  assert.equal(result.errorCode, 'MASK_TRANSFORM_UNPROVEN');
 });
 
 test('quatro IDs canônicos produzem quatro ativos independentes ligados ao ID correto', async () => {

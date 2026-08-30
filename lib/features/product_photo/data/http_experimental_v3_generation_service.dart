@@ -39,39 +39,67 @@ class HttpExperimentalV3GenerationService
     bool force = false,
   }) async {
     try {
-      final response = await _transport.postJson(
-        Uri.parse('$_baseUrl/api/experimental/v3/isolate'),
-        jsonEncode({
-          'analysisId': analysisId, 'canonicalItemId': canonicalItemId, 'force': force,
-        }),
-      ).timeout(const Duration(minutes: 3));
+      final response = await _transport
+          .postJson(
+            Uri.parse('$_baseUrl/api/experimental/v3/isolate'),
+            jsonEncode({
+              'analysisId': analysisId,
+              'canonicalItemId': canonicalItemId,
+              'force': force,
+            }),
+          )
+          .timeout(const Duration(minutes: 3));
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ExperimentalV3GenerationException(
-          body['error'] as String? ?? 'Não foi possível isolar esta referência.',
+          body['error'] as String? ??
+              'Não foi possível isolar esta referência.',
         );
       }
       final isolation = Map<String, dynamic>.from(body['isolation'] as Map);
-      final rawAsset = Map<String, dynamic>.from(isolation['asset'] as Map);
-      final relative = rawAsset['temporaryUrl'] as String;
-      final assetUrl = Uri.parse('$_baseUrl/').resolve(relative.replaceFirst(RegExp(r'^/'), '')).toString();
+      final rawAsset = isolation['asset'] == null
+          ? null
+          : Map<String, dynamic>.from(isolation['asset'] as Map);
+      final relative = rawAsset?['temporaryUrl'] as String?;
+      final assetUrl = relative == null
+          ? null
+          : Uri.parse('$_baseUrl/')
+                .resolve(relative.replaceFirst(RegExp(r'^/'), ''))
+                .toString();
       return CanonicalIsolationResult(
         canonicalItemId: isolation['canonicalItemId'] as String,
-        asset: AssetReference(
-          id: rawAsset['id'] as String, mediaType: AssetMediaType.image,
-          mimeType: rawAsset['mimeType'] as String, role: AssetRole.product,
-          width: rawAsset['width'] as int, height: rawAsset['height'] as int,
-          hash: rawAsset['hash'] as String?, temporaryUrl: assetUrl,
-          retentionPolicy: AssetRetentionPolicy.temporary,
-          expiresAt: DateTime.tryParse(rawAsset['expiresAt'] as String? ?? ''),
-        ),
+        asset: rawAsset == null
+            ? null
+            : AssetReference(
+                id: rawAsset['id'] as String,
+                mediaType: AssetMediaType.image,
+                mimeType: rawAsset['mimeType'] as String,
+                role: AssetRole.product,
+                width: rawAsset['width'] as int,
+                height: rawAsset['height'] as int,
+                hash: rawAsset['hash'] as String?,
+                temporaryUrl: assetUrl,
+                retentionPolicy: AssetRetentionPolicy.temporary,
+                expiresAt: DateTime.tryParse(
+                  rawAsset['expiresAt'] as String? ?? '',
+                ),
+              ),
         isolationState: isolation['isolationState'] as String,
-        isolationConfidence: (isolation['isolationConfidence'] as num).toDouble(),
+        isolationConfidence:
+            (isolation['isolationConfidence'] as num?)?.toDouble() ?? 0,
         confirmable: isolation['confirmable'] == true,
+        errorCode: isolation['errorCode'] as String?,
+        retryable: isolation['retryable'] != false,
+        userConfirmed: isolation['userConfirmed'] == true,
+        sourceSha256: isolation['sourceSha256'] as String?,
+        analysisId: isolation['analysisId'] as String?,
       );
-    } on ExperimentalV3GenerationException { rethrow; }
-    on Object {
-      throw const ExperimentalV3GenerationException('Não foi possível isolar esta referência agora.');
+    } on ExperimentalV3GenerationException {
+      rethrow;
+    } on Object {
+      throw const ExperimentalV3GenerationException(
+        'Não foi possível isolar esta referência agora.',
+      );
     }
   }
 

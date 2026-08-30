@@ -399,7 +399,7 @@ test('identidade sem localização alimenta isolamento secundário vinculado ao 
       assert.equal(input.sourceSha256, '1'.repeat(64));
       assert.equal(input.productIdentity.items[0].id, 'product-pair');
       return { canonicalItemId: 'product-pair', transparentPng: png,
-        isolationState: 'unconfirmed', segmentationConfidence: 0.99, confirmable: true,
+        isolationState: 'awaiting_confirmation', segmentationConfidence: 0.99, confirmable: true,
         visiblePixelIntegrity: true, effectiveBoundingRegion: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
         provider: 'mock', model: 'mock', version: '1', cacheHit: false, inFlightShared: false };
     } },
@@ -409,8 +409,33 @@ test('identidade sem localização alimenta isolamento secundário vinculado ao 
   assert.equal(Object.hasOwn(inventory.items[0], 'visualLocalization'), false);
   const isolated = await instance.isolate({ analysisId: inventory.analysisId, canonicalItemId: 'product-pair' });
   assert.equal(isolated.confirmable, true);
+  assert.equal(isolated.isolationState, 'awaiting_confirmation');
+  assert.equal(isolated.asset.mimeType, 'image/png');
   assert.equal(isolationCalls, 1);
   assert.equal(visualCalls, 0);
+});
+
+test('falha SAM vira estado failed sanitizado e não chama provider visual', async () => {
+  const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#123456' } }).png().toBuffer();
+  let visualCalls = 0;
+  const instance = createExperimentalV3GenerationService({
+    assetStore: { readImage: async () => ({ bytes: png, mimeType: 'image/png', metadata: {
+      hash: '1'.repeat(64), width: 2, height: 2,
+    } }), saveImage: async () => { throw new Error('must not store'); } },
+    productIdentityAnalyzer: { analyze: async () => structuredClone(analysis) },
+    isolationService: { isolate: async () => { throw Object.assign(new Error('private upstream detail'), {
+      code: 'SEGMENTATION_MASK_MISSING', status: 502,
+    }); } },
+    imageProvider: { async generate() { visualCalls += 1; } },
+  });
+  const inventory = await instance.analyze(request());
+  const isolated = await instance.isolate({ analysisId: inventory.analysisId, canonicalItemId: 'product-pair' });
+  assert.equal(isolated.isolationState, 'failed');
+  assert.equal(isolated.errorCode, 'SEGMENTATION_MASK_MISSING');
+  assert.equal(isolated.asset, null);
+  assert.equal(isolated.retryable, true);
+  assert.equal(visualCalls, 0);
+  assert.equal(JSON.stringify(isolated).includes('private upstream detail'), false);
 });
 
 test('timeout do Analyzer encerra o V3 sem fallback ou chamada visual', async () => {

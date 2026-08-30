@@ -62,6 +62,25 @@ test('SAM3 omite box e points quando a localização espacial não existe', asyn
   assert.equal(payload.prompt, 'Segment only the complete canonical product.');
 });
 
+test('SAM3 mantém mask, score, box e metadata alinhados pelo mesmo índice', async () => {
+  const masks = [Buffer.from('mask-a'), Buffer.from('mask-b')];
+  const provider = createFalSam3SegmentationProvider({
+    apiKey: 'secret-key',
+    fetchImpl: async () => ({ ok: true, status: 200, async json() { return {
+      masks: masks.map((value) => ({ url: `data:image/png;base64,${value.toString('base64')}` })),
+      scores: [0.4, 0.95], boxes: [[1, 1, 1, 1], [2, 2, 2, 2]],
+      metadata: [{ score: 0.4 }, { score: 0.95 }],
+    }; } }),
+  });
+  const result = await provider.segment({ sourceBytes: Buffer.from('source'), mimeType: 'image/png',
+    width: 10, height: 10, prompt: 'canonical product' });
+  assert.deepEqual(result.maskBytes, masks[1]);
+  assert.equal(result.selectedMaskIndex, 1);
+  assert.equal(result.maskCount, 2);
+  assert.equal(result.confidence, 0.95);
+  assert.deepEqual(result.providerBox, [2, 2, 2, 2]);
+});
+
 test('SAM3 sem chave falha antes de fetch', async () => {
   let calls = 0;
   const provider = createFalSam3SegmentationProvider({ apiKey: '', fetchImpl: async () => { calls += 1; } });

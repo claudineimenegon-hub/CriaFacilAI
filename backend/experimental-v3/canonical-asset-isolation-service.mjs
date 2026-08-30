@@ -162,6 +162,8 @@ async function composeTransparentSource({ sourceBytes, maskBytes, providerBox })
     effectiveBoundingRegion: Object.freeze({ xMin, yMin, xMax, yMax }),
     visiblePixelIntegrity: true,
     maskAlignment: Object.freeze(alignment),
+    maskWidth: maskMetadata.width,
+    maskHeight: maskMetadata.height,
   });
 }
 
@@ -210,8 +212,21 @@ export function createCanonicalAssetIsolationService({
       segmentationPromptVersion: 'canonical-product-identity-v1',
       sourceSha256: input.sourceSha256,
       visiblePixelIntegrity: composed.visiblePixelIntegrity,
-      isolationState: contaminatedBy.length > 0 ? 'contaminated' : ambiguous ? 'unconfirmed' : 'unconfirmed',
+      isolationState: ambiguous || contaminatedBy.length > 0 ? 'uncertain' : 'awaiting_confirmation',
       confirmable: contaminatedBy.length === 0 && !ambiguous,
+      errorCode: contaminatedBy.length > 0 ? 'MASK_CONTAMINATED'
+        : !composed.maskAlignment.verified ? 'MASK_TRANSFORM_UNPROVEN'
+          : segmented.confidence < minimumConfidence ? 'LOW_SEGMENTATION_CONFIDENCE' : null,
+      maskCount: segmented.maskCount,
+      selectedMaskIndex: segmented.selectedMaskIndex,
+      selectedScore: segmented.confidence,
+      statusHttp: segmented.statusHttp,
+      maskWidth: composed.maskWidth,
+      maskHeight: composed.maskHeight,
+      sourceWidth: composed.width,
+      sourceHeight: composed.height,
+      transformCandidate: composed.maskAlignment.mode,
+      alignmentValidated: composed.maskAlignment.verified,
       provider: provider.name, model: provider.model, version: provider.version,
     });
   };

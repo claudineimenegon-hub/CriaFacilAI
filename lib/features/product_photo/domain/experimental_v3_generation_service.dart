@@ -17,16 +17,26 @@ class CanonicalInventoryItem {
 class CanonicalIsolationResult {
   const CanonicalIsolationResult({
     required this.canonicalItemId,
-    required this.asset,
+    this.asset,
     required this.isolationState,
     required this.isolationConfidence,
     required this.confirmable,
+    this.errorCode,
+    this.retryable = true,
+    this.userConfirmed = false,
+    this.sourceSha256,
+    this.analysisId,
   });
   final String canonicalItemId;
-  final AssetReference asset;
+  final AssetReference? asset;
   final String isolationState;
   final double isolationConfidence;
   final bool confirmable;
+  final String? errorCode;
+  final bool retryable;
+  final bool userConfirmed;
+  final String? sourceSha256;
+  final String? analysisId;
 }
 
 abstract interface class CanonicalAssetIsolationClient {
