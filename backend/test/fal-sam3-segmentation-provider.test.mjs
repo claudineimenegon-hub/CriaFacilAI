@@ -6,7 +6,7 @@ import {
   FAL_SAM3_MODEL,
 } from '../experimental-v3/fal-sam3-segmentation-provider.mjs';
 
-test('SAM3 envia somente prompts geométricos e retorna máscara sem reconstrução generativa', async () => {
+test('SAM3 envia prompt semântico e prompts geométricos opcionais sem reconstrução generativa', async () => {
   const calls = [];
   const mask = Buffer.from('mask-png');
   const provider = createFalSam3SegmentationProvider({ apiKey: 'secret-key', fetchImpl: async (url, init) => {
@@ -17,6 +17,7 @@ test('SAM3 envia somente prompts geométricos e retorna máscara sem reconstruç
   } });
   const result = await provider.segment({
     sourceBytes: Buffer.from('source'), mimeType: 'image/png', width: 100, height: 200,
+    prompt: 'Segment only the complete canonical wearable product.',
     localization: {
       normalizedBoundingBox: { xMin: 0.1, yMin: 0.2, xMax: 0.8, yMax: 0.9 },
       positivePoints: [{ x: 0.2, y: 0.3 }], optionalNegativePoints: [{ x: 0.9, y: 0.5 }],
@@ -32,11 +33,33 @@ test('SAM3 envia somente prompts geométricos e retorna máscara sem reconstruç
     { x: 90, y: 100, label: 0, object_id: 1 },
   ]);
   assert.equal(payload.apply_mask, false);
-  assert.equal(payload.prompt, '');
+  assert.equal(payload.prompt, 'Segment only the complete canonical wearable product.');
   assert.equal(payload.text_prompt, undefined);
   assert.equal(calls[0].init.body.includes('secret-key'), false);
   assert.deepEqual(result.maskBytes, mask);
   assert.equal(result.confidence, 0.97);
+});
+
+test('SAM3 omite box e points quando a localização espacial não existe', async () => {
+  let payload;
+  const mask = Buffer.from('mask-png');
+  const provider = createFalSam3SegmentationProvider({
+    apiKey: 'secret-key',
+    fetchImpl: async (_url, init) => {
+      payload = JSON.parse(init.body);
+      return { ok: true, status: 200, async json() { return {
+        masks: [{ url: `data:image/png;base64,${mask.toString('base64')}` }],
+        scores: [0.98], boxes: [[0.5, 0.5, 1, 1]],
+      }; } };
+    },
+  });
+  await provider.segment({
+    sourceBytes: Buffer.from('source'), mimeType: 'image/png', width: 100, height: 200,
+    prompt: 'Segment only the complete canonical product.',
+  });
+  assert.equal(payload.box_prompts, undefined);
+  assert.equal(payload.point_prompts, undefined);
+  assert.equal(payload.prompt, 'Segment only the complete canonical product.');
 });
 
 test('SAM3 sem chave falha antes de fetch', async () => {

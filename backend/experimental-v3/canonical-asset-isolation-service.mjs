@@ -15,12 +15,41 @@ export class CanonicalAssetIsolationError extends Error {
 }
 
 const copy = (value) => structuredClone(value);
-const stableLocalization = (value) => JSON.stringify(value);
+const stableLocalization = (value) => JSON.stringify(value ?? null);
 
-function cacheKey({ sourceSha256, canonicalItemId, localization, provider }) {
+function cacheKey({ sourceSha256, canonicalItemId, localization, prompt, provider }) {
   return createHash('sha256').update([
-    sourceSha256, canonicalItemId, stableLocalization(localization), provider.model, provider.version,
+    sourceSha256, canonicalItemId, prompt, stableLocalization(localization), provider.model, provider.version,
   ].join('\u0000')).digest('hex');
+}
+
+function cleanToken(value) {
+  return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+}
+
+export function buildCanonicalSegmentationPrompt(productIdentity, canonicalItemId) {
+  const item = productIdentity?.items?.find(({ id }) => id === canonicalItemId);
+  if (!item) throw new CanonicalAssetIsolationError('CANONICAL_ITEM_NOT_FOUND', { status: 404 });
+  const type = cleanToken(item.functionalType?.value) || 'canonical product';
+  const quantity = Number.isSafeInteger(item.quantity?.value) && item.quantity.value > 0
+    ? item.quantity.value : 1;
+  const features = (item.observedFeatures ?? [])
+    .map(({ name, value }) => [cleanToken(name), cleanToken(value)].filter(Boolean).join(': '))
+    .filter(Boolean).sort().slice(0, 12);
+  const relationships = (productIdentity.relationships ?? [])
+    .filter(({ state, memberIds }) => state === 'known' && Array.isArray(memberIds) &&
+      memberIds.includes(canonicalItemId))
+    .map(({ type: relationshipType }) => cleanToken(relationshipType))
+    .filter(Boolean).sort();
+  return [
+    `Segment only the complete canonical ${type} product.`,
+    `Include exactly ${quantity} physical ${quantity === 1 ? 'unit' : 'units'} belonging to this canonical item in one complete mask.`,
+    features.length ? `Include its observed non-ambiguous visible structure: ${features.join('; ')}.` : '',
+    relationships.length
+      ? `Preserve the complete known atomic relationship: ${relationships.join(', ')}.` : '',
+    'Do not include nearby products, props, labels, background, or inferred hidden components.',
+  ].filter(Boolean).join(' ');
 }
 
 function rawBoundingBox(raw, width, height) {
@@ -155,13 +184,11 @@ export function createCanonicalAssetIsolationService({
     const item = input.productIdentity.items.find(({ id }) => id === input.canonicalItemId);
     const localization = input.visualLocalization ?? item?.visualLocalization;
     if (!item) throw new CanonicalAssetIsolationError('CANONICAL_ITEM_NOT_FOUND', { status: 404 });
-    if (!localization || localization.localizationConfidence < minimumConfidence) {
-      throw new CanonicalAssetIsolationError('VISUAL_LOCALIZATION_REQUIRED', { status: 409 });
-    }
+    const prompt = buildCanonicalSegmentationPrompt(input.productIdentity, input.canonicalItemId);
     const segmented = await provider.segment({
       sourceBytes: input.sourceAsset.bytes, mimeType: input.sourceAsset.mimeType,
       width: input.sourceAsset.metadata.width, height: input.sourceAsset.metadata.height,
-      localization, signal: input.signal,
+      prompt, ...(localization ? { localization } : {}), signal: input.signal,
     });
     const composed = await composeTransparentSource({
       sourceBytes: input.sourceAsset.bytes, maskBytes: segmented.maskBytes, providerBox: segmented.providerBox,
@@ -180,6 +207,7 @@ export function createCanonicalAssetIsolationService({
       effectiveBoundingRegion: composed.effectiveBoundingRegion,
       maskAlignment: composed.maskAlignment,
       segmentationConfidence: segmented.confidence,
+      segmentationPromptVersion: 'canonical-product-identity-v1',
       sourceSha256: input.sourceSha256,
       visiblePixelIntegrity: composed.visiblePixelIntegrity,
       isolationState: contaminatedBy.length > 0 ? 'contaminated' : ambiguous ? 'unconfirmed' : 'unconfirmed',
@@ -190,7 +218,8 @@ export function createCanonicalAssetIsolationService({
   return Object.freeze({
     provider,
     async isolate(input) {
-      const key = cacheKey({ ...input, provider });
+      const prompt = buildCanonicalSegmentationPrompt(input.productIdentity, input.canonicalItemId);
+      const key = cacheKey({ ...input, prompt, provider });
       const cached = cache.get(key);
       if (!input.force && cached && cached.expiresAt > now()) return { ...copy(cached.value), cacheHit: true, inFlightShared: false };
       if (cached) cache.delete(key);

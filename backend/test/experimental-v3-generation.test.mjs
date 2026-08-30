@@ -379,14 +379,9 @@ test('identidade ausente falha antes de Creative Director ou imagem', async () =
   await assert.rejects(() => instance.analyze(request()), { code: 'PRODUCT_ANALYSIS_REQUIRED', status: 503 });
 });
 
-test('análise localiza itens e isolamento permanece vinculado ao snapshot e source SHA', async () => {
+test('identidade sem localização alimenta isolamento secundário vinculado ao snapshot e source SHA', async () => {
   const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#123456' } }).png().toBuffer();
-  const localizedAnalysis = structuredClone(analysis);
-  localizedAnalysis.items[0].visualLocalization = {
-    normalizedBoundingBox: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
-    positivePoints: [{ x: 0.5, y: 0.5 }], optionalNegativePoints: [],
-    localizationConfidence: 1, evidenceSource: 'multimodal_analysis',
-  };
+  const semanticAnalysis = structuredClone(analysis);
   let isolationCalls = 0; let visualCalls = 0;
   const stored = new Map([[assetId, { bytes: png, mimeType: 'image/png', metadata: {
     hash: '1'.repeat(64), width: 2, height: 2,
@@ -398,7 +393,7 @@ test('análise localiza itens e isolamento permanece vinculado ao snapshot e sou
         mimeType, width: 2, height: 2, hash: '2'.repeat(64), temporaryUrl: '/asset',
         expiresAt: new Date().toISOString(), bytes }),
     },
-    productIdentityAnalyzer: { analyze: async () => localizedAnalysis },
+    productIdentityAnalyzer: { analyze: async () => semanticAnalysis },
     isolationService: { isolate: async (input) => {
       isolationCalls += 1;
       assert.equal(input.sourceSha256, '1'.repeat(64));
@@ -411,7 +406,7 @@ test('análise localiza itens e isolamento permanece vinculado ao snapshot e sou
     imageProvider: { async generate() { visualCalls += 1; } },
   });
   const inventory = await instance.analyze(request());
-  assert.equal(inventory.items[0].visualLocalization.localizationConfidence, 1);
+  assert.equal(Object.hasOwn(inventory.items[0], 'visualLocalization'), false);
   const isolated = await instance.isolate({ analysisId: inventory.analysisId, canonicalItemId: 'product-pair' });
   assert.equal(isolated.confirmable, true);
   assert.equal(isolationCalls, 1);

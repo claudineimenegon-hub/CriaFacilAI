@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
-import { CanonicalAssetIsolationError, createCanonicalAssetIsolationService } from '../experimental-v3/canonical-asset-isolation-service.mjs';
+import { buildCanonicalSegmentationPrompt, CanonicalAssetIsolationError, createCanonicalAssetIsolationService } from '../experimental-v3/canonical-asset-isolation-service.mjs';
 
 const localization = (xMin, xMax, confidence = 1) => ({
   normalizedBoundingBox: { xMin, yMin: 0, xMax, yMax: 1 },
@@ -21,9 +21,28 @@ async function fixture() {
 }
 
 const identity = () => ({ items: [
-  { id: 'item-a', visualLocalization: localization(0, 0.49) },
-  { id: 'item-b', visualLocalization: localization(0.51, 1) },
-] });
+  { id: 'item-a', functionalType: { state: 'known', value: 'wearable accessory' },
+    quantity: { state: 'known', value: 1 },
+    observedFeatures: [{ name: 'visible closure', value: 'metal hook' }],
+    ambiguousFeatures: [{ name: 'hidden rear', visibility: 'hidden' }],
+    visualLocalization: localization(0, 0.49) },
+  { id: 'item-b', functionalType: { state: 'known', value: 'matching accessory' },
+    quantity: { state: 'known', value: 2 }, observedFeatures: [], ambiguousFeatures: [],
+    visualLocalization: localization(0.51, 1) },
+], relationships: [{ type: 'pair', memberIds: ['item-b'], state: 'known' }] });
+
+test('prompt SAM é determinístico, semântico e usa somente evidência observada', () => {
+  const productIdentity = identity();
+  const single = buildCanonicalSegmentationPrompt(productIdentity, 'item-a');
+  const pair = buildCanonicalSegmentationPrompt(productIdentity, 'item-b');
+  assert.equal(single, buildCanonicalSegmentationPrompt(productIdentity, 'item-a'));
+  assert.match(single, /canonical wearable accessory/);
+  assert.match(single, /exactly 1 physical unit/);
+  assert.match(single, /visible closure: metal hook/);
+  assert.doesNotMatch(single, /hidden rear/);
+  assert.match(pair, /exactly 2 physical units/);
+  assert.match(pair, /complete known atomic relationship: pair/);
+});
 
 test('isolamento preserva RGB, alpha e componentes finos sem pós-processamento', async () => {
   const data = await fixture(); let calls = 0;
@@ -88,14 +107,24 @@ test('cache e in-flight evitam segunda segmentação bem-sucedida', async () => 
   assert.equal(calls, 1);
 });
 
-test('localização ausente ou de baixa confiança é rejeitada antes do provider', async () => {
+test('localização ausente não invalida identidade e SAM recebe somente prompt textual', async () => {
   const data = await fixture(); let calls = 0;
   const service = createCanonicalAssetIsolationService({ provider: { name: 'mock', model: 'mock', version: '1',
-    async segment() { calls += 1; } } });
-  await assert.rejects(service.isolate({ sourceAsset: { bytes: data.sourceBytes, mimeType: 'image/png', metadata: data },
-    sourceSha256: 'f'.repeat(64), productIdentity: { items: [{ id: 'item-a' }] }, canonicalItemId: 'item-a' }),
-  (error) => error.code === 'VISUAL_LOCALIZATION_REQUIRED');
-  assert.equal(calls, 0);
+    async segment(input) {
+      calls += 1;
+      assert.equal(input.localization, undefined);
+      assert.match(input.prompt, /canonical portable product/);
+      return { maskBytes: data.maskBytes, confidence: 1 };
+    } } });
+  const productIdentity = { state: 'known', items: [{ id: 'item-a',
+    functionalType: { state: 'known', value: 'portable product' },
+    quantity: { state: 'known', value: 1 }, observedFeatures: [], ambiguousFeatures: [],
+  }], relationships: [] };
+  const result = await service.isolate({ sourceAsset: { bytes: data.sourceBytes, mimeType: 'image/png', metadata: data },
+    sourceSha256: 'f'.repeat(64), productIdentity, canonicalItemId: 'item-a' });
+  assert.equal(result.confirmable, true);
+  assert.equal(productIdentity.state, 'known');
+  assert.equal(calls, 1);
 });
 
 test('máscara quadrada letterboxed é alinhada ao source vertical sem redimensionar RGB', async () => {

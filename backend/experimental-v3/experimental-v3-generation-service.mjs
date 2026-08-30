@@ -515,9 +515,8 @@ export function createExperimentalV3GenerationService({
       });
       return Object.freeze({
         analysisId: snapshot.analysisId,
-        items: normalizedAnalysis.items.map(({ id, functionalType, quantity, visualLocalization }) =>
-          Object.freeze({ id, functionalType: functionalType.value, quantity: quantity.value,
-            ...(visualLocalization ? { visualLocalization } : {}) })),
+        items: normalizedAnalysis.items.map(({ id, functionalType, quantity }) =>
+          Object.freeze({ id, functionalType: functionalType.value, quantity: quantity.value })),
         source: Object.freeze({
           assetId: request.inputAssetId, mimeType: asset.mimeType,
           width: asset.metadata?.width, height: asset.metadata?.height,

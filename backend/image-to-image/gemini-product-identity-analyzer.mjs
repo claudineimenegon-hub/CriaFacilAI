@@ -75,33 +75,6 @@ export const GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA = Object.freeze({
               ],
             },
           },
-          visualLocalization: {
-            type: 'object',
-            properties: {
-              normalizedBoundingBox: {
-                type: 'object',
-                properties: {
-                  xMin: { type: 'number' }, yMin: { type: 'number' },
-                  xMax: { type: 'number' }, yMax: { type: 'number' },
-                },
-                required: ['xMin', 'yMin', 'xMax', 'yMax'],
-              },
-              positivePoints: {
-                type: 'array', items: { type: 'object', properties: {
-                  x: { type: 'number' }, y: { type: 'number' },
-                }, required: ['x', 'y'] },
-              },
-              optionalNegativePoints: {
-                type: 'array', items: { type: 'object', properties: {
-                  x: { type: 'number' }, y: { type: 'number' },
-                }, required: ['x', 'y'] },
-              },
-              localizationConfidence: { type: 'number' },
-              evidenceSource: { type: 'string' },
-            },
-            required: ['normalizedBoundingBox', 'positivePoints', 'optionalNegativePoints',
-              'localizationConfidence', 'evidenceSource'],
-          },
         },
         required: [
           'id', 'functionalType', 'quantity', 'observationCompleteness',
@@ -148,7 +121,6 @@ const analysisInstruction = [
   `Use observationCompleteness exactly one of ${PRODUCT_IDENTITY_ENUMS.observationCompleteness.join(', ')}.`,
   `For ambiguous feature visibility, use exactly one of ${PRODUCT_IDENTITY_ENUMS.ambiguousFeatureVisibility.join(', ')}.`,
   'Keep items generic and individually addressable. This policy applies to every product category.',
-  'For every confidently localized canonical item, visualLocalization must use exactly this representation: normalizedBoundingBox={xMin,yMin,xMax,yMax} with numeric coordinates in [0,1] and xMin<xMax/yMin<yMax; positivePoints=[{x,y}] with at least one normalized point inside only that item; optionalNegativePoints=[] or normalized points on nearby different items; localizationConfidence as a numeric value in [0,1]; evidenceSource="multimodal_analysis". Omit the entire visualLocalization property (never null or partial) when the item cannot be localized unambiguously. Localization is only segmentation evidence and never changes identity, quantity, or components.',
   'When clearly visible, record small structural or functional components as observedFeatures linked to their canonical item, including clasps, extenders, connectors, closures, joints, hooks, buckles, straps, hinges, fasteners, terminals, attachments, and equivalent visible functional connections. Do not invent hidden components, promote ambiguous micro-details, or require a component that lacks sufficient visual evidence.',
   `When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, relation exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleRelation.join(', ')}, and confidence exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleConfidence.join(', ')}. Omit unknown or uncertain comparisons and never estimate physical measurements.`,
 ].join(' ');
@@ -237,78 +209,6 @@ function normalizeStructuredAnalysis(value) {
     if (canonical !== object[key]) applied = true;
     object[key] = canonical;
   };
-  const normalizedPoint = (value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-    const point = { ...value };
-    rename(point, 'x', ['x_coordinate']);
-    rename(point, 'y', ['y_coordinate']);
-    if (Object.keys(point).some((key) => !['x', 'y'].includes(key)) ||
-        ![point.x, point.y].every((entry) => typeof entry === 'number' &&
-          Number.isFinite(entry) && entry >= 0 && entry <= 1)) return undefined;
-    return point;
-  };
-  const normalizeVisualLocalization = (item) => {
-    if (!Object.hasOwn(item, 'visualLocalization')) return;
-    const localization = item.visualLocalization;
-    const discard = () => {
-      delete item.visualLocalization;
-      localizationDiscardedCount += 1;
-      applied = true;
-    };
-    if (!localization || typeof localization !== 'object' || Array.isArray(localization)) {
-      discard();
-      return;
-    }
-    rename(localization, 'normalizedBoundingBox', ['normalized_bounding_box']);
-    rename(localization, 'positivePoints', ['positive_points']);
-    rename(localization, 'optionalNegativePoints', ['optional_negative_points']);
-    rename(localization, 'localizationConfidence', ['localization_confidence']);
-    rename(localization, 'evidenceSource', ['evidence_source']);
-    if (localization.optionalNegativePoints == null) {
-      localization.optionalNegativePoints = [];
-      applied = true;
-    }
-    const box = localization.normalizedBoundingBox;
-    if (box && typeof box === 'object' && !Array.isArray(box)) {
-      rename(box, 'xMin', ['x_min']);
-      rename(box, 'yMin', ['y_min']);
-      rename(box, 'xMax', ['x_max']);
-      rename(box, 'yMax', ['y_max']);
-    }
-    const source = canonicalizeProductIdentityEnum(
-      'visualLocalizationEvidenceSource', localization.evidenceSource,
-    );
-    if (source !== undefined && source !== localization.evidenceSource) applied = true;
-    if (source !== undefined) localization.evidenceSource = source;
-    const boxValues = box && [box.xMin, box.yMin, box.xMax, box.yMax];
-    const positivePoints = Array.isArray(localization.positivePoints)
-      ? localization.positivePoints.map(normalizedPoint) : [];
-    const negativePoints = Array.isArray(localization.optionalNegativePoints)
-      ? localization.optionalNegativePoints.map(normalizedPoint) : [];
-    const valid = Object.keys(localization).every((key) => [
-      'normalizedBoundingBox', 'positivePoints', 'optionalNegativePoints',
-      'localizationConfidence', 'evidenceSource',
-    ].includes(key)) && box && Object.keys(box).every((key) =>
-      ['xMin', 'yMin', 'xMax', 'yMax'].includes(key)) &&
-      boxValues?.every((entry) => typeof entry === 'number' && Number.isFinite(entry) &&
-        entry >= 0 && entry <= 1) && box.xMin < box.xMax && box.yMin < box.yMax &&
-      positivePoints.length === localization.positivePoints?.length &&
-      positivePoints.every((point) => point !== undefined) && positivePoints.length >= 1 &&
-      positivePoints.length <= 16 &&
-      negativePoints.length === localization.optionalNegativePoints?.length &&
-      negativePoints.every((point) => point !== undefined) && negativePoints.length <= 16 &&
-      typeof localization.localizationConfidence === 'number' &&
-      Number.isFinite(localization.localizationConfidence) &&
-      localization.localizationConfidence >= 0 && localization.localizationConfidence <= 1 &&
-      source !== undefined;
-    if (!valid) {
-      discard();
-      return;
-    }
-    localization.positivePoints = positivePoints;
-    localization.optionalNegativePoints = negativePoints;
-    localizationAcceptedCount += 1;
-  };
   rename(clone, 'items', ['products']);
   rename(clone, 'relationships', ['relations']);
   normalizeEnum(clone, 'state', 'state', 'analysis.state');
@@ -318,7 +218,12 @@ function normalizeStructuredAnalysis(value) {
       rename(item, 'observationCompleteness', ['observation_completeness']);
       rename(item, 'observedFeatures', ['observed_features']);
       rename(item, 'ambiguousFeatures', ['ambiguous_features']);
-      rename(item, 'visualLocalization', ['visual_localization']);
+      if (Object.hasOwn(item, 'visualLocalization') || Object.hasOwn(item, 'visual_localization')) {
+        delete item.visualLocalization;
+        delete item.visual_localization;
+        localizationDiscardedCount += 1;
+        applied = true;
+      }
       normalizeEnum(item?.functionalType, 'state', 'state', `items[${itemIndex}].functionalType.state`);
       normalizeEnum(item?.quantity, 'state', 'state', `items[${itemIndex}].quantity.state`);
       normalizeEnum(item, 'observationCompleteness', 'observationCompleteness',
@@ -331,7 +236,6 @@ function normalizeStructuredAnalysis(value) {
             `items[${itemIndex}].ambiguousFeatures[${featureIndex}].visibility`);
         }
       }
-      normalizeVisualLocalization(item);
     }
   }
   if (Array.isArray(clone.relationships)) {

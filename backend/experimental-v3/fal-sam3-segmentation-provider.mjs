@@ -37,29 +37,39 @@ export function createFalSam3SegmentationProvider({
   return Object.freeze({
     name: 'fal-sam3-segmentation', model: FAL_SAM3_MODEL, version: FAL_SAM3_VERSION,
     isConfigured: normalizedKey.length > 0,
-    async segment({ sourceBytes, mimeType, width, height, localization, signal }) {
+    async segment({ sourceBytes, mimeType, width, height, prompt, localization, signal }) {
       if (!normalizedKey) throw new SegmentationProviderError('SEGMENTATION_PROVIDER_NOT_CONFIGURED', 503);
+      if (typeof prompt !== 'string' || prompt.trim().length < 1 || prompt.length > 2_000) {
+        throw new SegmentationProviderError('INVALID_SEGMENTATION_PROMPT', 400);
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const abort = () => controller.abort();
       signal?.addEventListener('abort', abort, { once: true });
       try {
-        const box = localization.normalizedBoundingBox;
         const payload = {
           image_url: `data:${mimeType};base64,${sourceBytes.toString('base64')}`,
-          prompt: '',
-          box_prompts: [{
-            x_min: Math.round(box.xMin * width), y_min: Math.round(box.yMin * height),
-            x_max: Math.round(box.xMax * width), y_max: Math.round(box.yMax * height),
-            object_id: 1,
-          }],
-          point_prompts: [
-            ...localization.positivePoints.map(({ x, y }) => ({ x: Math.round(x * width), y: Math.round(y * height), label: 1, object_id: 1 })),
-            ...localization.optionalNegativePoints.map(({ x, y }) => ({ x: Math.round(x * width), y: Math.round(y * height), label: 0, object_id: 1 })),
-          ],
+          prompt: prompt.trim(),
           apply_mask: false, sync_mode: true, output_format: 'png',
           return_multiple_masks: false, max_masks: 1, include_scores: true, include_boxes: true,
         };
+        if (localization?.normalizedBoundingBox) {
+          const box = localization.normalizedBoundingBox;
+          payload.box_prompts = [{
+            x_min: Math.round(box.xMin * width), y_min: Math.round(box.yMin * height),
+            x_max: Math.round(box.xMax * width), y_max: Math.round(box.yMax * height),
+            object_id: 1,
+          }];
+        }
+        const points = localization ? [
+          ...(localization.positivePoints ?? []).map(({ x, y }) => ({
+            x: Math.round(x * width), y: Math.round(y * height), label: 1, object_id: 1,
+          })),
+          ...(localization.optionalNegativePoints ?? []).map(({ x, y }) => ({
+            x: Math.round(x * width), y: Math.round(y * height), label: 0, object_id: 1,
+          })),
+        ] : [];
+        if (points.length > 0) payload.point_prompts = points;
         const response = await fetchImpl(FAL_SAM3_ENDPOINT, {
           method: 'POST', headers: { Authorization: `Key ${normalizedKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(payload), signal: controller.signal,

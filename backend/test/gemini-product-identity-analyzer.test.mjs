@@ -190,20 +190,6 @@ test('schema remoto usa somente o subconjunto estrutural aceito pelo Gemini', ()
     'items[].quantity',
     'items[].quantity.state',
     'items[].quantity.value',
-    'items[].visualLocalization',
-    'items[].visualLocalization.evidenceSource',
-    'items[].visualLocalization.localizationConfidence',
-    'items[].visualLocalization.normalizedBoundingBox',
-    'items[].visualLocalization.normalizedBoundingBox.xMax',
-    'items[].visualLocalization.normalizedBoundingBox.xMin',
-    'items[].visualLocalization.normalizedBoundingBox.yMax',
-    'items[].visualLocalization.normalizedBoundingBox.yMin',
-    'items[].visualLocalization.optionalNegativePoints',
-    'items[].visualLocalization.optionalNegativePoints[].x',
-    'items[].visualLocalization.optionalNegativePoints[].y',
-    'items[].visualLocalization.positivePoints',
-    'items[].visualLocalization.positivePoints[].x',
-    'items[].visualLocalization.positivePoints[].y',
     'relationships',
     'relationships[].memberIds',
     'relationships[].state',
@@ -545,122 +531,44 @@ test('aceita structured output com múltiplos itens, relações e evidências', 
   assert.deepEqual(result.relationships[0].memberIds, ['item-a', 'item-b']);
 });
 
-test('visualLocalization é opcional no schema remoto e a representação solicitada é canônica', () => {
+test('schema e prompt Gemini não solicitam visualLocalization', async () => {
   const itemSchema = GEMINI_PRODUCT_IDENTITY_RESPONSE_SCHEMA.properties.items.items;
-  const localizationSchema = itemSchema.properties.visualLocalization;
-  assert.equal(itemSchema.required.includes('visualLocalization'), false);
-  assert.deepEqual(localizationSchema.required, [
-    'normalizedBoundingBox', 'positivePoints', 'optionalNegativePoints',
-    'localizationConfidence', 'evidenceSource',
-  ]);
-});
-
-test('aceita identidade sem localização e localização canônica válida', async () => {
-  const events = [];
-  let responseIndex = 0;
-  const responses = [
-    { state: 'known', items: [genericItem()], relationships: [] },
-    { state: 'known', items: [{
-      ...genericItem(),
-      visualLocalization: {
-        normalizedBoundingBox: { xMin: 0.1, yMin: 0.2, xMax: 0.8, yMax: 0.9 },
-        positivePoints: [{ x: 0.4, y: 0.5 }], optionalNegativePoints: [],
-        localizationConfidence: 0.9, evidenceSource: 'multimodal_analysis',
-      },
-    }], relationships: [] },
-  ];
+  assert.equal(Object.hasOwn(itemSchema.properties, 'visualLocalization'), false);
+  let instruction;
   const analyzer = new GeminiProductIdentityAnalyzer({
-    apiKey, fetchImpl: async () => geminiResponse(responses[responseIndex++]),
-    logger: { info: (event) => events.push(event) },
+    apiKey,
+    fetchImpl: async (_url, options) => {
+      instruction = JSON.parse(options.body).contents[0].parts[0].text;
+      return geminiResponse({ state: 'known', items: [genericItem()], relationships: [] });
+    },
   });
-  const without = await analyzer.analyze({ ...analyzerInput(), cacheKey: undefined });
-  const localized = await analyzer.analyze({ ...analyzerInput(), cacheKey: undefined });
-  assert.equal(Object.hasOwn(without.items[0], 'visualLocalization'), false);
-  assert.equal(localized.items[0].visualLocalization.localizationConfidence, 0.9);
-  assert.equal(events[0].localizationAcceptedCount, 0);
-  assert.equal(events[0].localizationDiscardedCount, 0);
-  assert.equal(events[1].localizationAcceptedCount, 1);
-  assert.equal(events[1].identityValidWithoutLocalization, false);
+  const result = await analyzer.analyze({ ...analyzerInput(), cacheKey: undefined });
+  assert.equal(result.state, 'known');
+  assert.equal(Object.hasOwn(result.items[0], 'visualLocalization'), false);
+  assert.doesNotMatch(instruction, /visualLocalization|bounding box|positive points|spatial/i);
 });
 
-test('descarta somente localização ausente, nula ou inválida sem apagar identidade', async (t) => {
-  const invalidLocalizations = [
-    ['null', null],
-    ['fora do intervalo', {
-      normalizedBoundingBox: { xMin: 0, yMin: 0, xMax: 1000, yMax: 1 },
-      positivePoints: [{ x: 0.5, y: 0.5 }], optionalNegativePoints: [],
-      localizationConfidence: 1, evidenceSource: 'multimodal_analysis',
-    }],
-    ['box invertida', {
-      normalizedBoundingBox: { xMin: 0.8, yMin: 0, xMax: 0.2, yMax: 1 },
-      positivePoints: [{ x: 0.5, y: 0.5 }], optionalNegativePoints: [],
-      localizationConfidence: 1, evidenceSource: 'multimodal_analysis',
-    }],
-    ['point inválido', {
-      normalizedBoundingBox: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
-      positivePoints: [{ x: -1, y: 0.5 }], optionalNegativePoints: [],
-      localizationConfidence: 1, evidenceSource: 'multimodal_analysis',
-    }],
-    ['enum inválido', {
-      normalizedBoundingBox: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
-      positivePoints: [{ x: 0.5, y: 0.5 }], optionalNegativePoints: [],
-      localizationConfidence: 1, evidenceSource: 'guessed_by_model',
-    }],
-    ['positivePoints vazio', {
-      normalizedBoundingBox: { xMin: 0, yMin: 0, xMax: 1, yMax: 1 },
-      positivePoints: [], optionalNegativePoints: [],
-      localizationConfidence: 1, evidenceSource: 'multimodal_analysis',
-    }],
-  ];
-  for (const [name, visualLocalization] of invalidLocalizations) {
-    await t.test(name, async () => {
-      const events = [];
-      const analysis = {
-        state: 'known',
-        items: [
-          { ...genericItem({ id: 'item-a', quantity: 2 }), visualLocalization },
-          genericItem({ id: 'item-b' }),
-        ],
-        relationships: [{ type: 'pair', memberIds: ['item-a'], state: 'known' }],
-      };
-      const analyzer = new GeminiProductIdentityAnalyzer({
-        apiKey, fetchImpl: async () => geminiResponse(analysis),
-        logger: { info: (event) => events.push(event) },
-      });
-      const result = await analyzer.analyze({ ...analyzerInput(), cacheKey: undefined });
-      assert.equal(result.items.length, 2);
-      assert.equal(result.items[0].quantity.value, 2);
-      assert.deepEqual(result.relationships[0].memberIds, ['item-a']);
-      assert.equal(Object.hasOwn(result.items[0], 'visualLocalization'), false);
-      assert.equal(events[0].localizationDiscardedCount, 1);
-      assert.equal(events[0].localizationAcceptedCount, 0);
-      assert.equal(events[0].identityValidWithoutLocalization, true);
-      assert.doesNotMatch(JSON.stringify(events[0]), /guessed_by_model|1000/);
-    });
-  }
-});
-
-test('normaliza somente aliases inequívocos de localização', async () => {
+test('localização inesperada do Gemini é ignorada sem alterar inventário semântico', async () => {
+  const events = [];
   const analyzer = new GeminiProductIdentityAnalyzer({
     apiKey,
     fetchImpl: async () => geminiResponse({
       state: 'known', items: [{
-        ...genericItem(), visual_localization: {
-          normalized_bounding_box: { x_min: 0.1, y_min: 0.2, x_max: 0.8, y_max: 0.9 },
-          positive_points: [{ x_coordinate: 0.4, y_coordinate: 0.5 }],
-          optional_negative_points: null,
-          localization_confidence: 0.8,
-          evidence_source: 'Multimodal-Analysis',
-        },
-      }], relationships: [],
+        ...genericItem({ id: 'item-a', quantity: 2 }),
+        visualLocalization: { arbitrary: 'provider-specific spatial output' },
+      }], relationships: [{ type: 'pair', memberIds: ['item-a'], state: 'known' }],
     }),
+    logger: { info: (event) => events.push(event) },
   });
   const result = await analyzer.analyze({ ...analyzerInput(), cacheKey: undefined });
-  assert.deepEqual(result.items[0].visualLocalization, {
-    normalizedBoundingBox: { xMin: 0.1, yMin: 0.2, xMax: 0.8, yMax: 0.9 },
-    positivePoints: [{ x: 0.4, y: 0.5 }], optionalNegativePoints: [],
-    localizationConfidence: 0.8, evidenceSource: 'multimodal_analysis',
-  });
+  assert.equal(result.state, 'known');
+  assert.equal(result.items[0].quantity.value, 2);
+  assert.deepEqual(result.relationships[0].memberIds, ['item-a']);
+  assert.equal(Object.hasOwn(result.items[0], 'visualLocalization'), false);
+  assert.equal(events[0].localizationAcceptedCount, 0);
+  assert.equal(events[0].localizationDiscardedCount, 1);
+  assert.equal(events[0].identityValidWithoutLocalization, true);
+  assert.doesNotMatch(JSON.stringify(events[0]), /provider-specific spatial output/);
 });
 
 test('preserva estados uncertain e unknown sem inventar valores', async () => {
