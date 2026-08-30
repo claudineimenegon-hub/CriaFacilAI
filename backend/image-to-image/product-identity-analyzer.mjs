@@ -6,6 +6,7 @@ export const PRODUCT_IDENTITY_ENUMS = Object.freeze({
     'slightly_larger', 'approximately_same', 'clearly_larger', 'significantly_smaller',
   ]),
   relativeScaleConfidence: Object.freeze(['high', 'medium', 'low']),
+  visualLocalizationEvidenceSource: Object.freeze(['multimodal_analysis', 'user_provided']),
 });
 
 const ENUM_ALIASES = Object.freeze({
@@ -20,6 +21,7 @@ const ENUM_ALIASES = Object.freeze({
     approximately_the_same: 'approximately_same',
   }),
   relativeScaleConfidence: Object.freeze({}),
+  visualLocalizationEvidenceSource: Object.freeze({}),
 });
 
 export function canonicalizeProductIdentityEnum(enumName, value) {
@@ -34,6 +36,7 @@ const completenessValues = new Set(PRODUCT_IDENTITY_ENUMS.observationCompletenes
 const visibilityValues = new Set(PRODUCT_IDENTITY_ENUMS.ambiguousFeatureVisibility);
 const relativeScaleRelations = new Set(PRODUCT_IDENTITY_ENUMS.relativeScaleRelation);
 const confidenceValues = new Set(PRODUCT_IDENTITY_ENUMS.relativeScaleConfidence);
+const localizationEvidenceSources = new Set(PRODUCT_IDENTITY_ENUMS.visualLocalizationEvidenceSource);
 
 export const PRODUCT_IDENTITY_ANALYSIS_LIMITS = Object.freeze({
   encodedBytes: 32 * 1024,
@@ -148,7 +151,7 @@ function validateVisualLocalization(value, path) {
       value.localizationConfidence < 0 || value.localizationConfidence > 1) {
     fail(`${path}.localizationConfidence is invalid.`);
   }
-  if (!['multimodal_analysis', 'user_provided'].includes(value.evidenceSource)) {
+  if (!localizationEvidenceSources.has(value.evidenceSource)) {
     fail(`${path}.evidenceSource is invalid.`);
   }
   return Object.freeze({

@@ -148,7 +148,7 @@ const analysisInstruction = [
   `Use observationCompleteness exactly one of ${PRODUCT_IDENTITY_ENUMS.observationCompleteness.join(', ')}.`,
   `For ambiguous feature visibility, use exactly one of ${PRODUCT_IDENTITY_ENUMS.ambiguousFeatureVisibility.join(', ')}.`,
   'Keep items generic and individually addressable. This policy applies to every product category.',
-  'For every confidently localized canonical item, include visualLocalization with a normalized [0,1] bounding box, one or more positive points inside only that item, optional negative points on nearby different items, localizationConfidence, and evidenceSource="multimodal_analysis". Omit visualLocalization when the item cannot be localized unambiguously. Localization is only segmentation evidence and never changes identity, quantity, or components.',
+  'For every confidently localized canonical item, visualLocalization must use exactly this representation: normalizedBoundingBox={xMin,yMin,xMax,yMax} with numeric coordinates in [0,1] and xMin<xMax/yMin<yMax; positivePoints=[{x,y}] with at least one normalized point inside only that item; optionalNegativePoints=[] or normalized points on nearby different items; localizationConfidence as a numeric value in [0,1]; evidenceSource="multimodal_analysis". Omit the entire visualLocalization property (never null or partial) when the item cannot be localized unambiguously. Localization is only segmentation evidence and never changes identity, quantity, or components.',
   'When clearly visible, record small structural or functional components as observedFeatures linked to their canonical item, including clasps, extenders, connectors, closures, joints, hooks, buckles, straps, hinges, fasteners, terminals, attachments, and equivalent visible functional connections. Do not invent hidden components, promote ambiguous micro-details, or require a component that lacks sufficient visual evidence.',
   `When at least two canonical items have a robust source-visible size relationship, optionally report relativeScale using their exact IDs, relation exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleRelation.join(', ')}, and confidence exactly one of ${PRODUCT_IDENTITY_ENUMS.relativeScaleConfidence.join(', ')}. Omit unknown or uncertain comparisons and never estimate physical measurements.`,
 ].join(' ');
@@ -195,6 +195,8 @@ function normalizeStructuredAnalysis(value) {
   let normalized = value;
   let applied = false;
   const invalidEnums = [];
+  let localizationAcceptedCount = 0;
+  let localizationDiscardedCount = 0;
   if (normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const keys = Object.keys(normalized);
     const wrapper = ['analysis', 'productIdentityAnalysis', 'result']
@@ -206,7 +208,10 @@ function normalizeStructuredAnalysis(value) {
     }
   }
   if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
-    return { analysis: normalized, applied, invalidEnums };
+    return {
+      analysis: normalized, applied, invalidEnums,
+      localizationAcceptedCount, localizationDiscardedCount,
+    };
   }
   const clone = structuredClone(normalized);
   const rename = (object, canonical, aliases) => {
@@ -232,6 +237,78 @@ function normalizeStructuredAnalysis(value) {
     if (canonical !== object[key]) applied = true;
     object[key] = canonical;
   };
+  const normalizedPoint = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const point = { ...value };
+    rename(point, 'x', ['x_coordinate']);
+    rename(point, 'y', ['y_coordinate']);
+    if (Object.keys(point).some((key) => !['x', 'y'].includes(key)) ||
+        ![point.x, point.y].every((entry) => typeof entry === 'number' &&
+          Number.isFinite(entry) && entry >= 0 && entry <= 1)) return undefined;
+    return point;
+  };
+  const normalizeVisualLocalization = (item) => {
+    if (!Object.hasOwn(item, 'visualLocalization')) return;
+    const localization = item.visualLocalization;
+    const discard = () => {
+      delete item.visualLocalization;
+      localizationDiscardedCount += 1;
+      applied = true;
+    };
+    if (!localization || typeof localization !== 'object' || Array.isArray(localization)) {
+      discard();
+      return;
+    }
+    rename(localization, 'normalizedBoundingBox', ['normalized_bounding_box']);
+    rename(localization, 'positivePoints', ['positive_points']);
+    rename(localization, 'optionalNegativePoints', ['optional_negative_points']);
+    rename(localization, 'localizationConfidence', ['localization_confidence']);
+    rename(localization, 'evidenceSource', ['evidence_source']);
+    if (localization.optionalNegativePoints == null) {
+      localization.optionalNegativePoints = [];
+      applied = true;
+    }
+    const box = localization.normalizedBoundingBox;
+    if (box && typeof box === 'object' && !Array.isArray(box)) {
+      rename(box, 'xMin', ['x_min']);
+      rename(box, 'yMin', ['y_min']);
+      rename(box, 'xMax', ['x_max']);
+      rename(box, 'yMax', ['y_max']);
+    }
+    const source = canonicalizeProductIdentityEnum(
+      'visualLocalizationEvidenceSource', localization.evidenceSource,
+    );
+    if (source !== undefined && source !== localization.evidenceSource) applied = true;
+    if (source !== undefined) localization.evidenceSource = source;
+    const boxValues = box && [box.xMin, box.yMin, box.xMax, box.yMax];
+    const positivePoints = Array.isArray(localization.positivePoints)
+      ? localization.positivePoints.map(normalizedPoint) : [];
+    const negativePoints = Array.isArray(localization.optionalNegativePoints)
+      ? localization.optionalNegativePoints.map(normalizedPoint) : [];
+    const valid = Object.keys(localization).every((key) => [
+      'normalizedBoundingBox', 'positivePoints', 'optionalNegativePoints',
+      'localizationConfidence', 'evidenceSource',
+    ].includes(key)) && box && Object.keys(box).every((key) =>
+      ['xMin', 'yMin', 'xMax', 'yMax'].includes(key)) &&
+      boxValues?.every((entry) => typeof entry === 'number' && Number.isFinite(entry) &&
+        entry >= 0 && entry <= 1) && box.xMin < box.xMax && box.yMin < box.yMax &&
+      positivePoints.length === localization.positivePoints?.length &&
+      positivePoints.every((point) => point !== undefined) && positivePoints.length >= 1 &&
+      positivePoints.length <= 16 &&
+      negativePoints.length === localization.optionalNegativePoints?.length &&
+      negativePoints.every((point) => point !== undefined) && negativePoints.length <= 16 &&
+      typeof localization.localizationConfidence === 'number' &&
+      Number.isFinite(localization.localizationConfidence) &&
+      localization.localizationConfidence >= 0 && localization.localizationConfidence <= 1 &&
+      source !== undefined;
+    if (!valid) {
+      discard();
+      return;
+    }
+    localization.positivePoints = positivePoints;
+    localization.optionalNegativePoints = negativePoints;
+    localizationAcceptedCount += 1;
+  };
   rename(clone, 'items', ['products']);
   rename(clone, 'relationships', ['relations']);
   normalizeEnum(clone, 'state', 'state', 'analysis.state');
@@ -241,6 +318,7 @@ function normalizeStructuredAnalysis(value) {
       rename(item, 'observationCompleteness', ['observation_completeness']);
       rename(item, 'observedFeatures', ['observed_features']);
       rename(item, 'ambiguousFeatures', ['ambiguous_features']);
+      rename(item, 'visualLocalization', ['visual_localization']);
       normalizeEnum(item?.functionalType, 'state', 'state', `items[${itemIndex}].functionalType.state`);
       normalizeEnum(item?.quantity, 'state', 'state', `items[${itemIndex}].quantity.state`);
       normalizeEnum(item, 'observationCompleteness', 'observationCompleteness',
@@ -253,6 +331,7 @@ function normalizeStructuredAnalysis(value) {
             `items[${itemIndex}].ambiguousFeatures[${featureIndex}].visibility`);
         }
       }
+      normalizeVisualLocalization(item);
     }
   }
   if (Array.isArray(clone.relationships)) {
@@ -278,7 +357,10 @@ function normalizeStructuredAnalysis(value) {
       return true;
     });
   }
-  return { analysis: clone, applied, invalidEnums };
+  return {
+    analysis: clone, applied, invalidEnums,
+    localizationAcceptedCount, localizationDiscardedCount,
+  };
 }
 
 function validationDiagnostics(error) {
@@ -295,6 +377,11 @@ function validationDiagnostics(error) {
   } else if (/unknown|Unknown analysis/.test(message)) validationReason = 'invalid_unknown_value';
   else if (/must be|is required|is invalid/.test(message)) validationReason = 'invalid_structure';
   const field = message.match(/^(analysis\.state|items\[\d+\]\.(?:functionalType\.state|quantity\.state|observationCompleteness|ambiguousFeatures\[\d+\]\.visibility)|relationships\[\d+\]\.state|relativeScale\[\d+\]\.(?:relation|confidence)) is invalid\./)?.[1];
+  const fieldPathCandidate = message.match(/^([A-Za-z]+(?:\[\d+\])?(?:\.[A-Za-z]+(?:\[\d+\])?)*)/)?.[1];
+  const validationFieldPath = fieldPathCandidate &&
+    /^(?:analysis|items\[\d+\]|relationships\[\d+\]|relativeScale\[\d+\])(?:\.|$)/
+      .test(fieldPathCandidate)
+    ? fieldPathCandidate : undefined;
   let enumName;
   if (field?.endsWith('.state') || field === 'analysis.state') enumName = 'state';
   else if (field?.endsWith('.observationCompleteness')) enumName = 'observationCompleteness';
@@ -303,6 +390,7 @@ function validationDiagnostics(error) {
   else if (field?.endsWith('.confidence')) enumName = 'relativeScaleConfidence';
   return {
     validationStage: 'schema_validation', validationReason,
+    ...(validationFieldPath ? { validationFieldPath } : {}),
     ...(field && enumName ? {
       validationField: field,
       allowedEnumValues: PRODUCT_IDENTITY_ENUMS[enumName],
@@ -470,6 +558,9 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
     let retryReason = null;
     let backoffMs = 0;
     let fallbackUsed = false;
+    let localizationAcceptedCount = 0;
+    let localizationDiscardedCount = 0;
+    let identityValidWithoutLocalization = false;
     const attemptDiagnostics = [];
     try {
       if (!this.isConfigured) {
@@ -560,9 +651,12 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
           const parsed = parseStructuredAnalysis(responseText(payload));
           const normalized = normalizeStructuredAnalysis(parsed.value);
           invalidEnums = normalized.invalidEnums;
+          localizationAcceptedCount = normalized.localizationAcceptedCount;
+          localizationDiscardedCount = normalized.localizationDiscardedCount;
           attemptNormalizationApplied = parsed.applied || normalized.applied;
           normalizationApplied ||= attemptNormalizationApplied;
           const validated = validateProductIdentityAnalysis(normalized.analysis);
+          identityValidWithoutLocalization = localizationDiscardedCount > 0;
           outcome = {
             statusHttp: response.status,
             fallback: false,
@@ -583,6 +677,8 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
           attemptDiagnostics.push(Object.freeze({
             attempt,
             validationField: diagnostics.validationField ?? 'response',
+            validationFieldPath: diagnostics.validationFieldPath ??
+              diagnostics.validationField ?? 'response',
             validationReason: diagnostics.validationReason ??
               (recoverableError.code === 'GEMINI_INVALID_JSON' ? 'invalid_json' : 'other_allowlisted_reason'),
             retryUsed: false,
@@ -667,11 +763,13 @@ export class GeminiProductIdentityAnalyzer extends ProductIdentityAnalyzer {
         finalState: outcome.state ?? 'unknown',
         itemCount: outcome.items ?? 0,
         relationshipCount: outcome.relationships ?? 0,
+        localizationAcceptedCount,
+        localizationDiscardedCount,
+        identityValidWithoutLocalization,
+        validationStage: terminalError?.validationStage ?? 'schema_validation',
+        validationFieldPath: terminalError?.validationFieldPath ?? null,
+        validationReason: terminalError?.validationReason ?? null,
         ...(attemptDiagnostics.length ? { attemptDiagnostics } : {}),
-        ...(terminalError?.validationStage
-          ? { validationStage: terminalError.validationStage } : {}),
-        ...(terminalError?.validationReason
-          ? { validationReason: terminalError.validationReason } : {}),
         ...(terminalError?.upstreamMessage
           ? { upstreamMessage: terminalError.upstreamMessage } : {}),
         ...(terminalError?.upstreamStatus
