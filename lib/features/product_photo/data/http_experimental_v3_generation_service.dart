@@ -167,6 +167,7 @@ class HttpExperimentalV3GenerationService
     GenerationRequest request, {
     required String analysisId,
     required String quality,
+    ProductReferenceMode referenceMode = ProductReferenceMode.standard,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) async {
     if (_baseUrl.isEmpty) {
@@ -179,6 +180,7 @@ class HttpExperimentalV3GenerationService
       'analysisId': analysisId,
       'idempotencyKey': request.idempotencyKey,
       'quality': quality,
+      'referenceMode': referenceMode.name,
       'canonicalVisualAssets': canonicalVisualAssets
           .map((binding) => binding.toJson())
           .toList(),

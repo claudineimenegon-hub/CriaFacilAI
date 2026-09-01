@@ -57,6 +57,7 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   Timer? _generationTimer;
   Duration _generationElapsed = Duration.zero;
   String _experimentalQuality = 'medium';
+  ProductReferenceMode _referenceMode = ProductReferenceMode.standard;
   bool _preserveProduct = true;
   bool _preservePackaging = true;
   bool _preserveLabel = true;
@@ -180,7 +181,9 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
         _buildRequest(asset),
       );
       if (mounted) setState(() => _canonicalInventory = inventory);
-      await _prepareAutomaticIsolations(inventory);
+      if (_referenceMode == ProductReferenceMode.precision) {
+        await _prepareAutomaticIsolations(inventory);
+      }
     } on ExperimentalV3GenerationException catch (error) {
       if (mounted) _showMessage(error.message);
     } finally {
@@ -239,6 +242,18 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
         }
       }),
     );
+  }
+
+  Future<void> _setPrecisionMode(bool enabled) async {
+    final next = enabled
+        ? ProductReferenceMode.precision
+        : ProductReferenceMode.standard;
+    if (_referenceMode == next) return;
+    setState(() => _referenceMode = next);
+    if (enabled) {
+      final inventory = _canonicalInventory;
+      if (inventory != null) await _prepareAutomaticIsolations(inventory);
+    }
   }
 
   Future<void> _redoIsolation(CanonicalInventoryItem item) async {
@@ -328,6 +343,7 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
   bool get _canonicalReferencesReady {
     final inventory = _canonicalInventory;
     if (inventory == null) return false;
+    if (_referenceMode == ProductReferenceMode.standard) return true;
     if (_experimentalV3GenerationService is! CanonicalAssetIsolationClient &&
         inventory.items.length == 1) {
       return true;
@@ -356,14 +372,18 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
         request,
         analysisId: _canonicalInventory!.analysisId,
         quality: _experimentalQuality,
-        canonicalVisualAssets: _isolatedReferences.entries
-            .map(
-              (entry) => CanonicalVisualAssetBinding(
-                canonicalItemId: entry.key,
-                asset: entry.value,
-              ),
-            )
-            .toList(),
+        referenceMode: _referenceMode,
+        canonicalVisualAssets:
+            (_referenceMode == ProductReferenceMode.precision
+                    ? _isolatedReferences.entries
+                    : const <MapEntry<String, AssetReference>>[])
+                .map(
+                  (entry) => CanonicalVisualAssetBinding(
+                    canonicalItemId: entry.key,
+                    asset: entry.value,
+                  ),
+                )
+                .toList(),
       );
       const expectedRoles = {
         'hero_commercial',
@@ -468,112 +488,159 @@ class _ProductPhotoPageState extends State<ProductPhotoPage> {
               const SizedBox(height: 20),
             ],
             if (_canonicalInventory case final inventory?) ...[
-              const _SectionTitle('Referências canônicas do produto'),
+              const _SectionTitle('Produtos identificados'),
               const Text(
-                'Confirme uma foto isolada para cada produto detectado.',
+                'Confira o inventário antes de gerar. A quantidade identificada será preservada nas campanhas.',
               ),
               const SizedBox(height: 8),
               for (final item in inventory.items)
-                Builder(
-                  builder: (context) {
-                    final isolation = _automaticIsolations[item.id];
-                    final confirmed = _confirmedCanonicalItemIds.contains(
-                      item.id,
-                    );
-                    final processing = _isolatingCanonicalItemIds.contains(
-                      item.id,
-                    );
-                    final assetExpired =
-                        isolation?.asset?.expiresAt?.isBefore(DateTime.now()) ??
-                        false;
-                    final status = confirmed
-                        ? (isolation == null ? 'manual' : 'confirmed')
-                        : processing
-                        ? 'processing'
-                        : assetExpired
-                        ? 'failed'
-                        : isolation?.isolationState ?? 'pending';
-                    return ListTile(
-                      key: ValueKey('canonical-item-${item.id}'),
-                      title: Text(item.functionalType),
-                      leading: Icon(
-                        confirmed ? Icons.check_circle : Icons.warning_amber,
-                        color: confirmed ? Colors.greenAccent : Colors.amber,
-                      ),
-                      isThreeLine: true,
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('ID: ${item.id} · quantidade: ${item.quantity}'),
-                          Text('Estado: $status'),
-                          if (assetExpired)
-                            const Text(
-                              'Causa: ASSET_EXPIRED',
-                              style: TextStyle(color: Colors.amber),
-                            )
-                          else if (isolation?.errorCode case final errorCode?)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.inventory_2_outlined),
+                  title: Text(item.functionalType),
+                  trailing: Text('Quantidade: ${item.quantity}'),
+                ),
+              if (inventory.items.length > 1)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'Conjunto com vários produtos: use Fidelidade máxima para confirmar uma referência de cada item e reduzir alterações de geometria, omissões e fusões.',
+                    style: TextStyle(color: Colors.amber),
+                  ),
+                ),
+              SwitchListTile(
+                title: const Text('Fidelidade máxima'),
+                subtitle: const Text(
+                  'Separa os produtos e pede sua confirmação antes de gerar. O modo padrão continua disponível e não exige referências individuais.',
+                ),
+                value: _referenceMode == ProductReferenceMode.precision,
+                onChanged: _isGenerating ? null : _setPrecisionMode,
+              ),
+              if (_referenceMode == ProductReferenceMode.standard)
+                const Text(
+                  'Modo padrão: a foto completa será usada para criar quatro campanhas.',
+                ),
+              if (_referenceMode == ProductReferenceMode.precision) ...[
+                const _SectionTitle('Referências canônicas do produto'),
+                const Text(
+                  'Confirme uma foto isolada para cada produto detectado.',
+                ),
+                const SizedBox(height: 8),
+                for (final item in inventory.items)
+                  Builder(
+                    builder: (context) {
+                      final isolation = _automaticIsolations[item.id];
+                      final confirmed = _confirmedCanonicalItemIds.contains(
+                        item.id,
+                      );
+                      final processing = _isolatingCanonicalItemIds.contains(
+                        item.id,
+                      );
+                      final assetExpired =
+                          isolation?.asset?.expiresAt?.isBefore(
+                            DateTime.now(),
+                          ) ??
+                          false;
+                      final status = confirmed
+                          ? (isolation == null ? 'manual' : 'confirmed')
+                          : processing
+                          ? 'processing'
+                          : assetExpired
+                          ? 'failed'
+                          : isolation?.isolationState ?? 'pending';
+                      return ListTile(
+                        key: ValueKey('canonical-item-${item.id}'),
+                        title: Text(item.functionalType),
+                        leading: Icon(
+                          confirmed ? Icons.check_circle : Icons.warning_amber,
+                          color: confirmed ? Colors.greenAccent : Colors.amber,
+                        ),
+                        isThreeLine: true,
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             Text(
-                              'Causa: $errorCode',
-                              style: const TextStyle(color: Colors.amber),
+                              'ID: ${item.id} · quantidade: ${item.quantity}',
                             ),
-                          if (isolation?.asset?.temporaryUrl case final url?)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 8),
-                              child: Container(
-                                width: 72,
-                                height: 72,
-                                color: Colors.white12,
-                                child: Image.network(
-                                  url,
-                                  key: ValueKey(
-                                    'canonical-thumbnail-${item.id}',
+                            Text('Estado: $status'),
+                            if (assetExpired)
+                              const Text(
+                                'Causa: ASSET_EXPIRED',
+                                style: TextStyle(color: Colors.amber),
+                              )
+                            else if (isolation?.errorCode case final errorCode?)
+                              Text(
+                                'Causa: $errorCode',
+                                style: const TextStyle(color: Colors.amber),
+                              ),
+                            if (isolation?.asset?.temporaryUrl case final url?)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Container(
+                                  width: 72,
+                                  height: 72,
+                                  color: Colors.white12,
+                                  child: Image.network(
+                                    url,
+                                    key: ValueKey(
+                                      'canonical-thumbnail-${item.id}',
+                                    ),
+                                    fit: BoxFit.contain,
+                                    errorBuilder: (_, _, _) =>
+                                        const Icon(Icons.broken_image),
                                   ),
-                                  fit: BoxFit.contain,
-                                  errorBuilder: (_, _, _) =>
-                                      const Icon(Icons.broken_image),
                                 ),
                               ),
-                            ),
-                          if (processing) const Text('ISOLANDO...'),
-                          Wrap(
-                            children: [
-                              if (isolation?.confirmable == true &&
-                                  !assetExpired &&
-                                  !confirmed)
-                                TextButton(
-                                  onPressed: () => setState(
-                                    () =>
-                                        _confirmedCanonicalItemIds.add(item.id),
+                            if (processing) const Text('ISOLANDO...'),
+                            Wrap(
+                              children: [
+                                if (isolation?.confirmable == true &&
+                                    !assetExpired &&
+                                    !confirmed)
+                                  TextButton(
+                                    onPressed: () => setState(
+                                      () => _confirmedCanonicalItemIds.add(
+                                        item.id,
+                                      ),
+                                    ),
+                                    child: const Text('CONFIRMAR'),
                                   ),
-                                  child: const Text('CONFIRMAR'),
-                                ),
-                              if (isolation?.retryable == true)
+                                if (isolation?.retryable == true)
+                                  TextButton(
+                                    onPressed: () => _redoIsolation(item),
+                                    child: const Text('REFAZER ISOLAMENTO'),
+                                  ),
                                 TextButton(
-                                  onPressed: () => _redoIsolation(item),
-                                  child: const Text('REFAZER ISOLAMENTO'),
+                                  onPressed: _uploadingCanonicalItemId == null
+                                      ? () => _selectIsolatedReference(item)
+                                      : null,
+                                  child: Text(
+                                    isolation?.asset == null
+                                        ? 'ENVIAR OUTRA FOTO'
+                                        : 'SUBSTITUIR POR OUTRA FOTO',
+                                  ),
                                 ),
-                              TextButton(
-                                onPressed: _uploadingCanonicalItemId == null
-                                    ? () => _selectIsolatedReference(item)
-                                    : null,
-                                child: Text(
-                                  isolation?.asset == null
-                                      ? 'ENVIAR OUTRA FOTO'
-                                      : 'SUBSTITUIR POR OUTRA FOTO',
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              if (!_canonicalReferencesReady)
-                Text(
-                  'Faltam referências isoladas: ${inventory.items.where((item) => !_confirmedCanonicalItemIds.contains(item.id)).map((item) => '${item.id} (${_isolatingCanonicalItemIds.contains(item.id) ? 'processing' : _automaticIsolations[item.id]?.isolationState ?? 'pending'})').join(', ')}. A geração permanece bloqueada.',
-                  style: TextStyle(color: Colors.amber),
-                ),
+                                if (status == 'failed' || status == 'uncertain')
+                                  TextButton(
+                                    onPressed: () => _setPrecisionMode(false),
+                                    child: const Text(
+                                      'CONTINUAR NO MODO PADRÃO',
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                if (!_canonicalReferencesReady)
+                  Text(
+                    'Faltam referências isoladas: ${inventory.items.where((item) => !_confirmedCanonicalItemIds.contains(item.id)).map((item) => '${item.id} (${_isolatingCanonicalItemIds.contains(item.id) ? 'processing' : _automaticIsolations[item.id]?.isolationState ?? 'pending'})').join(', ')}. A geração permanece bloqueada.',
+                    style: TextStyle(color: Colors.amber),
+                  ),
+              ],
               const SizedBox(height: 20),
             ],
             const Text(

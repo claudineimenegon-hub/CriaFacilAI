@@ -319,6 +319,35 @@ test('canonicaliza enums seguros de toda a análise usando uma única fonte can�
   assert.deepEqual(PRODUCT_IDENTITY_ENUMS.state, ['known', 'uncertain', 'unknown']);
 });
 
+test('descrição indevida em relationship.state descarta somente a relação e preserva o inventário', async () => {
+  const requests = [];
+  const events = [];
+  const analyzer = new GeminiProductIdentityAnalyzer({
+    apiKey,
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return geminiResponse({
+        state: 'known',
+        items: [genericItem()],
+        relationships: [{
+          type: 'set', memberIds: ['item-1'], state: 'matching jewelry set',
+        }],
+      });
+    },
+    logger: { info: (event) => events.push(event) },
+  });
+
+  const result = await analyzer.analyze(analyzerInput());
+  assert.equal(requests.length, 1);
+  assert.equal(result.state, 'known');
+  assert.equal(result.items.length, 1);
+  assert.deepEqual(result.relationships, []);
+  assert.equal(events[0].normalizationApplied, true);
+  const instruction = requests[0].contents[0].parts[0].text;
+  assert.match(instruction, /relationship\.state exactly one of known, uncertain, unknown/);
+  assert.match(instruction, /descriptive relationship label only in type/);
+});
+
 test('enum semanticamente ambíguo é rejeitado sem retry', async () => {
   const requests = [];
   const events = [];

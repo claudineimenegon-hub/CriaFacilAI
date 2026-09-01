@@ -250,6 +250,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       'Depict the same physical product represented by the source reference—not a similar product or a newly designed interpretation. Source-visible features must not be redesigned, simplified, embellished, substituted or reinterpreted.',
       'VISIBLE SOURCE FEATURES ARE HARD EVIDENCE. UNSEEN FEATURES ARE NOT CREATIVE LICENSE.',
       'When an unseen region must be completed for physical plausibility, use the most conservative visually compatible continuation: remain consistent with visible geometry, materials and construction, introduce no distinctive decoration, and add no functional component unless canonical Product Identity requires it.',
+      'Do not reveal, invent or exaggerate an unseen attachment, fastener, backing, connector, terminal or protrusion merely because a new camera angle would normally expose one; keep uncertain completion visually neutral and subordinate to confirmed source evidence.',
       'An inferred hidden feature must never override or alter a visible source feature.',
     ]),
     section('A3. OBSERVED COMPONENT-ATTRIBUTE BINDING', [
@@ -296,6 +297,8 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       ]),
       'Human-allocated, scene-displayed and intentionally occluded or out-of-frame units are mutually exclusive parts of the same canonical inventory and must sum exactly to its canonical quantity. Count every physical unit once and only once.',
       'Never repeat a human-worn, held, applied or otherwise human-allocated unit on a surface, tray or elsewhere in the scene. Occluded or out-of-frame units do not create additional inventory and must not be rendered again.',
+      'Every scene-allocated unit must be fully inside the image frame and clearly recognizable as its canonical product. A cropped edge fragment still counts as a rendered unit; never use a partial fragment to imply an occluded or out-of-frame unit.',
+      'When ALLOCATED TO SCENE is zero, render no complete or partial instance of that item on a surface, tray, support, background or frame edge.',
       'preserve_pair protects the canonical relationship and never authorizes an additional pair.',
     ])] : []),
     section('C2. PRODUCT SCALE LOCK', [

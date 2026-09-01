@@ -118,6 +118,7 @@ const analysisInstruction = [
   'Record unsafe-to-determine or hidden traits as ambiguousFeatures.',
   'Never promote an inference to observed fact. Never invent inventory, quantity, type, geometry, branding, or relationships.',
   `Use state exactly one of ${PRODUCT_IDENTITY_ENUMS.state.join(', ')}. Unknown inventory must contain no items or relationships.`,
+  `For every relationship, put the descriptive relationship label only in type. Use relationship.state exactly one of ${PRODUCT_IDENTITY_ENUMS.state.join(', ')}; never put a relationship description in state.`,
   `Use observationCompleteness exactly one of ${PRODUCT_IDENTITY_ENUMS.observationCompleteness.join(', ')}.`,
   `For ambiguous feature visibility, use exactly one of ${PRODUCT_IDENTITY_ENUMS.ambiguousFeatureVisibility.join(', ')}.`,
   'Keep items generic and individually addressable. This policy applies to every product category.',
@@ -239,10 +240,20 @@ function normalizeStructuredAnalysis(value) {
     }
   }
   if (Array.isArray(clone.relationships)) {
-    for (const [relationshipIndex, relationship] of clone.relationships.entries()) {
+    clone.relationships = clone.relationships.filter((relationship) => {
       rename(relationship, 'memberIds', ['member_ids', 'itemIds', 'item_ids']);
-      normalizeEnum(relationship, 'state', 'state', `relationships[${relationshipIndex}].state`);
-    }
+      const rawState = relationship?.state;
+      if (typeof rawState === 'string') {
+        const canonicalState = canonicalizeProductIdentityEnum('state', rawState);
+        if (canonicalState === undefined) {
+          applied = true;
+          return false;
+        }
+        if (canonicalState !== rawState) applied = true;
+        relationship.state = canonicalState;
+      }
+      return true;
+    });
   }
   if (Array.isArray(clone.relativeScale)) {
     clone.relativeScale = clone.relativeScale.filter((comparison, comparisonIndex) => {

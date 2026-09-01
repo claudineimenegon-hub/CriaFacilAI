@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createDeterministicCreativeDirectorV3Model,
+  applyDeterministicV3RoleSelection,
   runCreativeDirectorV3,
   selectDeterministicV3RoleItems,
   validateCreativeDirectorV3Input,
@@ -84,13 +85,14 @@ function request(overrides = {}) {
   };
 }
 
-function service({ failRole } = {}) {
+function service({ failRole, isolationService, visualBehavior, visualRetryDelay } = {}) {
   let directorCalls = 0;
   const visualCalls = [];
   const deterministic = createDeterministicCreativeDirectorV3Model();
   const instance = createExperimentalV3GenerationService({
     assetStore: { readImage: async () => ({ bytes: sourceBytes, mimeType: 'image/jpeg', metadata: { hash: 'safe-hash' } }) },
     productIdentityAnalyzer: { analyze: async () => analysis },
+    ...(isolationService ? { isolationService } : {}),
     creativeDirectorAdapterFactory: () => ({
       name: 'mock-director',
       async generate(input) { directorCalls += 1; return deterministic.generate(input); },
@@ -99,16 +101,22 @@ function service({ failRole } = {}) {
       async generate(input) {
         visualCalls.push(input);
         const role = /Campaign role: ([a-z_]+)/.exec(input.prompt)?.[1];
-        if (role === failRole) throw Object.assign(new Error('private'), { code: 'UPSTREAM_TIMEOUT' });
+        if (visualBehavior) return visualBehavior({ input, role, visualCalls });
+        if (role === failRole) throw Object.assign(new Error('private'), { code: 'INVALID_PROVIDER_RESPONSE' });
         return { imageBase64: Buffer.from(role).toString('base64') };
       },
     },
+    visualRetryDelay: visualRetryDelay ?? (async () => {}),
+    visualRetryRandom: () => 0,
   });
   return { instance, visualCalls, directorCalls: () => directorCalls };
 }
 
 test('request usa medium por padrão e rejeita valores técnicos inválidos', () => {
   assert.equal(validateExperimentalV3Request(request()).quality, 'medium');
+  assert.equal(validateExperimentalV3Request(request()).referenceMode, 'standard');
+  assert.equal(validateExperimentalV3Request(request({ referenceMode: 'precision' })).referenceMode, 'precision');
+  assert.throws(() => validateExperimentalV3Request(request({ referenceMode: 'automatic' })), /Modo/);
   assert.throws(() => validateExperimentalV3Request(request({ quality: 'ultra' })), /Qualidade/);
   assert.throws(() => validateExperimentalV3Request(request({ inputAssetId: 'fixture' })), /referência/);
 });
@@ -342,12 +350,26 @@ test('uma direção lógica produz quatro briefs, quatro prompts e quatro chamad
   const batch = await generateAfterAnalysis(current.instance, request({ quality: 'high' }));
   assert.equal(current.directorCalls(), 1);
   assert.equal(current.visualCalls.length, 4);
+  assert.equal(current.visualCalls.every(({ inputs }) => inputs.length === 1 &&
+    inputs[0].bytes.equals(sourceBytes)), true);
   assert.equal(new Set(current.visualCalls.map(({ prompt }) => prompt)).size, 4);
   assert.equal(current.visualCalls.every(({ parameters }) => parameters.provider.quality === 'high'), true);
   assert.equal(batch.status, 'completed');
   assert.equal(batch.results.length, 4);
   assert.equal(batch.results.every(({ status }) => status === 'completed'), true);
   assert.equal(JSON.stringify(batch).includes('Authorization'), false);
+});
+
+test('standard ignora estado SAM anterior e usa full_set nas quatro campanhas', async () => {
+  let samCalls = 0;
+  const current = service({ isolationService: { isolate: async () => { samCalls += 1; } } });
+  const batch = await generateAfterAnalysis(current.instance, request({
+    canonicalVisualAssets: [], referenceMode: 'standard',
+  }));
+  assert.equal(batch.status, 'completed');
+  assert.equal(samCalls, 0);
+  assert.equal(current.visualCalls.length, 4);
+  assert.equal(current.visualCalls.every(({ inputs }) => inputs.length === 1), true);
 });
 
 test('erro individual preserva três sucessos e não repete chamada visual', async () => {
@@ -358,7 +380,54 @@ test('erro individual preserva três sucessos e não repete chamada visual', asy
   assert.equal(batch.status, 'partial');
   assert.equal(batch.results.filter(({ status }) => status === 'completed').length, 3);
   assert.deepEqual(batch.results.find(({ status }) => status === 'error'), {
-    campaignRole: 'editorial_craft_detail', status: 'error', errorCode: 'UPSTREAM_TIMEOUT',
+    campaignRole: 'editorial_craft_detail', status: 'error', errorCode: 'INVALID_PROVIDER_RESPONSE',
+  });
+});
+
+test('503 visual repete somente a proposta afetada e preserva os demais sucessos', async () => {
+  const attempts = new Map();
+  const delays = [];
+  const current = service({
+    visualRetryDelay: async (milliseconds) => delays.push(milliseconds),
+    visualBehavior: async ({ role }) => {
+      const attempt = (attempts.get(role) ?? 0) + 1;
+      attempts.set(role, attempt);
+      if (role === 'contextual_lifestyle' && attempt === 1) {
+        throw Object.assign(new Error('private'), { code: 'service_unavailable_error', status: 503 });
+      }
+      return { imageBase64: Buffer.from(role).toString('base64') };
+    },
+  });
+  const batch = await generateAfterAnalysis(current.instance, request());
+  assert.equal(batch.status, 'completed');
+  assert.equal(current.directorCalls(), 1);
+  assert.equal(current.visualCalls.length, 5);
+  assert.equal(attempts.get('contextual_lifestyle'), 2);
+  assert.deepEqual(delays, [1500]);
+});
+
+test('erro visual não transitório não repete e segunda falha 503 encerra em duas tentativas', async () => {
+  const invalid = service({ visualBehavior: async ({ role }) => {
+    if (role === 'hero_commercial') {
+      throw Object.assign(new Error('private'), { code: 'invalid_request_error', status: 400 });
+    }
+    return { imageBase64: Buffer.from(role).toString('base64') };
+  } });
+  const invalidBatch = await generateAfterAnalysis(invalid.instance, request());
+  assert.equal(invalid.visualCalls.length, 4);
+  assert.equal(invalidBatch.status, 'partial');
+
+  const unavailable = service({ visualBehavior: async ({ role }) => {
+    if (role === 'contextual_lifestyle') {
+      throw Object.assign(new Error('private'), { code: 'service_unavailable_error', status: 503 });
+    }
+    return { imageBase64: Buffer.from(role).toString('base64') };
+  } });
+  const unavailableBatch = await generateAfterAnalysis(unavailable.instance, request());
+  assert.equal(unavailable.visualCalls.length, 5);
+  assert.deepEqual(unavailableBatch.results.find(({ campaignRole }) =>
+    campaignRole === 'contextual_lifestyle'), {
+    campaignRole: 'contextual_lifestyle', status: 'error', errorCode: 'PROVIDER_UNAVAILABLE',
   });
 });
 
@@ -512,7 +581,7 @@ test('referências canônicas bloqueiam full_set contaminado e roteiam somente I
     } },
   });
   const missingInstance = create();
-  await assert.rejects(generateAfterAnalysis(missingInstance, request()), (error) =>
+  await assert.rejects(generateAfterAnalysis(missingInstance, request({ referenceMode: 'precision' })), (error) =>
     error.code === 'CANONICAL_REFERENCE_REQUIRED' &&
     Array.isArray(error.details?.missingCanonicalItemIds));
   assert.equal(calls.length, 0);
@@ -523,7 +592,7 @@ test('referências canônicas bloqueiam full_set contaminado e roteiam somente I
     width: 640, height: 640, sha256: hashes[id],
   });
   const validInstance = create();
-  const batch = await generateAfterAnalysis(validInstance, request({ canonicalVisualAssets: [
+  const batch = await generateAfterAnalysis(validInstance, request({ referenceMode: 'precision', canonicalVisualAssets: [
     binding('canonical-a', isolatedA), binding('canonical-b', isolatedB),
   ] }));
   assert.equal(batch.status, 'completed');
@@ -532,11 +601,11 @@ test('referências canônicas bloqueiam full_set contaminado e roteiam somente I
     /Campaign role: ([a-z_]+)/.exec(call.prompt)?.[1],
     call.inputs.map(({ metadata }) => metadata.id),
   ]));
-  assert.deepEqual(byRole.hero_commercial, [sourceId]);
+  assert.deepEqual(byRole.hero_commercial, [isolatedA, isolatedB]);
   assert.deepEqual(byRole.editorial_craft_detail, [isolatedA]);
   assert.deepEqual(byRole.concept_campaign, [isolatedB]);
   assert.ok(byRole.contextual_lifestyle.every((id) => [isolatedA, isolatedB].includes(id)));
-  assert.equal(Object.values(byRole).slice(1).flat().includes(sourceId), false);
+  assert.equal(Object.values(byRole).flat().includes(sourceId), false);
 });
 
 test('referência canônica duplicada ou com SHA divergente falha antes do provider', async () => {
@@ -569,11 +638,11 @@ test('referência canônica duplicada ou com SHA divergente falha antes do provi
     width: 100, height: 100, sha256,
   });
   const analyzed = await instance.analyze(request());
-  await assert.rejects(instance.generate(request({ analysisId: analyzed.analysisId,
+  await assert.rejects(instance.generate(request({ referenceMode: 'precision', analysisId: analyzed.analysisId,
     idempotencyKey: 'duplicate-binding-1', canonicalVisualAssets: [
     make('generic-a'), make('generic-b'),
   ] })), { code: 'INVALID_CANONICAL_VISUAL_ASSET' });
-  await assert.rejects(instance.generate(request({ analysisId: analyzed.analysisId,
+  await assert.rejects(instance.generate(request({ referenceMode: 'precision', analysisId: analyzed.analysisId,
     idempotencyKey: 'duplicate-binding-2', canonicalVisualAssets: [
     make('generic-a'), make('generic-b', '00000000-0000-4000-8000-00000000000d', 'b'.repeat(64)),
   ] })), { code: 'INVALID_CANONICAL_VISUAL_ASSET' });
@@ -976,6 +1045,9 @@ test('unit allocation estruturada é fonte de verdade e não muda com usageDescr
   assert.match(prompt, /NATURALLY OCCLUDED OR OUT OF FRAME: 1/);
   assert.match(prompt, /never authorizes an additional pair/);
   assert.match(prompt, /Occluded or out-of-frame units do not create additional inventory/);
+  assert.match(prompt, /Every scene-allocated unit must be fully inside the image frame/);
+  assert.match(prompt, /A cropped edge fragment still counts as a rendered unit/);
+  assert.match(prompt, /When ALLOCATED TO SCENE is zero, render no complete or partial instance/);
 });
 
 test('Editorial determinístico exige finalidade real de detalhe para um único produto', async () => {
@@ -1188,8 +1260,9 @@ test('requiredVisible exige apresentação mínima sem restaurar opcionais ou om
       } : entry),
     physicalPlacement: [
       ...lifestyle.humanInteraction.physicalPlacement,
-      { itemId: 'paired-item', interactionMode: 'functionally valid human use',
-        anatomicalAnchor: null, orientation: 'native functional orientation' },
+      ...(lifestyle.humanInteraction.physicalPlacement.some(({ itemId }) => itemId === 'paired-item')
+        ? [] : [{ itemId: 'paired-item', interactionMode: 'functionally valid human use',
+          anatomicalAnchor: null, orientation: 'native functional orientation' }]),
     ],
   };
   assert.doesNotThrow(() => validateCreativeDirectorV3Output(
@@ -1371,6 +1444,44 @@ test('Lifestyle wearable usa âncora semântica, não duplica worn units e prese
   assert.match(lifestylePrompt, /natural or ambient motivated light/);
   assert.match(lifestylePrompt, /Never repeat a human-worn, held, applied/);
   assert.match(lifestylePrompt, /only the naturally anchored unit may be clearly visible/);
+  assert.match(lifestylePrompt, /Do not reveal, invent or exaggerate an unseen attachment/);
+
+  const representativeSet = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'general wearable set',
+      items: [
+        { id: 'primary-wearable', functionalType: 'neck-compatible wearable', quantity: 1 },
+        { id: 'multi-unit-wearable', functionalType: 'ear-compatible wearable', quantity: 2 },
+        { id: 'single-supporting-wearable', functionalType: 'wrist-compatible wearable', quantity: 1 },
+      ],
+      relationships: [{ type: 'pair', itemIds: ['multi-unit-wearable'] }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'wearable set', affordances: ['wearable'],
+      wearableItemIds: ['primary-wearable', 'multi-unit-wearable', 'single-supporting-wearable'],
+      validContexts: ['realistic human use'], invalidContexts: ['invalid placement'],
+    },
+    userIntent: { objective: 'Natural premium campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const representativeBriefs = await createDeterministicCreativeDirectorV3Model().generate(representativeSet);
+  const representativeLifestyle = representativeBriefs[1];
+  const humanAllocatedIds = representativeLifestyle.humanInteraction.unitAllocation
+    .filter(({ humanAllocatedUnits }) => humanAllocatedUnits > 0)
+    .map(({ itemId }) => itemId);
+  assert.deepEqual(humanAllocatedIds, ['primary-wearable', 'multi-unit-wearable']);
+  assert.deepEqual(representativeLifestyle.humanInteraction.physicalPlacement
+    .map(({ itemId }) => itemId), humanAllocatedIds);
+  assert.deepEqual(representativeLifestyle.humanInteraction.unitAllocation
+    .find(({ itemId }) => itemId === 'multi-unit-wearable'), {
+    itemId: 'multi-unit-wearable', canonicalQuantity: 2, humanAllocatedUnits: 1,
+    sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 1,
+  });
+  assert.equal(representativeLifestyle.humanInteraction.unitAllocation
+    .find(({ itemId }) => itemId === 'single-supporting-wearable').humanAllocatedUnits, 0);
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(representativeBriefs, representativeSet));
+
 });
 
 test('assemblies terminais explicitamente observados permanecem ligados ao pai em Hero e Concept', async () => {
@@ -1451,6 +1562,97 @@ test('alocação física particiona toda quantidade canônica uma única vez', a
       },
     }, briefs[2], briefs[3],
   ], input), /partition the complete canonical quantity/);
+});
+
+test('Lifestyle oculta deterministicamente o restante de par atômico usado no corpo', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'paired wearable',
+      items: [{ id: 'paired-product', functionalType: 'ear-compatible wearable', quantity: 2 }],
+      relationships: [{ type: 'pair', itemIds: ['paired-product'] }],
+      observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'paired wearable', affordances: ['wearable'],
+      wearableItemIds: ['paired-product'], validContexts: ['human use'], invalidContexts: [],
+    },
+    userIntent: { objective: 'Premium campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const lifestyle = briefs[1];
+  const splitBetweenHumanAndScene = {
+    ...lifestyle,
+    humanInteraction: {
+      ...lifestyle.humanInteraction,
+      unitAllocation: [{
+        itemId: 'paired-product', canonicalQuantity: 2, humanAllocatedUnits: 1,
+        sceneAllocatedUnits: 1, occludedOrOutOfFrameUnits: 0,
+      }],
+    },
+  };
+  const normalized = applyDeterministicV3RoleSelection([
+    briefs[0], splitBetweenHumanAndScene, briefs[2], briefs[3],
+  ], input.productIdentity).briefs;
+  const baseline = applyDeterministicV3RoleSelection(briefs, input.productIdentity).briefs;
+  assert.deepEqual(normalized[1].humanInteraction.unitAllocation[0], {
+    itemId: 'paired-product', canonicalQuantity: 2, humanAllocatedUnits: 1,
+    sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 1,
+  });
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(normalized, input));
+  assert.deepEqual(normalized[0], baseline[0]);
+  assert.deepEqual(normalized[2], baseline[2]);
+  assert.deepEqual(normalized[3], baseline[3]);
+});
+
+test('Lifestyle mantém somente um produto individual principal no corpo', async () => {
+  const input = validateCreativeDirectorV3Input({
+    productIdentity: {
+      category: 'wearable set',
+      items: [
+        { id: 'primary', functionalType: 'neck-compatible wearable', quantity: 1 },
+        { id: 'support-a', functionalType: 'wrist-compatible wearable', quantity: 1 },
+        { id: 'support-b', functionalType: 'finger-compatible wearable', quantity: 1 },
+      ],
+      relationships: [], observedFeatures: [], ambiguousFeatures: [],
+    },
+    productSemantics: {
+      functionalType: 'wearable set', affordances: ['wearable'],
+      wearableItemIds: ['primary', 'support-a', 'support-b'],
+      validContexts: ['human use'], invalidContexts: [],
+    },
+    userIntent: { objective: 'Premium campaign', aspectRatio: '1:1' },
+    generationPolicy: { proposalCount: 4, targetQuality: 'standard', creativeFreedom: 'high' },
+  });
+  const briefs = await createDeterministicCreativeDirectorV3Model().generate(input);
+  const lifestyle = briefs[1];
+  const allOnBody = {
+    ...lifestyle,
+    humanInteraction: {
+      ...lifestyle.humanInteraction,
+      unitAllocation: input.productIdentity.items.map(({ id }) => ({
+        itemId: id, canonicalQuantity: 1, humanAllocatedUnits: 1,
+        sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 0,
+      })),
+      physicalPlacement: input.productIdentity.items.map(({ id }) => ({
+        itemId: id, interactionMode: 'valid human use',
+        anatomicalAnchor: 'valid anchor', orientation: 'native orientation',
+      })),
+    },
+  };
+  const normalized = applyDeterministicV3RoleSelection([
+    briefs[0], allOnBody, briefs[2], briefs[3],
+  ], input.productIdentity).briefs;
+  assert.deepEqual(normalized[1].humanInteraction.unitAllocation, [
+    { itemId: 'primary', canonicalQuantity: 1, humanAllocatedUnits: 1,
+      sceneAllocatedUnits: 0, occludedOrOutOfFrameUnits: 0 },
+    { itemId: 'support-a', canonicalQuantity: 1, humanAllocatedUnits: 0,
+      sceneAllocatedUnits: 1, occludedOrOutOfFrameUnits: 0 },
+    { itemId: 'support-b', canonicalQuantity: 1, humanAllocatedUnits: 0,
+      sceneAllocatedUnits: 1, occludedOrOutOfFrameUnits: 0 },
+  ]);
+  assert.deepEqual(normalized[1].humanInteraction.physicalPlacement.map(({ itemId }) => itemId), ['primary']);
+  assert.doesNotThrow(() => validateCreativeDirectorV3Output(normalized, input));
 });
 
 test('quatro campanhas recebem diversidade visual determinística sem recolorir o produto', async () => {
@@ -1956,7 +2158,7 @@ test('preflight global bloqueia limite da quarta campanha antes de qualquer imag
   }));
   await assert.rejects(instance.generate({
     ...request(), analysisId: inventory.analysisId, idempotencyKey: 'reference-preflight',
-    canonicalVisualAssets: bindings,
+    referenceMode: 'precision', canonicalVisualAssets: bindings,
   }), (error) => error.code === 'PROVIDER_REFERENCE_LIMIT_EXCEEDED' &&
     error.details.referenceCount === 2 && error.details.maxInputImages === 1);
   assert.equal(visualCalls, 0);
@@ -2001,7 +2203,7 @@ test('boundary V3 preserva múltiplas referências como image[] no FormData real
   const inventory = await instance.analyze(request());
   await instance.generate({
     ...request(), analysisId: inventory.analysisId, idempotencyKey: 'real-form-data',
-    canonicalVisualAssets: [
+    referenceMode: 'precision', canonicalVisualAssets: [
       { canonicalItemId: 'product-pair', assetId: isolatedA, sourceKind: 'isolated_item',
         isolationState: 'isolated', isolationConfidence: 1, userConfirmed: true,
         mimeType: 'image/png', width: 10, height: 10, sha256: '8'.repeat(64) },
@@ -2018,11 +2220,14 @@ test('boundary V3 preserva múltiplas referências como image[] no FormData real
     files: form.getAll('image[]'),
   }));
   const byRole = Object.fromEntries(records.map(({ role, files }) => [role, files]));
-  assert.equal(byRole.hero_commercial.length, 1);
+  assert.equal(byRole.hero_commercial.length, 2);
   assert.equal(byRole.editorial_craft_detail.length, 1);
   assert.equal(byRole.contextual_lifestyle.length, 2);
   const lifestyleBytes = await Promise.all(byRole.contextual_lifestyle.map(async (file) =>
     Buffer.from(await file.arrayBuffer())));
+  const heroBytes = await Promise.all(byRole.hero_commercial.map(async (file) =>
+    Buffer.from(await file.arrayBuffer())));
+  assert.deepEqual(heroBytes, [bytesA, bytesB]);
   assert.deepEqual(lifestyleBytes, [bytesA, bytesB]);
   assert.deepEqual(byRole.contextual_lifestyle.map(({ type }) => type), ['image/png', 'image/png']);
   const bytesById = new Map([['product-pair', bytesA], ['second-item', bytesB]]);

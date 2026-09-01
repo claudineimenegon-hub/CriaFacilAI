@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import '../../../core/generation/generation_request.dart';
 import '../../../core/generation/generation_types.dart';
 
+enum ProductReferenceMode { standard, precision }
+
 class CanonicalInventoryItem {
   const CanonicalInventoryItem({
     required this.id,
@@ -103,6 +105,7 @@ abstract interface class ExperimentalV3GenerationService {
     GenerationRequest request, {
     required String analysisId,
     required String quality,
+    ProductReferenceMode referenceMode = ProductReferenceMode.standard,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   });
 }

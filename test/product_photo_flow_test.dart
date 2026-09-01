@@ -15,7 +15,7 @@ void main() {
   testWidgets('usa somente V3 e só navega após quatro campanhas completas', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(1200, 1200);
+    tester.view.physicalSize = const Size(1200, 2200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -33,6 +33,15 @@ void main() {
     );
     await tester.tap(find.text('SELECIONAR FOTO'));
     await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'Modo padrão: a foto completa será usada para criar quatro campanhas.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Produtos identificados'), findsOneWidget);
+    expect(find.text('Quantidade: 1'), findsOneWidget);
+    expect(find.text('Referências canônicas do produto'), findsNothing);
     await tester.scrollUntilVisible(
       find.text('GERAR 4 CAMPANHAS'),
       500,
@@ -49,6 +58,7 @@ void main() {
       isNull,
     );
     expect(generation.request?.operation, GenerationOperation.imageToImage);
+    expect(generation.referenceMode, ProductReferenceMode.standard);
     expect(generation.request?.outputSpecification.count, 4);
     expect(generation.calls, 1);
 
@@ -357,8 +367,14 @@ void main() {
       );
       await tester.tap(find.text('SELECIONAR FOTO'));
       await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Conjunto com vários produtos'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Fidelidade máxima'));
+      await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('wearable product'),
+        find.byKey(const ValueKey('canonical-item-canonical-a')),
         400,
         scrollable: find.byType(Scrollable).first,
       );
@@ -454,6 +470,8 @@ void main() {
       );
       await tester.tap(find.text('SELECIONAR FOTO'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Fidelidade máxima'));
+      await tester.pumpAndSettle();
       expect(service.isolationCalls, 2);
       expect(find.text('CONFIRMAR'), findsNWidgets(2));
       final buttonBefore = tester.widget<FilledButton>(
@@ -502,6 +520,8 @@ void main() {
       );
       await tester.tap(find.text('SELECIONAR FOTO'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Fidelidade máxima'));
+      await tester.pumpAndSettle();
       expect(find.text('Estado: uncertain'), findsOneWidget);
       expect(find.text('Causa: MASK_TRANSFORM_UNPROVEN'), findsOneWidget);
       expect(find.text('Estado: failed'), findsOneWidget);
@@ -510,6 +530,15 @@ void main() {
       expect(find.text('REFAZER ISOLAMENTO'), findsNWidgets(2));
       expect(find.text('SUBSTITUIR POR OUTRA FOTO'), findsOneWidget);
       expect(find.text('ENVIAR OUTRA FOTO'), findsOneWidget);
+      await tester.tap(find.text('CONTINUAR NO MODO PADRÃO').first);
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Modo padrão: a foto completa será usada para criar quatro campanhas.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Estado: failed'), findsNothing);
     },
   );
 }
@@ -612,6 +641,7 @@ class _ControlledExperimentalV3Service
   int calls = 0;
   String? quality;
   GenerationRequest? request;
+  ProductReferenceMode? referenceMode;
 
   @override
   Future<CanonicalInventory> analyzeInventory(
@@ -639,11 +669,13 @@ class _ControlledExperimentalV3Service
     GenerationRequest request, {
     required String analysisId,
     required String quality,
+    ProductReferenceMode referenceMode = ProductReferenceMode.standard,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) {
     calls += 1;
     this.quality = quality;
     this.request = request;
+    this.referenceMode = referenceMode;
     return _completer.future;
   }
 }
@@ -680,6 +712,7 @@ class _SequencedExperimentalV3Service
     GenerationRequest request, {
     required String analysisId,
     required String quality,
+    ProductReferenceMode referenceMode = ProductReferenceMode.standard,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) {
     calls += 1;
@@ -715,6 +748,7 @@ class _MultiInventoryExperimentalV3Service
     GenerationRequest request, {
     required String analysisId,
     required String quality,
+    ProductReferenceMode referenceMode = ProductReferenceMode.standard,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) => throw UnimplementedError();
 }
@@ -774,6 +808,7 @@ class _AutomaticIsolationExperimentalV3Service
     GenerationRequest request, {
     required String analysisId,
     required String quality,
+    ProductReferenceMode referenceMode = ProductReferenceMode.standard,
     List<CanonicalVisualAssetBinding> canonicalVisualAssets = const [],
   }) => throw UnimplementedError();
 }

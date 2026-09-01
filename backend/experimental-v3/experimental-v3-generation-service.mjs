@@ -40,6 +40,7 @@ const CATEGORY_SEMANTICS = Object.freeze({
 const ALLOWED_CATEGORIES = new Set(Object.keys(CATEGORY_SEMANTICS));
 const ALLOWED_QUALITIES = new Set(['medium', 'high']);
 const ALLOWED_RATIOS = new Set(['1:1', '4:5', '9:16', '16:9']);
+const REFERENCE_MODES = new Set(['standard', 'precision']);
 const ASSET_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const VISUAL_SOURCE_KINDS = new Set(['full_set', 'isolated_item']);
@@ -117,6 +118,10 @@ export function validateExperimentalV3Request(payload) {
   if (!ALLOWED_QUALITIES.has(quality)) {
     throw new ExperimentalV3ValidationError('Qualidade inválida.', { code: 'INVALID_QUALITY' });
   }
+  const referenceMode = payload.referenceMode ?? 'standard';
+  if (!REFERENCE_MODES.has(referenceMode)) {
+    throw new ExperimentalV3ValidationError('Modo de referência inválido.', { code: 'INVALID_REFERENCE_MODE' });
+  }
   return Object.freeze({
     inputAssetId,
     category: payload.category,
@@ -124,6 +129,7 @@ export function validateExperimentalV3Request(payload) {
     description: typeof payload.description === 'string' ? payload.description.trim().slice(0, 1000) : '',
     aspectRatio: payload.aspectRatio,
     quality,
+    referenceMode,
     analysisId: typeof payload.analysisId === 'string' ? payload.analysisId.trim() : '',
     idempotencyKey: typeof payload.idempotencyKey === 'string' ? payload.idempotencyKey.trim() : '',
     canonicalVisualAssets: Object.freeze((payload.canonicalVisualAssets ?? [])
@@ -152,6 +158,7 @@ function generationFingerprint({ request, sourceSha256 }) {
     analysisId: request.analysisId, sourceSha256, bindings,
     category: request.category, objective: request.objective,
     description: request.description, aspectRatio: request.aspectRatio, quality: request.quality,
+    referenceMode: request.referenceMode,
   })).digest('hex');
 }
 
@@ -202,11 +209,24 @@ async function resolveCampaignReferences({
   brief, productIdentity, request, source, assetStore, logger,
 }) {
   const selectedCanonicalItemIds = selectedIdsForReferences(brief, productIdentity);
-  if (productIdentity.items.length === 1 || brief.campaignRole === 'hero_commercial') {
+  if (request.referenceMode === 'standard') {
+    logger?.info?.({
+      component: 'ExperimentalV3CanonicalReferences', campaignRole: brief.campaignRole,
+      referenceMode: 'standard', referenceStrategy: 'full_set_source',
+      selectedCanonicalItemIds,
+      referenceCanonicalItemIds: productIdentity.items.map(({ id }) => id),
+      referenceCount: 1, isolationStates: [], samUsed: false,
+      canonicalBindingsUsed: false, providerCallBlocked: false,
+    });
+    return [source];
+  }
+  if (productIdentity.items.length === 1) {
     logger?.info?.({
       component: 'ExperimentalV3CanonicalReferences', campaignRole: brief.campaignRole,
       selectedCanonicalItemIds, referenceCanonicalItemIds: selectedCanonicalItemIds,
       referenceCount: 1, isolationStates: ['contaminated'], providerCallBlocked: false,
+      referenceMode: 'precision', referenceStrategy: 'full_set_source', samUsed: false,
+      canonicalBindingsUsed: false,
     });
     return [source];
   }
@@ -233,6 +253,8 @@ async function resolveCampaignReferences({
       component: 'ExperimentalV3CanonicalReferences', campaignRole: brief.campaignRole,
       selectedCanonicalItemIds, referenceCanonicalItemIds: [], referenceCount: 0,
       isolationStates: [], providerCallBlocked: true,
+      referenceMode: 'precision', referenceStrategy: 'isolated_items', samUsed: true,
+      canonicalBindingsUsed: true,
     });
     throw new ExperimentalV3ValidationError('São necessárias referências isoladas para esta campanha.', {
       code: 'CANONICAL_REFERENCE_REQUIRED', status: 409, details,
@@ -256,6 +278,8 @@ async function resolveCampaignReferences({
     selectedCanonicalItemIds, referenceCanonicalItemIds: selectedCanonicalItemIds,
     referenceCount: references.length, isolationStates: selectedCanonicalItemIds.map(() => 'isolated'),
     providerCallBlocked: false,
+    referenceMode: 'precision', referenceStrategy: 'isolated_items', samUsed: true,
+    canonicalBindingsUsed: true,
   });
   return references;
 }
@@ -376,8 +400,44 @@ function safeVisualError(error) {
   const allowed = new Set([
     'PROVIDER_NOT_CONFIGURED', 'UPSTREAM_TIMEOUT', 'UPSTREAM_HTTP_ERROR',
     'UPSTREAM_NETWORK_ERROR', 'INVALID_PROVIDER_RESPONSE', 'INVALID_OUTPUT_IMAGE',
+    'PROVIDER_UNAVAILABLE', 'RATE_LIMITED',
   ]);
+  if (error?.status === 429) return 'RATE_LIMITED';
+  if ([502, 503, 504].includes(error?.status)) return 'PROVIDER_UNAVAILABLE';
   return allowed.has(error?.code) ? error.code : 'VISUAL_GENERATION_FAILED';
+}
+
+const TRANSIENT_VISUAL_STATUS = new Set([429, 502, 503, 504]);
+const TRANSIENT_VISUAL_CODES = new Set([
+  'UPSTREAM_TIMEOUT', 'UPSTREAM_NETWORK_ERROR', 'PROVIDER_UNAVAILABLE',
+  'RATE_LIMITED', 'service_unavailable_error',
+]);
+
+function isTransientVisualError(error) {
+  return TRANSIENT_VISUAL_STATUS.has(error?.status) ||
+    TRANSIENT_VISUAL_CODES.has(error?.code);
+}
+
+async function generateVisualWithRetry({
+  imageProvider, providerRequest, campaignRole, delay, random, logger,
+}) {
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await imageProvider.generate(providerRequest);
+    } catch (error) {
+      const retry = attempt < maxAttempts && isTransientVisualError(error);
+      const backoffMs = retry ? 1500 + Math.floor(random() * 1501) : 0;
+      logger.info({
+        component: 'ExperimentalV3VisualRetry', campaignRole, attempt,
+        maxAttempts, retryUsed: retry, retryReason: retry ? safeVisualError(error) : null,
+        backoffMs, statusHttp: Number.isInteger(error?.status) ? error.status : null,
+      });
+      if (!retry) throw error;
+      await delay(backoffMs);
+    }
+  }
+  throw new Error('VISUAL_RETRY_EXHAUSTED');
 }
 
 function safeDiagnosticPhrase(value) {
@@ -481,6 +541,8 @@ export function createExperimentalV3GenerationService({
   analysisSessionStore = createAnalysisSessionStore(),
   idempotencyStore = createGenerationIdempotencyStore(),
   isolationService = createCanonicalAssetIsolationService(),
+  visualRetryDelay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  visualRetryRandom = Math.random,
   logger,
 } = {}) {
   const effectiveLogger = logger ?? defaultLogger ?? { info() {} };
@@ -747,10 +809,17 @@ export function createExperimentalV3GenerationService({
             items: proposalItems,
           });
           try {
-            const image = await imageProvider.generate({
-              prompt, inputs: referencesByRole.get(brief.campaignRole),
-              parameters: { common: {}, provider: { quality: request.quality } },
-              preservation: {}, output: { ...dimensions, count: 1 },
+            const image = await generateVisualWithRetry({
+              imageProvider,
+              providerRequest: {
+                prompt, inputs: referencesByRole.get(brief.campaignRole),
+                parameters: { common: {}, provider: { quality: request.quality } },
+                preservation: {}, output: { ...dimensions, count: 1 },
+              },
+              campaignRole: brief.campaignRole,
+              delay: visualRetryDelay,
+              random: visualRetryRandom,
+              logger: effectiveLogger,
             });
             return { campaignRole: brief.campaignRole, status: 'completed', imageBase64: image.imageBase64 };
           } catch (error) {

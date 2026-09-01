@@ -336,6 +336,57 @@ function applySelectionToBrief(brief, productIdentity, selectedIds, role) {
   };
 }
 
+function applyLifestyleDeterministicAllocation(brief, productIdentity) {
+  if (brief.campaignRole !== 'contextual_lifestyle' ||
+      !Array.isArray(brief.humanInteraction?.unitAllocation)) return brief;
+  const canonicalQuantity = new Map(productIdentity.items.map(({ id, quantity }) => [id, quantity]));
+  const singleIdAtomicPairs = new Set(productIdentity.relationships
+    .filter(({ type, itemIds }) => /pair|atomic/i.test(type) && itemIds.length === 1 &&
+      (canonicalQuantity.get(itemIds[0]) ?? 0) > 1)
+    .map(({ itemIds }) => itemIds[0]));
+  const singleUnitHumanIds = brief.humanInteraction.unitAllocation
+    .filter(({ itemId, canonicalQuantity, humanAllocatedUnits }) =>
+      canonicalQuantity === 1 && humanAllocatedUnits > 0 && !singleIdAtomicPairs.has(itemId))
+    .map(({ itemId }) => itemId);
+  const preferredHumanId = brief.productPresentation.heroItemIds
+    .find((itemId) => singleUnitHumanIds.includes(itemId)) ?? singleUnitHumanIds[0];
+  let changed = false;
+  const unitAllocation = brief.humanInteraction.unitAllocation.map((allocation) => {
+    if (singleIdAtomicPairs.has(allocation.itemId) && allocation.humanAllocatedUnits > 0 &&
+        allocation.sceneAllocatedUnits > 0) {
+      changed = true;
+      return {
+        ...allocation,
+        sceneAllocatedUnits: 0,
+        occludedOrOutOfFrameUnits: allocation.canonicalQuantity - allocation.humanAllocatedUnits,
+      };
+    }
+    if (allocation.canonicalQuantity === 1 && allocation.humanAllocatedUnits > 0 &&
+        allocation.itemId !== preferredHumanId) {
+      changed = true;
+      return {
+        ...allocation,
+        humanAllocatedUnits: 0,
+        sceneAllocatedUnits: 1,
+        occludedOrOutOfFrameUnits: 0,
+      };
+    }
+    return allocation;
+  });
+  const humanAllocatedIds = new Set(unitAllocation
+    .filter(({ humanAllocatedUnits }) => humanAllocatedUnits > 0)
+    .map(({ itemId }) => itemId));
+  return changed ? {
+    ...brief,
+    humanInteraction: {
+      ...brief.humanInteraction,
+      unitAllocation,
+      physicalPlacement: brief.humanInteraction.physicalPlacement
+        .filter(({ itemId }) => humanAllocatedIds.has(itemId)),
+    },
+  } : brief;
+}
+
 export function applyDeterministicV3RoleSelection(rawBriefs, productIdentity) {
   const selection = selectDeterministicV3RoleItems(productIdentity);
   const briefs = rawBriefs.map((brief) => {
@@ -344,6 +395,9 @@ export function applyDeterministicV3RoleSelection(rawBriefs, productIdentity) {
     }
     if (brief.campaignRole === 'concept_campaign') {
       return applySelectionToBrief(brief, productIdentity, selection.conceptualSelectedIds, brief.campaignRole);
+    }
+    if (brief.campaignRole === 'contextual_lifestyle') {
+      return applyLifestyleDeterministicAllocation(brief, productIdentity);
     }
     return brief;
   });
@@ -393,8 +447,11 @@ function structuredHumanPlan(human, identity, visibilityIntent, semantics) {
   const wearableIds = new Set(semantics.wearableItemIds ?? []);
   const humanTargetId = visibilityIntent.heroItemIds.find((id) => wearableIds.has(id)) ??
     visibilityIntent.requiredVisibleItems.find(({ itemId }) => wearableIds.has(itemId))?.itemId;
+  const representativeMultiUnitTargetId = visibilityIntent.requiredVisibleItems
+    .find(({ itemId, quantity }) => itemId !== humanTargetId && wearableIds.has(itemId) && quantity > 1)?.itemId;
+  const humanTargetIds = new Set([humanTargetId, representativeMultiUnitTargetId].filter(Boolean));
   const allocations = visibilityIntent.requiredVisibleItems.map(({ itemId, quantity }) => {
-    const humanAllocatedUnits = itemId === humanTargetId ? Math.min(1, quantity) : 0;
+    const humanAllocatedUnits = humanTargetIds.has(itemId) ? Math.min(1, quantity) : 0;
     const sceneAllocatedUnits = humanAllocatedUnits === 0 ? Math.min(1, quantity) : 0;
     return Object.freeze({
       itemId,
