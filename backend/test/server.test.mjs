@@ -553,6 +553,11 @@ test('count=4 gera quatro variações com concorrência máxima de duas', async 
   assert.equal(new Set(prompts).size, 4);
   assert.equal(maxActive, 2);
   assert.ok(prompts.every((prompt) => !/Variation [1-4]/i.test(prompt)));
+  assert.match(prompts[0], /plano aberto e ponto de vista frontal/);
+  assert.match(prompts[1], /ângulo lateral ou de três quartos/);
+  assert.match(prompts[2], /perspectiva mais baixa ou mais alta/);
+  assert.match(prompts[3], /enquadramento mais próximo/);
+  assert.ok(prompts.every((prompt) => /sem mudar a identidade, o ambiente, os objetos, a roupa, as cores/.test(prompt)));
 });
 
 test('rejeita count fora do intervalo suportado', async () => {

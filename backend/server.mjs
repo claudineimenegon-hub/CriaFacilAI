@@ -34,10 +34,10 @@ const MAX_IMAGE_COUNT = 4;
 const GENERATION_CONCURRENCY = 2;
 
 const variationDirections = [
-  'Explore uma composição geométrica equilibrada e memorável.',
-  'Explore uma composição distinta com uso refinado de espaço negativo.',
-  'Explore uma interpretação marcante com formas simples e fortes.',
-  'Explore um emblema abstrato elegante com proporções diferenciadas.',
+  'Nesta alternativa, use plano aberto e ponto de vista frontal, distribuindo os elementos de forma equilibrada.',
+  'Nesta alternativa, use ângulo lateral ou de três quartos e mude naturalmente a posição ou o momento da ação principal.',
+  'Nesta alternativa, use perspectiva mais baixa ou mais alta e uma composição dinâmica, sem retirar nem acrescentar elementos importantes.',
+  'Nesta alternativa, use enquadramento mais próximo e outra organização visual, preservando integralmente o tema e as características solicitadas.',
 ];
 
 const IMAGE_COHERENCE_GUIDANCE = [
@@ -57,7 +57,7 @@ function variationPrompt(prompt, index, count) {
   if (count > 1) {
     directions.push(
       variationDirections[index],
-      'Crie uma alternativa visual genuinamente diferente das demais.',
+      'Crie uma alternativa visual genuinamente diferente das demais no enquadramento, ângulo, posição e composição, sem mudar a identidade, o ambiente, os objetos, a roupa, as cores ou demais características especificadas pelo usuário.',
       'Não inclua instruções, números de variação ou textos explicativos na imagem.',
     );
   }
