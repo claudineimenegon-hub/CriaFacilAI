@@ -27,6 +27,26 @@ test('adaptador Cloudflare envia credenciais e interpreta imagem base64', async 
   assert.deepEqual(JSON.parse(request.options.body), { prompt: 'logo azul', steps: 4 });
 });
 
+test('adaptador Cloudflare usa multipart no FLUX.2 Klein', async () => {
+  let request;
+  const provider = createCloudflareImageProvider({
+    apiToken: 'cf-test-token',
+    accountId: 'cf-test-account',
+    model: '@cf/black-forest-labs/flux-2-klein-4b',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return Response.json({ success: true, result: { image: 'flux2-base64' } });
+    },
+  });
+
+  assert.equal(await provider.generate('cafeteria moderna'), 'flux2-base64');
+  assert.ok(request.options.body instanceof FormData);
+  assert.equal(request.options.body.get('prompt'), 'cafeteria moderna');
+  assert.equal(request.options.body.get('width'), '1024');
+  assert.equal(request.options.body.get('height'), '1024');
+  assert.equal(request.options.headers['Content-Type'], undefined);
+});
+
 test('adaptador OpenAI permanece disponível como alternativa', async () => {
   let request;
   const provider = createOpenAIImageProvider({

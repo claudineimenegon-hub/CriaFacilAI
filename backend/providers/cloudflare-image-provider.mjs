@@ -2,6 +2,20 @@ import { ImageProviderError } from './provider-error.mjs';
 
 export const CLOUDFLARE_IMAGE_MODEL = '@cf/black-forest-labs/flux-1-schnell';
 
+function createRequestBody(model, prompt) {
+  if (model.includes('/flux-2-')) {
+    const form = new FormData();
+    form.append('prompt', prompt);
+    form.append('width', '1024');
+    form.append('height', '1024');
+    return { body: form, contentType: undefined };
+  }
+  return {
+    body: JSON.stringify({ prompt, steps: 4 }),
+    contentType: 'application/json',
+  };
+}
+
 export function createCloudflareImageProvider({
   apiToken = process.env.CLOUDFLARE_API_TOKEN,
   accountId = process.env.CLOUDFLARE_ACCOUNT_ID,
@@ -21,15 +35,18 @@ export function createCloudflareImageProvider({
         });
       }
 
+      const requestBody = createRequestBody(model, prompt);
       const response = await fetchImpl(
         `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`,
         {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiToken}`,
-            'Content-Type': 'application/json',
+            ...(requestBody.contentType
+              ? { 'Content-Type': requestBody.contentType }
+              : {}),
           },
-          body: JSON.stringify({ prompt, steps: 4 }),
+          body: requestBody.body,
           signal: AbortSignal.timeout(timeoutMs),
         },
       );
