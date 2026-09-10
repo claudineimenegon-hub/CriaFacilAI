@@ -33,6 +33,21 @@ void main() {
     expect(find.byType(Image), findsOneWidget);
   });
 
+  testWidgets('permite escolher e gerar até quatro imagens', (tester) async {
+    final service = _FakeService();
+    await tester.pumpWidget(MaterialApp(home: ImagePage(service: service)));
+    await tester.enterText(find.byType(TextField), 'Uma cidade futurista');
+    await tester.tap(find.text('4'));
+    await tester.pump();
+
+    expect(find.text('GERAR 4 IMAGENS'), findsOneWidget);
+    await tester.tap(find.text('GERAR 4 IMAGENS'));
+    await tester.pumpAndSettle();
+
+    expect(service.lastCount, 4);
+    expect(find.byType(Image), findsNWidgets(4));
+  });
+
   testWidgets('mantém loading até a geração singular terminar', (tester) async {
     final service = _ControlledService();
     await tester.pumpWidget(MaterialApp(home: ImagePage(service: service)));
@@ -70,6 +85,7 @@ final Uint8List _onePixelPng = base64Decode(
 
 class _FakeService implements ImageGenerationService {
   String? lastPrompt;
+  int? lastCount;
 
   @override
   Future<Uint8List> generate({required String prompt}) async {
@@ -84,6 +100,7 @@ class _FakeService implements ImageGenerationService {
     required String prompt,
     required int count,
   }) {
+    lastCount = count;
     return Future.wait(List.generate(count, (_) => generate(prompt: prompt)));
   }
 }

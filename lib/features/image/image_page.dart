@@ -19,9 +19,10 @@ class ImagePage extends StatefulWidget {
 class _ImagePageState extends State<ImagePage> {
   final _promptController = TextEditingController();
   late final ImageGenerationService _service;
-  Uint8List? _generatedImage;
+  List<Uint8List> _generatedImages = const [];
   String? _error;
   bool _isGenerating = false;
+  int _imageCount = 1;
 
   @override
   void initState() {
@@ -50,9 +51,11 @@ class _ImagePageState extends State<ImagePage> {
     });
 
     try {
-      final image = await _service.generate(prompt: prompt);
+      final images = _imageCount == 1
+          ? [await _service.generate(prompt: prompt)]
+          : await _service.generateMany(prompt: prompt, count: _imageCount);
       if (!mounted) return;
-      setState(() => _generatedImage = image);
+      setState(() => _generatedImages = images);
     } on ImageGenerationException catch (error) {
       if (!mounted) return;
       setState(() => _error = error.message);
@@ -88,6 +91,30 @@ class _ImagePageState extends State<ImagePage> {
                 ),
               ),
               const SizedBox(height: 16),
+              Text(
+                'Quantidade de imagens',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 10),
+              SegmentedButton<int>(
+                segments: List.generate(
+                  4,
+                  (index) => ButtonSegment<int>(
+                    value: index + 1,
+                    label: Text('${index + 1}'),
+                  ),
+                ),
+                selected: {_imageCount},
+                onSelectionChanged: _isGenerating
+                    ? null
+                    : (selection) {
+                        setState(() => _imageCount = selection.first);
+                      },
+                showSelectedIcon: false,
+              ),
+              const SizedBox(height: 16),
               SizedBox(
                 height: 56,
                 child: FilledButton.icon(
@@ -99,7 +126,11 @@ class _ImagePageState extends State<ImagePage> {
                         )
                       : const Icon(Icons.auto_awesome),
                   label: Text(
-                    _isGenerating ? 'CRIANDO IMAGEM...' : 'GERAR IMAGEM',
+                    _isGenerating
+                        ? 'CRIANDO ${_imageCount == 1 ? 'IMAGEM' : 'IMAGENS'}...'
+                        : _imageCount == 1
+                        ? 'GERAR IMAGEM'
+                        : 'GERAR $_imageCount IMAGENS',
                   ),
                 ),
               ),
@@ -129,14 +160,25 @@ class _ImagePageState extends State<ImagePage> {
                   ),
                 ),
               ],
-              if (_generatedImage != null) ...[
+              if (_generatedImages.isNotEmpty) ...[
                 const SizedBox(height: 24),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: Image.memory(
-                    _generatedImage!,
-                    fit: BoxFit.cover,
-                    semanticLabel: 'Imagem gerada por inteligência artificial',
+                GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _generatedImages.length,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: _generatedImages.length == 1 ? 1 : 2,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                  ),
+                  itemBuilder: (context, index) => ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Image.memory(
+                      _generatedImages[index],
+                      fit: BoxFit.cover,
+                      semanticLabel:
+                          'Imagem ${index + 1} gerada por inteligência artificial',
+                    ),
                   ),
                 ),
               ],
