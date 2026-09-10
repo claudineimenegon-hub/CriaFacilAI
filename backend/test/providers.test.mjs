@@ -39,10 +39,10 @@ test('adaptador Cloudflare usa multipart no FLUX.2 Klein', async () => {
     },
   });
 
-  assert.equal(await provider.generate('cafeteria moderna'), 'flux2-base64');
+  assert.equal(await provider.generate('cafeteria moderna', { aspectRatio: '16:9' }), 'flux2-base64');
   assert.ok(request.options.body instanceof FormData);
   assert.equal(request.options.body.get('prompt'), 'cafeteria moderna');
-  assert.equal(request.options.body.get('width'), '1024');
+  assert.equal(request.options.body.get('width'), '1820');
   assert.equal(request.options.body.get('height'), '1024');
   assert.equal(request.options.headers['Content-Type'], undefined);
 });

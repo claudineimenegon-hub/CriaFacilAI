@@ -75,14 +75,22 @@ class _ControlledService implements ImageGenerationService {
   void complete(List<Uint8List> images) => _completer.complete(images);
 
   @override
-  Future<Uint8List> generate({required String prompt}) async {
-    return (await generateMany(prompt: prompt, count: 1)).first;
+  Future<Uint8List> generate({
+    required String prompt,
+    String aspectRatio = '1:1',
+  }) async {
+    return (await generateMany(
+      prompt: prompt,
+      count: 1,
+      aspectRatio: aspectRatio,
+    )).first;
   }
 
   @override
   Future<List<Uint8List>> generateMany({
     required String prompt,
     required int count,
+    String aspectRatio = '1:1',
   }) {
     lastPrompt = prompt;
     lastCount = count;
@@ -92,7 +100,10 @@ class _ControlledService implements ImageGenerationService {
 
 class _FailingService implements ImageGenerationService {
   @override
-  Future<Uint8List> generate({required String prompt}) {
+  Future<Uint8List> generate({
+    required String prompt,
+    String aspectRatio = '1:1',
+  }) {
     throw const ImageGenerationException('Não foi possível gerar agora.');
   }
 
@@ -100,6 +111,7 @@ class _FailingService implements ImageGenerationService {
   Future<List<Uint8List>> generateMany({
     required String prompt,
     required int count,
+    String aspectRatio = '1:1',
   }) {
     throw const ImageGenerationException('Não foi possível gerar agora.');
   }

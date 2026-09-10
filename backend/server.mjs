@@ -51,13 +51,13 @@ function variationPrompt(prompt, index, count) {
   return `${prompt.slice(0, availablePromptLength)} ${direction}`;
 }
 
-async function generateImages(provider, prompt, count) {
+async function generateImages(provider, prompt, count, aspectRatio) {
   const images = [];
   for (let start = 0; start < count; start += GENERATION_CONCURRENCY) {
     const batchSize = Math.min(GENERATION_CONCURRENCY, count - start);
     const batch = Array.from({ length: batchSize }, (_, offset) => {
       const index = start + offset;
-      return provider.generate(variationPrompt(prompt, index, count));
+      return provider.generate(variationPrompt(prompt, index, count), { aspectRatio });
     });
     images.push(...await Promise.all(batch));
   }
@@ -434,7 +434,7 @@ export function createServer({
     }
 
     try {
-      const { prompt, count = 1 } = await readJson(request);
+      const { prompt, count = 1, aspectRatio = '1:1' } = await readJson(request);
       if (typeof prompt !== 'string' || prompt.trim().length < 3) {
         return sendJson(response, 400, { error: 'Descreva melhor a imagem.' }, corsOrigin);
       }
@@ -444,8 +444,11 @@ export function createServer({
       if (!Number.isInteger(count) || count < 1 || count > MAX_IMAGE_COUNT) {
         return sendJson(response, 400, { error: 'A quantidade deve ser um inteiro entre 1 e 4.' }, corsOrigin);
       }
+      if (!['1:1', '4:5', '9:16', '16:9'].includes(aspectRatio)) {
+        return sendJson(response, 400, { error: 'Proporção não suportada.' }, corsOrigin);
+      }
 
-      const imagesBase64 = await generateImages(imageProvider, prompt.trim(), count);
+      const imagesBase64 = await generateImages(imageProvider, prompt.trim(), count, aspectRatio);
       return sendJson(response, 200, {
         imageBase64: imagesBase64[0],
         imagesBase64,

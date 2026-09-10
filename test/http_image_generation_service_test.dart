@@ -17,7 +17,11 @@ void main() {
     final image = await service.generate(prompt: 'imagem singular');
 
     expect(image, [1, 2, 3]);
-    expect(transport.lastPayload, {'prompt': 'imagem singular', 'count': 1});
+    expect(transport.lastPayload, {
+      'prompt': 'imagem singular',
+      'count': 1,
+      'aspectRatio': '1:1',
+    });
   });
 
   test('geração múltipla envia count=4 e decodifica quatro imagens', () async {
@@ -34,10 +38,18 @@ void main() {
       transport: transport,
     );
 
-    final images = await service.generateMany(prompt: 'quatro logos', count: 4);
+    final images = await service.generateMany(
+      prompt: 'quatro logos',
+      count: 4,
+      aspectRatio: '16:9',
+    );
 
     expect(images.map((image) => image.single), [1, 2, 3, 4]);
-    expect(transport.lastPayload, {'prompt': 'quatro logos', 'count': 4});
+    expect(transport.lastPayload, {
+      'prompt': 'quatro logos',
+      'count': 4,
+      'aspectRatio': '16:9',
+    });
   });
 }
 

@@ -23,6 +23,7 @@ class _ImagePageState extends State<ImagePage> {
   String? _error;
   bool _isGenerating = false;
   int _imageCount = 1;
+  String _aspectRatio = '1:1';
 
   @override
   void initState() {
@@ -52,8 +53,12 @@ class _ImagePageState extends State<ImagePage> {
 
     try {
       final images = _imageCount == 1
-          ? [await _service.generate(prompt: prompt)]
-          : await _service.generateMany(prompt: prompt, count: _imageCount);
+          ? [await _service.generate(prompt: prompt, aspectRatio: _aspectRatio)]
+          : await _service.generateMany(
+              prompt: prompt,
+              count: _imageCount,
+              aspectRatio: _aspectRatio,
+            );
       if (!mounted) return;
       setState(() => _generatedImages = images);
     } on ImageGenerationException catch (error) {
@@ -112,6 +117,28 @@ class _ImagePageState extends State<ImagePage> {
                         setState(() => _imageCount = selection.first);
                       },
                 showSelectedIcon: false,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Proporção',
+                style: Theme.of(context).textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: ['1:1', '4:5', '9:16', '16:9']
+                    .map(
+                      (ratio) => ChoiceChip(
+                        label: Text(ratio),
+                        selected: _aspectRatio == ratio,
+                        onSelected: _isGenerating
+                            ? null
+                            : (_) => setState(() => _aspectRatio = ratio),
+                      ),
+                    )
+                    .toList(),
               ),
               const SizedBox(height: 16),
               SizedBox(

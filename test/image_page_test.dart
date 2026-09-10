@@ -43,13 +43,16 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: ImagePage(service: service)));
     await tester.enterText(find.byType(TextField), 'Uma cidade futurista');
     await tester.tap(find.text('4'));
+    await tester.tap(find.text('16:9'));
     await tester.pump();
 
     expect(find.text('GERAR 4 IMAGENS'), findsOneWidget);
+    await tester.ensureVisible(find.text('GERAR 4 IMAGENS'));
     await tester.tap(find.text('GERAR 4 IMAGENS'));
     await tester.pumpAndSettle();
 
     expect(service.lastCount, 4);
+    expect(service.lastAspectRatio, '16:9');
     expect(find.byType(Image), findsNWidgets(4));
   });
 
@@ -57,6 +60,7 @@ void main() {
     final service = _ControlledService();
     await tester.pumpWidget(MaterialApp(home: ImagePage(service: service)));
     await tester.enterText(find.byType(TextField), 'Produto em estúdio');
+    await tester.ensureVisible(find.text('GERAR IMAGEM'));
     await tester.tap(find.text('GERAR IMAGEM'));
     await tester.pump();
 
@@ -75,6 +79,7 @@ void main() {
       MaterialApp(home: ImagePage(service: _FailingService())),
     );
     await tester.enterText(find.byType(TextField), 'Produto em estúdio');
+    await tester.ensureVisible(find.text('GERAR IMAGEM'));
     await tester.tap(find.text('GERAR IMAGEM'));
     await tester.pumpAndSettle();
 
@@ -91,10 +96,15 @@ final Uint8List _onePixelPng = base64Decode(
 class _FakeService implements ImageGenerationService {
   String? lastPrompt;
   int? lastCount;
+  String? lastAspectRatio;
 
   @override
-  Future<Uint8List> generate({required String prompt}) async {
+  Future<Uint8List> generate({
+    required String prompt,
+    String aspectRatio = '1:1',
+  }) async {
     lastPrompt = prompt;
+    lastAspectRatio = aspectRatio;
     return base64Decode(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     );
@@ -104,9 +114,16 @@ class _FakeService implements ImageGenerationService {
   Future<List<Uint8List>> generateMany({
     required String prompt,
     required int count,
+    String aspectRatio = '1:1',
   }) {
     lastCount = count;
-    return Future.wait(List.generate(count, (_) => generate(prompt: prompt)));
+    lastAspectRatio = aspectRatio;
+    return Future.wait(
+      List.generate(
+        count,
+        (_) => generate(prompt: prompt, aspectRatio: aspectRatio),
+      ),
+    );
   }
 }
 
@@ -116,18 +133,25 @@ class _ControlledService implements ImageGenerationService {
   void complete(Uint8List image) => _completer.complete(image);
 
   @override
-  Future<Uint8List> generate({required String prompt}) => _completer.future;
+  Future<Uint8List> generate({
+    required String prompt,
+    String aspectRatio = '1:1',
+  }) => _completer.future;
 
   @override
   Future<List<Uint8List>> generateMany({
     required String prompt,
     required int count,
+    String aspectRatio = '1:1',
   }) async => List.filled(count, await generate(prompt: prompt));
 }
 
 class _FailingService implements ImageGenerationService {
   @override
-  Future<Uint8List> generate({required String prompt}) {
+  Future<Uint8List> generate({
+    required String prompt,
+    String aspectRatio = '1:1',
+  }) {
     throw const ImageGenerationException('Falha de geração controlada.');
   }
 
@@ -135,6 +159,7 @@ class _FailingService implements ImageGenerationService {
   Future<List<Uint8List>> generateMany({
     required String prompt,
     required int count,
+    String aspectRatio = '1:1',
   }) {
     throw const ImageGenerationException('Falha de geração controlada.');
   }

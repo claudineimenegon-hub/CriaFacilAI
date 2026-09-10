@@ -2,12 +2,20 @@ import { ImageProviderError } from './provider-error.mjs';
 
 export const CLOUDFLARE_IMAGE_MODEL = '@cf/black-forest-labs/flux-1-schnell';
 
-function createRequestBody(model, prompt) {
+const dimensionsByAspectRatio = Object.freeze({
+  '1:1': [1024, 1024],
+  '4:5': [1024, 1280],
+  '9:16': [1024, 1820],
+  '16:9': [1820, 1024],
+});
+
+function createRequestBody(model, prompt, aspectRatio) {
   if (model.includes('/flux-2-')) {
+    const [width, height] = dimensionsByAspectRatio[aspectRatio] ?? dimensionsByAspectRatio['1:1'];
     const form = new FormData();
     form.append('prompt', prompt);
-    form.append('width', '1024');
-    form.append('height', '1024');
+    form.append('width', String(width));
+    form.append('height', String(height));
     return { body: form, contentType: undefined };
   }
   return {
@@ -27,7 +35,7 @@ export function createCloudflareImageProvider({
     name: 'cloudflare',
     model,
     isConfigured: Boolean(apiToken && accountId),
-    async generate(prompt) {
+    async generate(prompt, { aspectRatio = '1:1' } = {}) {
       if (!apiToken || !accountId) {
         throw new ImageProviderError('Cloudflare não configurado.', {
           provider: 'cloudflare',
@@ -35,7 +43,7 @@ export function createCloudflareImageProvider({
         });
       }
 
-      const requestBody = createRequestBody(model, prompt);
+      const requestBody = createRequestBody(model, prompt, aspectRatio);
       const response = await fetchImpl(
         `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`,
         {

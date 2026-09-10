@@ -18,8 +18,15 @@ class HttpImageGenerationService implements ImageGenerationService {
   final ImageHttpTransport _transport;
 
   @override
-  Future<Uint8List> generate({required String prompt}) async {
-    final images = await _generate(prompt: prompt, count: 1);
+  Future<Uint8List> generate({
+    required String prompt,
+    String aspectRatio = '1:1',
+  }) async {
+    final images = await _generate(
+      prompt: prompt,
+      count: 1,
+      aspectRatio: aspectRatio,
+    );
     return images.first;
   }
 
@@ -27,16 +34,18 @@ class HttpImageGenerationService implements ImageGenerationService {
   Future<List<Uint8List>> generateMany({
     required String prompt,
     required int count,
+    String aspectRatio = '1:1',
   }) {
     if (count < 1 || count > 4) {
       throw ArgumentError.value(count, 'count', 'deve estar entre 1 e 4');
     }
-    return _generate(prompt: prompt, count: count);
+    return _generate(prompt: prompt, count: count, aspectRatio: aspectRatio);
   }
 
   Future<List<Uint8List>> _generate({
     required String prompt,
     required int count,
+    required String aspectRatio,
   }) async {
     if (_baseUrl.isEmpty) {
       throw const ImageGenerationException(
@@ -48,7 +57,11 @@ class HttpImageGenerationService implements ImageGenerationService {
       final response = await _transport
           .postJson(
             Uri.parse('$_baseUrl/v1/images/generate'),
-            jsonEncode({'prompt': prompt, 'count': count}),
+            jsonEncode({
+              'prompt': prompt,
+              'count': count,
+              'aspectRatio': aspectRatio,
+            }),
           )
           .timeout(const Duration(minutes: 3));
       final payload = jsonDecode(response.body) as Map<String, dynamic>;
