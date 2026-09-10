@@ -31,6 +31,11 @@ void main() {
 
     expect(service.lastPrompt, 'Uma marca moderna em azul');
     expect(find.byType(Image), findsOneWidget);
+    final container = tester.widget<ConstrainedBox>(
+      find.byKey(const ValueKey('single-generated-image-container')),
+    );
+    expect(container.constraints.maxWidth, 800);
+    expect(tester.widget<Image>(find.byType(Image)).fit, BoxFit.contain);
   });
 
   testWidgets('permite escolher e gerar até quatro imagens', (tester) async {

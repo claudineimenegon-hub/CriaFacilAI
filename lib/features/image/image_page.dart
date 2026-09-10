@@ -93,9 +93,8 @@ class _ImagePageState extends State<ImagePage> {
               const SizedBox(height: 16),
               Text(
                 'Quantidade de imagens',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+                style: Theme.of(context).textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 10),
               SegmentedButton<int>(
@@ -162,25 +161,43 @@ class _ImagePageState extends State<ImagePage> {
               ],
               if (_generatedImages.isNotEmpty) ...[
                 const SizedBox(height: 24),
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _generatedImages.length,
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: _generatedImages.length == 1 ? 1 : 2,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                  ),
-                  itemBuilder: (context, index) => ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Image.memory(
-                      _generatedImages[index],
-                      fit: BoxFit.cover,
-                      semanticLabel:
-                          'Imagem ${index + 1} gerada por inteligência artificial',
+                if (_generatedImages.length == 1)
+                  Align(
+                    alignment: Alignment.topCenter,
+                    child: ConstrainedBox(
+                      key: const ValueKey('single-generated-image-container'),
+                      constraints: const BoxConstraints(maxWidth: 800),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: Image.memory(
+                          _generatedImages.first,
+                          fit: BoxFit.contain,
+                          semanticLabel:
+                              'Imagem 1 gerada por inteligência artificial',
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _generatedImages.length,
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                    ),
+                    itemBuilder: (context, index) => ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Image.memory(
+                        _generatedImages[index],
+                        fit: BoxFit.cover,
+                        semanticLabel:
+                            'Imagem ${index + 1} gerada por inteligência artificial',
+                      ),
                     ),
                   ),
-                ),
               ],
             ],
           ),
