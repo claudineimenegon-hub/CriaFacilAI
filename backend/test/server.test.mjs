@@ -514,7 +514,13 @@ test('count padrão gera uma imagem e preserva imageBase64', async () => {
     imageBase64: 'imagem-base64',
     imagesBase64: ['imagem-base64'],
   });
-  assert.equal(receivedPrompt, 'símbolo azul minimalista');
+  assert.match(receivedPrompt, /^símbolo azul minimalista\n\n/);
+  assert.match(receivedPrompt, /coerência física, espacial e visual/);
+  assert.match(receivedPrompt, /Pessoas e animais devem ter anatomia/);
+  assert.match(receivedPrompt, /plantas, joias, relógios, máquinas e veículos/);
+  assert.match(receivedPrompt, /sol, lua, luar, chuva/);
+  assert.match(receivedPrompt, /elementos flutuantes, atravessados/);
+  assert.match(receivedPrompt, /intenção criativa do usuário prevalece/);
 });
 
 test('count=4 gera quatro variações com concorrência máxima de duas', async () => {

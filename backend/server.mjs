@@ -40,15 +40,30 @@ const variationDirections = [
   'Explore um emblema abstrato elegante com proporções diferenciadas.',
 ];
 
+const IMAGE_COHERENCE_GUIDANCE = [
+  'Regras internas de qualidade: preserve a intenção e os elementos principais descritos pelo usuário.',
+  'Mantenha coerência física, espacial e visual em toda a cena.',
+  'Pessoas e animais devem ter anatomia, postura, proporções e interações naturais.',
+  'Objetos, móveis, alimentos, plantas, joias, relógios, máquinas e veículos devem ser íntegros, reconhecíveis, proporcionais e funcionalmente plausíveis.',
+  'Elementos naturais e atmosféricos, incluindo sol, lua, luar, chuva, nuvens, água, fogo e vegetação, devem corresponder ao ambiente, clima, horário e iluminação.',
+  'Preserve apoio, contato, escala, perspectiva, movimento, sombras e reflexos coerentes.',
+  'Evite elementos flutuantes, atravessados, fundidos, duplicados, desconectados, cortados ou deformados.',
+  'Associe vapor, fumaça, chuva, luz, sombras e reflexos às fontes físicas corretas.',
+  'Se o usuário pedir explicitamente uma cena surreal ou impossível, a intenção criativa do usuário prevalece.',
+].join(' ');
+
 function variationPrompt(prompt, index, count) {
-  if (count === 1) return prompt;
-  const direction = [
-    variationDirections[index],
-    'Crie uma alternativa visual genuinamente diferente das demais.',
-    'Não inclua instruções, números de variação ou textos explicativos na imagem.',
-  ].join(' ');
-  const availablePromptLength = 2048 - direction.length - 1;
-  return `${prompt.slice(0, availablePromptLength)} ${direction}`;
+  const directions = [IMAGE_COHERENCE_GUIDANCE];
+  if (count > 1) {
+    directions.push(
+      variationDirections[index],
+      'Crie uma alternativa visual genuinamente diferente das demais.',
+      'Não inclua instruções, números de variação ou textos explicativos na imagem.',
+    );
+  }
+  const guidance = directions.join(' ');
+  const availablePromptLength = 2048 - guidance.length - 2;
+  return `${prompt.slice(0, Math.max(0, availablePromptLength))}\n\n${guidance}`;
 }
 
 async function generateImages(provider, prompt, count, aspectRatio) {
