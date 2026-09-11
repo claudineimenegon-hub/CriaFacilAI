@@ -49,6 +49,7 @@ const IMAGE_COHERENCE_GUIDANCE = [
   'Preserve apoio, contato, escala, perspectiva, movimento, sombras e reflexos coerentes.',
   'Evite elementos flutuantes, atravessados, fundidos, duplicados, desconectados, cortados ou deformados.',
   'Associe vapor, fumaça, chuva, luz, sombras e reflexos às fontes físicas corretas.',
+  'Não inclua textos, letras, números, placas, legendas, marcas ou logotipos, exceto quando o usuário solicitar explicitamente algum desses elementos.',
   'Se o usuário pedir explicitamente uma cena surreal ou impossível, a intenção criativa do usuário prevalece.',
 ].join(' ');
 

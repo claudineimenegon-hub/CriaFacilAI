@@ -520,6 +520,8 @@ test('count padrão gera uma imagem e preserva imageBase64', async () => {
   assert.match(receivedPrompt, /plantas, joias, relógios, máquinas e veículos/);
   assert.match(receivedPrompt, /sol, lua, luar, chuva/);
   assert.match(receivedPrompt, /elementos flutuantes, atravessados/);
+  assert.match(receivedPrompt, /Não inclua textos, letras, números, placas, legendas, marcas ou logotipos/);
+  assert.match(receivedPrompt, /exceto quando o usuário solicitar explicitamente/);
   assert.match(receivedPrompt, /intenção criativa do usuário prevalece/);
 });
 
