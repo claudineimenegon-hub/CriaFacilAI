@@ -93,10 +93,12 @@ class HttpImageGenerationService implements ImageGenerationService {
       throw const ImageGenerationException(
         'A geração demorou demais. Tente novamente.',
       );
-    } on FormatException {
+        } on FormatException {
       throw const ImageGenerationException(
         'O servidor retornou uma resposta inválida.',
       );
+    } on ImageHttpTransportException catch (error) {
+      throw ImageGenerationException(error.message);
     } on Exception {
       throw const ImageGenerationException(
         'A geração demorou demais ou encontrou um erro inesperado.',
