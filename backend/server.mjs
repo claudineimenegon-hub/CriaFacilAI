@@ -44,6 +44,7 @@ const IMAGE_COHERENCE_GUIDANCE = [
   'Regras internas de qualidade: preserve a intenção e os elementos principais descritos pelo usuário.',
   'Mantenha coerência física, espacial e visual em toda a cena.',
   'Pessoas e animais devem ter anatomia, postura, proporções e interações naturais.',
+    'Cada pessoa deve ter exatamente dois braços, duas mãos com cinco dedos cada, duas pernas e um único rosto; nunca duplique, funda ou invente membros, dedos, mãos ou rostos extras.',
   'Objetos, móveis, alimentos, plantas, joias, relógios, máquinas e veículos devem ser íntegros, reconhecíveis, proporcionais e funcionalmente plausíveis.',
   'Elementos naturais e atmosféricos, incluindo sol, lua, luar, chuva, nuvens, água, fogo e vegetação, devem corresponder ao ambiente, clima, horário e iluminação.',
   'Preserve apoio, contato, escala, perspectiva, movimento, sombras e reflexos coerentes.',
