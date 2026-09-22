@@ -589,3 +589,33 @@ test('não repassa detalhes de erro do provedor ao cliente', async () => {
   assert.equal(response.status, 502);
   assert.deepEqual(await response.json(), { error: 'O provedor não conseguiu gerar esta imagem.' });
 });
+
+test('preserva descrição completa ou rejeita antes de chamar o provedor', async () => {
+  const prompts = [];
+  const baseUrl = await start({ imageProvider: provider({ generate: async prompt => { prompts.push(prompt); return 'imagem-base64'; } }) });
+  const send = (prompt, count) => fetch(baseUrl + '/v1/images/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, count }) });
+  for (const count of [1, 4]) {
+    prompts.length = 0;
+    const rejected = await send('a'.repeat(2000), count);
+    assert.equal(rejected.status, 400);
+    const message = (await rejected.json()).error;
+    const limit = Number(message.match(/até (\d+)/)[1]);
+    assert.ok(limit > 100);
+    assert.equal(prompts.length, 0);
+    const suffix = ' FIM DO TEXTO';
+    const text = 'a'.repeat(limit - suffix.length) + suffix;
+    assert.equal((await send(text, count)).status, 200);
+    assert.equal(prompts.length, count);
+    for (const prompt of prompts) {
+      assert.ok(prompt.startsWith(text + '\n\n'));
+      assert.ok(prompt.length <= 2048);
+      assert.match(prompt, /sujeito singular significa uma pessoa/);
+      assert.match(prompt, /xícara não é copo/);
+      assert.match(prompt, /amputações, próteses/);
+      assert.match(prompt, /partes ocultas ou fora do quadro/);
+    }
+    prompts.length = 0;
+    assert.equal((await send('a'.repeat(limit + 1), count)).status, 400);
+    assert.equal(prompts.length, 0);
+  }
+});

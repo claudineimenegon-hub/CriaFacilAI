@@ -41,15 +41,15 @@ const variationDirections = [
 ];
 
 const IMAGE_COHERENCE_GUIDANCE = [
-  'Regras internas de qualidade: preserve a intenção e os elementos principais descritos pelo usuário.',
+  'Preserve a intenção do usuário.',
   'Mantenha coerência física, espacial e visual em toda a cena.',
   'Pessoas e animais devem ter anatomia, postura, proporções e interações naturais.',
-    'Cada pessoa deve ter exatamente dois braços, duas mãos com cinco dedos cada, duas pernas e um único rosto; nunca duplique, funda ou invente membros, dedos, mãos ou rostos extras.',
-  'Objetos, móveis, alimentos, plantas, joias, relógios, máquinas e veículos devem ser íntegros, reconhecíveis, proporcionais e funcionalmente plausíveis.',
-  'Elementos naturais e atmosféricos, incluindo sol, lua, luar, chuva, nuvens, água, fogo e vegetação, devem corresponder ao ambiente, clima, horário e iluminação.',
-  'Preserve apoio, contato, escala, perspectiva, movimento, sombras e reflexos coerentes.',
-  'Evite elementos flutuantes, atravessados, fundidos, duplicados, desconectados, cortados ou deformados.',
-  'Associe vapor, fumaça, chuva, luz, sombras e reflexos às fontes físicas corretas.',
+  'Não duplique nem funda membros, mãos, dedos ou rostos. Respeite amputações, próteses, diferenças corporais e anatomia fantástica solicitadas. Aceite partes ocultas ou fora do quadro; não crie membros para mostrá-las.',
+  'Preserve a quantidade de pessoas: sujeito singular significa uma pessoa, salvo pedido de grupo. Não acrescente figurantes. Preserve o tipo dos objetos: xícara não é copo. Atribua cada ação à pessoa e à mão descritas; não divida uma ação entre pessoas extras.',
+  'Objetos, móveis, alimentos, plantas, joias, relógios, máquinas e veículos: íntegros e plausíveis.',
+  'sol, lua, luar, chuva e demais elementos naturais: coerentes com clima e horário.',
+  'Preserve apoio, escala, contato, sombras e reflexos.',
+  'Evite elementos flutuantes, atravessados, fundidos, duplicados, desconectados ou deformados.',
   'Não inclua textos, letras, números, placas, legendas, marcas ou logotipos, exceto quando o usuário solicitar explicitamente algum desses elementos.',
   'Se o usuário pedir explicitamente uma cena surreal ou impossível, a intenção criativa do usuário prevalece.',
 ].join(' ');
@@ -59,13 +59,12 @@ function variationPrompt(prompt, index, count) {
   if (count > 1) {
     directions.push(
       variationDirections[index],
-      'Crie uma alternativa visual genuinamente diferente das demais no enquadramento, ângulo, posição e composição, sem mudar a identidade, o ambiente, os objetos, a roupa, as cores ou demais características especificadas pelo usuário.',
+      'Varie a composição sem mudar a identidade, o ambiente, os objetos, a roupa, as cores ou a ação pedida.',
       'Não inclua instruções, números de variação ou textos explicativos na imagem.',
     );
   }
   const guidance = directions.join(' ');
-  const availablePromptLength = 2048 - guidance.length - 2;
-  return `${prompt.slice(0, Math.max(0, availablePromptLength))}\n\n${guidance}`;
+  return `${prompt}\n\n${guidance}`;
 }
 
 async function generateImages(provider, prompt, count, aspectRatio) {
@@ -465,6 +464,11 @@ export function createServer({
         return sendJson(response, 400, { error: 'Proporção não suportada.' }, corsOrigin);
       }
 
+      const promptLimit = Math.min(...Array.from({ length: count }, (_, index) =>
+        2048 - variationPrompt('', index, count).length));
+      if (prompt.trim().length > promptLimit) {
+        return sendJson(response, 400, { error: `Use até ${promptLimit} caracteres para esta geração. A descrição não foi cortada.` }, corsOrigin);
+      }
       const imagesBase64 = await generateImages(imageProvider, prompt.trim(), count, aspectRatio);
       return sendJson(response, 200, {
         imageBase64: imagesBase64[0],
