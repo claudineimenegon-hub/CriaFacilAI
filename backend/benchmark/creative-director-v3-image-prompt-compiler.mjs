@@ -80,6 +80,14 @@ function campaignVisualDiversityPolicy(campaignRole) {
   ]);
 }
 
+function sourcePhotoScope() {
+  return section('E3. SOURCE PHOTO SCOPE', [
+    'The source photograph supplies product identity only: geometry, materials, characteristic colors, details, quantities and relationships.',
+    'Do NOT reproduce the source background, backdrop color, surface, cards, trays, packaging, lighting or the arrangement and layout of the items. Build the background, surface and item arrangement from the Creative Brief and the background color family it names.',
+    'Do not use black, charcoal or near-black as the dominant background, surface, plate or pedestal unless this campaign role explicitly allows a predominantly dark treatment.',
+  ]);
+}
+
 function onBodyWearableFidelity(brief, productSemantics) {
   const presence = brief.humanInteraction.presence ??
     (brief.humanInteraction.mode === 'required' ? 'required' : 'optional');
@@ -349,6 +357,7 @@ export function compileCreativeDirectorV3ImagePrompt({ brief, productIdentity, p
       `Commercial objective: ${brief.commercialObjective}`,
     ]),
     campaignVisualDiversityPolicy(brief.campaignRole),
+    sourcePhotoScope(),
     section('F. VISUAL STORY', [brief.visualStory]),
     section('G. SCENE', [
       `Environment: ${brief.scene.environment}`, `Surface: ${brief.scene.surface}`,

@@ -1,5 +1,6 @@
 import { V3_CAMPAIGN_ROLES, V3_COLOR_STRATEGIES, V3_HUMAN_PRESENCE } from './creative-director-v3.mjs';
 import { prepareCreativeDirectorV3SourceImage } from './creative-director-v3-source-image.mjs';
+import { buildCreativeVariationBlock } from './creative-director-v3-variation.mjs';
 
 export const OPENAI_CREATIVE_DIRECTOR_V3_MODEL = 'gpt-5.4-mini';
 export const OPENAI_RESPONSES_ENDPOINT = 'https://api.openai.com/v1/responses';
@@ -126,7 +127,11 @@ const SYSTEM_INSTRUCTIONS = [
   'For concept_campaign, keep every omitted canonical ID absent rather than echoing it as decoration, silhouette, prop or transformed motif. If multiple independent units are selected by policy, keep them physically separate and never stack, interlace, entangle or fuse them.',
   'Do not infer gender. Use gender-neutral human presentation unless product evidence or explicit user intent supplies sufficient context.',
   'Unknown-safe-context products require conservative, physically plausible commercial still-life or hero contexts.',
-  'Use concrete locations, surfaces, materials, props, environmental colors, composition, camera, lens language, lighting and depth decisions. Avoid generic luxury filler.',
+  'Use concrete locations, surfaces, materials, props, environmental colors, composition, camera, lens language, lighting and depth decisions. Avoid generic filler.',
+  'Match the visual tone to the product category and the user objective. Use premium or luxury styling only when the category or the request calls for it; food, beverages, clothing, cosmetics, electronics, automotive and environments each need their own natural visual world. The luxuryCues field must list quality cues that fit this specific product, not necessarily luxury.',
+  'COLOR DIVERSITY: the four campaigns must use four clearly different background color families, chosen from the product real colors by complement, analogy or tonal neutrals. At most one of the four may be predominantly dark. Never default to black, charcoal or near-black backgrounds, plates, trays or pedestals; hero_commercial, contextual_lifestyle and editorial_craft_detail must be light or mid-tone. Name concrete colors in the palette (for example warm sand, sage green, dusty blue), never only neutral or dark.',
+  'COMPOSITION DIVERSITY: never copy the source photo background, surface, packaging, cards, tray, backdrop or item layout. Arrange the items freshly, with a different arrangement geometry in each campaign (for example diagonal flow, grouped cluster, linear row, floating, draped or hung, symmetrical, asymmetrical with negative space). Never use the same type of support (tray, plate, pedestal) in more than one campaign.',
+  'A CREATIVE VARIATION SEED is supplied with the input. Treat its background color family and arrangement geometry for each role as the default for that role, adapting them only when they conflict with product identity, canonical quantities, relationships or physical plausibility.',
   'Do not provide commentary outside the structured result.',
 ].join(' ');
 
@@ -206,6 +211,7 @@ export function createOpenAICreativeDirectorV3Adapter({
   fetchImpl = globalThis.fetch,
   timeoutMs = OPENAI_CREATIVE_DIRECTOR_V3_TIMEOUT_MS,
   sourceImage,
+  random = Math.random,
 } = {}) {
   let metadata = Object.freeze({ provider: 'openai', model: OPENAI_CREATIVE_DIRECTOR_V3_MODEL, statusHttp: null });
   return Object.freeze({
@@ -223,6 +229,7 @@ export function createOpenAICreativeDirectorV3Adapter({
         const content = [{ type: 'input_text', text: [
           canonicalRelationshipsSummary(normalizedInput),
           visibilityInstructions(normalizedInput),
+          buildCreativeVariationBlock(random),
           'NORMALIZED V3 INPUT:',
           JSON.stringify(normalizedInput),
         ].join('\n') }];
