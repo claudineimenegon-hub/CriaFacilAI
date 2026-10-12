@@ -58,25 +58,24 @@ function sourceVisibleTerminalAssemblies(structuralComponents) {
 function campaignVisualDiversityPolicy(campaignRole) {
   const policies = {
     hero_commercial: [
-      'Use a predominantly light, high-key commercial treatment with a light neutral support and clean controlled contrast.',
-      'Keep the source-observed intrinsic product colors unchanged; visual brightness comes from scene, surface and lighting.',
+      'Commercial clarity: the product reads instantly and desirably, with a color world and support chosen for strong separation from the product.',
     ],
     contextual_lifestyle: [
-      'Use natural or ambient motivated light, a credible contextual surface and balanced warm-to-neutral color temperature.',
-      'Keep the scene lived-in and materially distinct from a studio display without changing intrinsic product colors.',
+      'Credible context: a lived-in setting with motivated light and a color world that feels natural to the scene.',
     ],
     editorial_craft_detail: [
-      'Use a clearly editorial material palette, tactile surface and precise medium-key lighting distinct from both Hero and Lifestyle.',
-      'Let material and component detail create the distinction; preserve intrinsic product colors.',
+      'Tactile detail: material and construction are the focus, with a surface and color world distinct from the other campaigns.',
     ],
     concept_campaign: [
-      'Use the set’s distinct conceptual palette and material world. This is the only campaign role that may be predominantly dark when the concept benefits from it.',
-      'Maintain product legibility and intrinsic colors even under dramatic environmental lighting.',
+      'Bold concept: a distinct, memorable color and material world that carries the idea.',
     ],
   };
-  return section('E2. DETERMINISTIC CROSS-CAMPAIGN DIVERSITY', [
+  return section('E2. CREATIVE FREEDOM OUTSIDE THE PRODUCT', [
     ...policies[campaignRole],
-    'This role-specific exposure, surface, color-temperature and contrast policy takes precedence over conflicting generic scene adjectives while leaving the campaign idea intact.',
+    'No campaign role has a default palette, exposure, key level or light/dark treatment. Color world, background, support, props, lighting and arrangement are free creative decisions of the Creative Brief and must not repeat a pattern from other campaigns.',
+    'Choose backgrounds with real color and clear separation from the product. Avoid neutral-on-neutral compositions such as beige, cream or sand around a warm-toned product unless the Creative Brief deliberately chooses it.',
+    'Showcase goal: present the product in the way that best reveals its natural beauty, brilliance, materials and real colors, through display method, light and background, never by changing the piece.',
+    'Only the physical product is locked: form, structure, proportions, materials, details, quantity and relationships. Its appearance may be enhanced: richer lighting, color vibrancy, finish, clarity and presentation, always within the intrinsic product colors and color family.',
   ]);
 }
 
@@ -84,7 +83,7 @@ function sourcePhotoScope() {
   return section('E3. SOURCE PHOTO SCOPE', [
     'The source photograph supplies product identity only: geometry, materials, characteristic colors, details, quantities and relationships.',
     'Do NOT reproduce the source background, backdrop color, surface, cards, trays, packaging, lighting or the arrangement and layout of the items. Build the background, surface and item arrangement from the Creative Brief and the background color family it names.',
-    'Do not use black, charcoal or near-black as the dominant background, surface, plate or pedestal unless this campaign role explicitly allows a predominantly dark treatment.',
+    'Do not default to black, charcoal or near-black backgrounds, plates or pedestals; use a dark treatment only when the Creative Brief deliberately chooses a dark color world for this campaign.',
   ]);
 }
 

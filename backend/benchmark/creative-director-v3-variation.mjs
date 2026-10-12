@@ -1,45 +1,42 @@
 // Per-generation creative variation seed. Generic on purpose: valid for any product
-// category (food, electronics, clothing, cosmetics, jewelry, etc.). It only guides the
-// scene color family and the arrangement geometry; it never changes product identity.
+// category (food, electronics, clothing, cosmetics, jewelry, etc.). No campaign role owns
+// a palette or exposure; colors, supports and arrangements are drawn without replacement
+// from shared pools so the four campaigns of one generation never repeat each other and
+// two generations rarely repeat. The seed guides the scene only, never the product.
 
-const BACKGROUND_FAMILIES = Object.freeze({
-  hero_commercial: Object.freeze([
-    'warm cream and soft sand', 'pale sage green and ivory', 'dusty blue-grey and white',
-    'blush pink and champagne', 'soft terracotta and natural linen', 'light stone grey and warm white',
-    'pale butter yellow and cream', 'powder lilac and pearl white',
-  ]),
-  contextual_lifestyle: Object.freeze([
-    'warm morning daylight with natural wood and linen', 'sunlit terrace with pale stone and greenery',
-    'soft interior in muted olive and cream', 'airy coastal light with sand and white',
-    'golden-hour warmth with terracotta tones', 'cool overcast daylight in soft grey-blue and white',
-  ]),
-  editorial_craft_detail: Object.freeze([
-    'rich emerald green paper and textured stone', 'deep burgundy wine with warm taupe',
-    'cobalt blue with pale grey', 'mustard ochre with cream', 'warm terracotta clay with sand',
-    'moss and sage tones with natural wood', 'powder pink with warm taupe',
-  ]),
-  concept_campaign: Object.freeze([
-    'saturated cobalt blue world', 'sunset coral-to-amber gradient', 'lush forest green botanical world',
-    'deep rose and burgundy world', 'electric teal with cream accents', 'violet dusk gradient',
-    'warm sand dunes in monochrome tan', 'icy pale blue winter world',
-  ]),
-});
+const COLOR_WORLDS = Object.freeze([
+  'sage green with ivory accents', 'dusty blue with soft white', 'warm terracotta with peach accents',
+  'deep teal with ivory accents', 'burgundy and rose', 'mustard ochre with warm grey',
+  'blush pink with champagne', 'cobalt blue with pale grey', 'lilac and pearl white',
+  'forest green with natural wood tones', 'coral and peach', 'midnight navy with soft silver light',
+  'butter yellow with white', 'olive green with warm taupe', 'powder blue and lavender',
+  'rich plum with soft pink', 'emerald green with pale stone', 'sunset orange to rose gradient',
+]);
+
+const SUPPORT_TYPES = Object.freeze([
+  'natural stone', 'draped fabric or silk', 'raw wood', 'glass or acrylic', 'textured paper or cardboard',
+  'ceramic', 'brushed metal', 'botanical elements such as leaves, branches or flowers',
+  'velvet', 'water or wet surface with reflections', 'concrete or plaster', 'woven rattan or linen',
+]);
 
 const COMPOSITION_STYLES = Object.freeze([
   'diagonal flow across the frame', 'tight grouped cluster with one hero item forward',
   'linear row with even rhythm', 'items floating or suspended with soft shadows',
   'items draped or hung over a natural prop', 'symmetrical centered tableau',
   'asymmetrical layout with generous negative space on one side',
-  'layered on stepped blocks of natural material at different heights',
+  'layered on stepped levels at different heights',
   'casually scattered as if just placed',
+  'radial or fan arrangement', 'stacked or leaning against a vertical element',
+  'resting in soft folds of fabric', 'hanging from a suspended element or branch',
+  'reflected in a mirror or glossy surface', 'framed by an arch, window or doorway',
+  'emerging from natural elements such as leaves, petals or shells', 'on a sculptural stand at different heights',
+  'in an open hand or held naturally', 'inside or beside an open case or box',
+  'caught in a beam of light with a soft shadow pattern', 'arranged in a flowing curve or spiral',
 ]);
 
-const ROLES = Object.freeze(Object.keys(BACKGROUND_FAMILIES));
-
-function pick(list, random) {
-  const index = Math.min(list.length - 1, Math.floor(random() * list.length));
-  return list[index];
-}
+const ROLES = Object.freeze([
+  'hero_commercial', 'contextual_lifestyle', 'editorial_craft_detail', 'concept_campaign',
+]);
 
 function shuffled(list, random) {
   const copy = [...list];
@@ -51,10 +48,13 @@ function shuffled(list, random) {
 }
 
 export function createCreativeVariationSeed(random = Math.random) {
+  const colors = shuffled(COLOR_WORLDS, random);
+  const supports = shuffled(SUPPORT_TYPES, random);
   const compositions = shuffled(COMPOSITION_STYLES, random);
   return Object.freeze(ROLES.map((campaignRole, index) => Object.freeze({
     campaignRole,
-    backgroundFamily: pick(BACKGROUND_FAMILIES[campaignRole], random),
+    colorWorld: colors[index],
+    supportType: supports[index],
     arrangement: compositions[index],
   })));
 }
@@ -62,8 +62,8 @@ export function createCreativeVariationSeed(random = Math.random) {
 export function buildCreativeVariationBlock(random = Math.random) {
   return [
     'CREATIVE VARIATION SEED (generic starting point for any product category):',
-    ...createCreativeVariationSeed(random).map(({ campaignRole, backgroundFamily, arrangement }) =>
-      `- ${campaignRole}: background color family = ${backgroundFamily}; arrangement geometry = ${arrangement}.`),
-    'Use each suggestion as the default for its role unless it conflicts with product identity, canonical quantities, relationships or physical plausibility. The seed guides scene color and composition only and never changes the product.',
+    ...createCreativeVariationSeed(random).map(({ campaignRole, colorWorld, supportType, arrangement }) =>
+      `- ${campaignRole}: color world = ${colorWorld}; main support/material = ${supportType}; arrangement geometry = ${arrangement}.`),
+    'Treat each line as the starting point for its role and adapt it creatively. Deviate only when it conflicts with the physical identity, canonical quantities, relationships or physical plausibility of the product, or when another color world makes the product stand out better. The seed guides scene color, support and composition only.',
   ].join('\n');
 }

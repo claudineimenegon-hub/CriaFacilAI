@@ -1441,7 +1441,7 @@ test('Lifestyle wearable usa âncora semântica, não duplica worn units e prese
     brief: briefs[1], productIdentity: pairInput.productIdentity,
     productSemantics: pairInput.productSemantics, userIntent: pairInput.userIntent,
   });
-  assert.match(lifestylePrompt, /natural or ambient motivated light/);
+  assert.match(lifestylePrompt, /Credible context: a lived-in setting with motivated light/);
   assert.match(lifestylePrompt, /Never repeat a human-worn, held, applied/);
   assert.match(lifestylePrompt, /only the naturally anchored unit may be clearly visible/);
   assert.match(lifestylePrompt, /Do not reveal, invent or exaggerate an unseen attachment/);
@@ -1655,7 +1655,7 @@ test('Lifestyle mantém somente um produto individual principal no corpo', async
   assert.doesNotThrow(() => validateCreativeDirectorV3Output(normalized, input));
 });
 
-test('quatro campanhas recebem diversidade visual determinística sem recolorir o produto', async () => {
+test('quatro campanhas recebem liberdade criativa sem paleta fixa e sem recolorir o produto', async () => {
   const input = humanPresenceInput({
     category: 'electronics', functionalType: 'portable electronic device', affordance: 'handheld',
   });
@@ -1664,12 +1664,15 @@ test('quatro campanhas recebem diversidade visual determinística sem recolorir 
     brief, productIdentity: input.productIdentity,
     productSemantics: input.productSemantics, userIntent: input.userIntent,
   }));
-  assert.match(prompts[0], /predominantly light, high-key/);
-  assert.match(prompts[1], /natural or ambient motivated light/);
-  assert.match(prompts[2], /clearly editorial material palette/);
-  assert.match(prompts[3], /only campaign role that may be predominantly dark/);
-  assert.equal(prompts.filter((prompt) => /only campaign role that may be predominantly dark/.test(prompt)).length, 1);
-  for (const prompt of prompts) assert.match(prompt, /intrinsic (?:product )?colors/);
+  assert.match(prompts[0], /Commercial clarity/);
+  assert.match(prompts[1], /Credible context/);
+  assert.match(prompts[2], /Tactile detail/);
+  assert.match(prompts[3], /Bold concept/);
+  for (const prompt of prompts) {
+    assert.match(prompt, /No campaign role has a default palette, exposure, key level or light\/dark treatment/);
+    assert.doesNotMatch(prompt, /predominantly light, high-key|only campaign role that may be predominantly dark/);
+    assert.match(prompt, /intrinsic product colors/);
+  }
 });
 
 test('Campanha Conceitual isola um item ou uma relação atômica sem duplicação, fusão ou imitação', async () => {
@@ -1842,7 +1845,7 @@ test('inventário misto aloca ao corpo somente item confirmado como wearable', a
   const scene = prompt.match(/G\. SCENE\n([\s\S]*?)\n\nH\. ART DIRECTION/)?.[1] ?? '';
   assert.match(scene, /realistic human visibly wearing/);
   assert.doesNotMatch(scene, /complete required product identity on stable|tabletop|product-only/i);
-  assert.match(prompt, /natural or ambient motivated light/);
+  assert.match(prompt, /Credible context: a lived-in setting with motivated light/);
 });
 
 test('seleção por role é determinística, usa riqueza observada e desempata por canonical ID', () => {

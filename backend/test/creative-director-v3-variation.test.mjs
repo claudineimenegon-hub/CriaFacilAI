@@ -35,13 +35,15 @@ function genericInput(category = 'food') {
   });
 }
 
-test('seed cobre os 4 papéis com arranjos distintos e sem preto como cor de fundo', () => {
+test('seed cobre os 4 papéis com cores, apoios e arranjos todos distintos e sem preto', () => {
   for (let seed = 1; seed <= 50; seed += 1) {
     const result = createCreativeVariationSeed(seededRandom(seed));
     assert.equal(result.length, 4);
     assert.equal(new Set(result.map(({ campaignRole }) => campaignRole)).size, 4);
-    assert.equal(new Set(result.map(({ arrangement }) => arrangement)).size, 4);
-    for (const { backgroundFamily } of result) assert.doesNotMatch(backgroundFamily, /black|charcoal|preto/i);
+    for (const key of ['colorWorld', 'supportType', 'arrangement']) {
+      assert.equal(new Set(result.map((item) => item[key])).size, 4);
+    }
+    for (const { colorWorld } of result) assert.doesNotMatch(colorWorld, /black|charcoal|preto|beige|cream|sand/i);
   }
 });
 
@@ -71,11 +73,12 @@ test('adapter envia o seed e as regras de diversidade ao Creative Director', asy
   const userText = body.input[0].content[0].text;
   assert.match(userText, /CREATIVE VARIATION SEED/);
   for (const role of ['hero_commercial', 'contextual_lifestyle', 'editorial_craft_detail', 'concept_campaign']) {
-    assert.match(userText, new RegExp(`- ${role}: background color family = `));
+    assert.match(userText, new RegExp(`- ${role}: color world = `));
   }
+  assert.match(body.instructions, /FREEDOM OUTSIDE THE PRODUCT/);
   assert.match(body.instructions, /COLOR DIVERSITY/);
   assert.match(body.instructions, /Never default to black/);
-  assert.match(body.instructions, /COMPOSITION DIVERSITY/);
+  assert.match(body.instructions, /COMPOSITION AND SUPPORT DIVERSITY/);
   assert.match(body.instructions, /never copy the source photo background/);
   assert.doesNotMatch(body.instructions, /Avoid generic luxury filler/);
 });
@@ -90,6 +93,6 @@ test('compiler declara que a foto original serve só para identidade do produto'
     });
     assert.match(prompt, /E3\. SOURCE PHOTO SCOPE/);
     assert.match(prompt, /Do NOT reproduce the source background/);
-    assert.match(prompt, /Do not use black, charcoal or near-black as the dominant background/);
+    assert.match(prompt, /Do not default to black, charcoal or near-black/);
   }
 });
