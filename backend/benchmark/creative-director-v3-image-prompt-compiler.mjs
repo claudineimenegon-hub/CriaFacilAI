@@ -74,6 +74,7 @@ function campaignVisualDiversityPolicy(campaignRole) {
     ...policies[campaignRole],
     'No campaign role has a default palette, exposure, key level or light/dark treatment. Color world, background, support, props, lighting and arrangement are free creative decisions of the Creative Brief and must not repeat a pattern from other campaigns.',
     'Choose backgrounds with real color and clear separation from the product. Avoid neutral-on-neutral compositions such as beige, cream or sand around a warm-toned product unless the Creative Brief deliberately chooses it.',
+    'Build a real, layered scene with concrete props and context (flowers, moss, leaves, fabric, packaging, mirrors, mannequins, busts or display forms, as fitting for the product). Never reduce the background to a plain stone, marble, concrete or beige slab or platform.',
     'Showcase goal: present the product in the way that best reveals its natural beauty, brilliance, materials and real colors, through display method, light and background, never by changing the piece.',
     'Only the physical product is locked: form, structure, proportions, materials, details, quantity and relationships. Its appearance may be enhanced: richer lighting, color vibrancy, finish, clarity and presentation, always within the intrinsic product colors and color family.',
   ]);

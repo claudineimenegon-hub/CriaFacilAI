@@ -14,9 +14,21 @@ const COLOR_WORLDS = Object.freeze([
 ]);
 
 const SUPPORT_TYPES = Object.freeze([
-  'natural stone', 'draped fabric or silk', 'raw wood', 'glass or acrylic', 'textured paper or cardboard',
-  'ceramic', 'brushed metal', 'botanical elements such as leaves, branches or flowers',
-  'velvet', 'water or wet surface with reflections', 'concrete or plaster', 'woven rattan or linen',
+  'moss-covered rocks with small wild flowers and ferns growing around',
+  'a mannequin, bust, hand form or display figure styled for the product category',
+  'an open gift box or branded packaging with tissue paper, ribbon and soft filler',
+  'a lush garden or greenhouse scene with leaves, blossoms and dappled light',
+  'draped silk or satin with fresh flowers and petals scattered around',
+  'a vintage vanity or antique wooden table with a mirror, books and small curios',
+  'shallow water with floating petals, wet pebbles and soft reflections',
+  'a sculptural arrangement of colorful glass, acrylic or ceramic shapes',
+  'a tropical or botanical scene with large leaves, palm shadows and exotic flowers',
+  'a rustic wooden crate or basket with dried flowers, linen and natural fibers',
+  'a velvet cushion or tray surrounded by candles, ribbons and seasonal props',
+  'a seaside scene with shells, driftwood, sand ripples and sea-glass tones',
+  'a colorful paper-craft or cut-out set with layered shapes and playful props',
+  'a market, workshop or studio table with tools, fabrics and craft materials',
+  'a window sill or balcony with potted plants, curtains and morning light',
 ]);
 
 const COMPOSITION_STYLES = Object.freeze([
@@ -61,9 +73,9 @@ export function createCreativeVariationSeed(random = Math.random) {
 
 export function buildCreativeVariationBlock(random = Math.random) {
   return [
-    'CREATIVE VARIATION SEED (generic starting point for any product category):',
+    'CREATIVE VARIATION SEED (assigned scene for any product category; each line is the default scene for its role):',
     ...createCreativeVariationSeed(random).map(({ campaignRole, colorWorld, supportType, arrangement }) =>
-      `- ${campaignRole}: color world = ${colorWorld}; main support/material = ${supportType}; arrangement geometry = ${arrangement}.`),
-    'Treat each line as the starting point for its role and adapt it creatively. Deviate only when it conflicts with the physical identity, canonical quantities, relationships or physical plausibility of the product, or when another color world makes the product stand out better. The seed guides scene color, support and composition only.',
+      `- ${campaignRole}: color world = ${colorWorld}; scene, support and props = ${supportType}; arrangement geometry = ${arrangement}.`),
+    'Build each role around the assigned scene, color world and arrangement, and enrich it with concrete props (flowers, moss, fabric, packaging, mirrors, mannequins or display forms as fitting). Do not fall back to a plain stone, marble, concrete or beige slab. Deviate only when the assigned scene conflicts with the physical identity, canonical quantities, relationships or physical plausibility of the product. The seed guides scene, color and composition only, never the product itself.',
   ].join('\n');
 }
