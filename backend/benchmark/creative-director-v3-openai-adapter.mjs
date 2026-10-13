@@ -1,6 +1,6 @@
 import { V3_CAMPAIGN_ROLES, V3_COLOR_STRATEGIES, V3_HUMAN_PRESENCE } from './creative-director-v3.mjs';
 import { prepareCreativeDirectorV3SourceImage } from './creative-director-v3-source-image.mjs';
-import { buildCreativeVariationBlock } from './creative-director-v3-variation.mjs';
+import { applyCreativeVariationSeed, createCreativeVariationSeed, formatCreativeVariationBlock } from './creative-director-v3-variation.mjs';
 
 export const OPENAI_CREATIVE_DIRECTOR_V3_MODEL = 'gpt-5.4-mini';
 export const OPENAI_RESPONSES_ENDPOINT = 'https://api.openai.com/v1/responses';
@@ -131,9 +131,10 @@ const SYSTEM_INSTRUCTIONS = [
   'Match the visual tone to the product category and the user objective. Use premium or luxury styling only when the category or the request calls for it; food, beverages, clothing, cosmetics, electronics, automotive and environments each need their own natural visual world. The luxuryCues field must list quality cues that fit this specific product, not necessarily luxury.',
   'FREEDOM OUTSIDE THE PRODUCT: only the physical product is locked (form, structure, proportions, materials, details, canonical quantity and relationships). Everything else is free and must avoid repeating patterns: color world, background, support, props, lighting, composition and mood. The product appearance may be enhanced (richer lighting, vibrancy, finish, clarity) within its intrinsic color family.',
   'SHOWCASE GOAL: there are endless ways to present the same product without changing it. Choose the display method, light and background that best reveal the natural beauty, brilliance, materials and real colors of each object, so the product looks its best while remaining exactly the same physical piece.',
-  'COLOR DIVERSITY: no campaign role has a default palette, exposure or light/dark treatment. The four campaigns must use four clearly different, colorful background worlds with real separation from the product, chosen by complement, analogy or bold contrast. Never default to black, charcoal or near-black, and avoid neutral-on-neutral looks such as beige, cream or sand around a warm-toned product; at most one campaign may use a neutral or dark world, and only when its concept justifies it. Name concrete colors in the palette (for example sage green, dusty blue, deep teal, burgundy), never only neutral or dark.',
-  'COMPOSITION AND SUPPORT DIVERSITY: never copy the source photo background, surface, packaging, cards, tray, backdrop or item layout. Arrange the items freshly, with a different arrangement geometry and a different type of support or material in each campaign (for example mossy rocks with flowers, a mannequin or display form, open packaging or gift box, a garden, water with petals, a vintage vanity, a seaside scene). Never use the same type of support in more than one campaign. SCENE RICHNESS: build a real, layered scene with concrete props around the product (flowers, moss, leaves, fabric, ribbons, packaging, mirrors, mannequins, busts or hands as fitting) instead of an empty plain slab. A plain stone, marble, concrete or beige block or platform is not an acceptable default support; use it only if the seed assigns it.',
-  'USE EACH ITEM ACCORDING TO ITS OWN FUNCTION: present every item in the way its own type is naturally used, worn or displayed. Never present an item as if it were a different kind of product; for example, earrings must not sit on a finger or hand-shaped form as if they were rings, and a necklace must not be wrapped around a hand like a bracelet. Hand forms, busts, mannequins and stands are used only for the items that belong on them; the other items rest on other props, hang, or lie in the scene.',
+  'COLOR DIVERSITY: no campaign role has a default palette, exposure or light/dark treatment. Every color world is open: light, dark, neutral, pastel, vivid, warm or cool are all valid. The four campaigns must use four clearly different background worlds, each chosen deliberately for this product and following the color world assigned by the seed. Name concrete colors in the palette.',
+  'COMPOSITION AND SUPPORT DIVERSITY: build each scene and arrange the items freshly instead of reusing the source photo background, surface, packaging, cards, tray, backdrop or item layout. Use a different arrangement geometry and a different kind of scene and support in each campaign, and follow the scene assigned by the seed for each role. Every kind of scene is open (nature, studio, architecture, interiors, packaging, display forms, water, craft, fabric, stone, glass and more); variety across campaigns and across generations is the goal, and no scene is a default. SCENE RICHNESS: build a real, layered scene with concrete props and context around the product (for example flowers, moss, leaves, fabric, ribbons, packaging, mirrors, mannequins, busts or hands as fitting), so each campaign feels like a distinct place.',
+  'USE EACH ITEM ACCORDING TO ITS OWN FUNCTION: first identify what each product in the source photo is and how it is naturally used. Whenever a human model, a mannequin or any human-shaped form appears, each product on it must be placed exactly the way people really use it (for example earrings on the ears, a necklace around the neck, a ring on a finger, a bracelet on the wrist, clothing worn on the body), and a product must never be presented as a different kind of product. Items that are not worn or held that way rest, hang or lie in the scene. Outside human use the scene is free and should vary creatively.',
+  'COMMERCIAL PURPOSE: these images advertise the products on social media, sales pages and online stores. Whatever the scene, the products are the clear hero: fully visible, sharp, well lit, attractive and desirable, never hidden, cropped or overpowered by props, background or people. Creativity serves the sale by making the pieces look their best.',
   'A CREATIVE VARIATION SEED is supplied with the input. Use its scene, color world and arrangement for each role as the default for that role, enriching it with props; deviate only when it conflicts with product identity, canonical quantities, relationships or physical plausibility, or when another choice makes the product stand out better.',
   'Do not provide commentary outside the structured result.',
 ].join(' ');
@@ -228,11 +229,12 @@ export function createOpenAICreativeDirectorV3Adapter({
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const startedAt = Date.now();
       try {
+        const variationSeed = createCreativeVariationSeed(random);
         const preparedSource = await prepareCreativeDirectorV3SourceImage(sourceImage);
         const content = [{ type: 'input_text', text: [
           canonicalRelationshipsSummary(normalizedInput),
           visibilityInstructions(normalizedInput),
-          buildCreativeVariationBlock(random),
+          formatCreativeVariationBlock(variationSeed),
           'NORMALIZED V3 INPUT:',
           JSON.stringify(normalizedInput),
         ].join('\n') }];
@@ -260,7 +262,7 @@ export function createOpenAICreativeDirectorV3Adapter({
         let parsed;
         try { parsed = JSON.parse(output); } catch { throw providerError('OPENAI_INVALID_STRUCTURED_OUTPUT', 'OpenAI structured output could not be parsed.', { statusHttp: response.status }); }
         metadata = Object.freeze({ ...metadata, usage: safeUsage(payload.usage) });
-        return parsed?.briefs;
+        return applyCreativeVariationSeed(parsed?.briefs, variationSeed);
       } catch (error) {
         if (error?.name === 'AbortError') throw providerError('OPENAI_TIMEOUT', 'OpenAI Creative Director request timed out.');
         if (error?.code) throw error;

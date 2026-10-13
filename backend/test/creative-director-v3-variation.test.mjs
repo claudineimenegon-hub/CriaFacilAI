@@ -9,6 +9,7 @@ import { createOpenAICreativeDirectorV3Adapter } from '../benchmark/creative-dir
 import {
   buildCreativeVariationBlock,
   createCreativeVariationSeed,
+  applyCreativeVariationSeed,
 } from '../benchmark/creative-director-v3-variation.mjs';
 
 function seededRandom(seed) {
@@ -43,7 +44,6 @@ test('seed cobre os 4 papéis com cores, apoios e arranjos todos distintos e sem
     for (const key of ['colorWorld', 'supportType', 'arrangement']) {
       assert.equal(new Set(result.map((item) => item[key])).size, 4);
     }
-    for (const { colorWorld } of result) assert.doesNotMatch(colorWorld, /black|charcoal|preto|beige|cream|sand/i);
   }
 });
 
@@ -77,11 +77,13 @@ test('adapter envia o seed e as regras de diversidade ao Creative Director', asy
   }
   assert.match(body.instructions, /FREEDOM OUTSIDE THE PRODUCT/);
   assert.match(body.instructions, /COLOR DIVERSITY/);
-  assert.match(body.instructions, /Never default to black/);
+  assert.match(body.instructions, /Every color world is open/);
   assert.match(body.instructions, /COMPOSITION AND SUPPORT DIVERSITY/);
   assert.match(body.instructions, /SCENE RICHNESS/);
   assert.match(body.instructions, /USE EACH ITEM ACCORDING TO ITS OWN FUNCTION/);
-  assert.match(body.instructions, /never copy the source photo background/);
+  assert.match(body.instructions, /earrings on the ears/);
+  assert.match(body.instructions, /COMMERCIAL PURPOSE/);
+  assert.match(body.instructions, /instead of reusing the source photo background/);
   assert.doesNotMatch(body.instructions, /Avoid generic luxury filler/);
 });
 
@@ -94,7 +96,24 @@ test('compiler declara que a foto original serve só para identidade do produto'
       productSemantics: input.productSemantics, userIntent: input.userIntent,
     });
     assert.match(prompt, /E3\. SOURCE PHOTO SCOPE/);
+    assert.match(prompt, /Commercial purpose: this image advertises/);
     assert.match(prompt, /Do NOT reproduce the source background/);
-    assert.match(prompt, /Do not default to black, charcoal or near-black/);
+    assert.match(prompt, /Choose the background color deliberately/);
   }
+});
+
+test('seed é aplicado deterministicamente às props e à paleta de cada brief', () => {
+  const seed = createCreativeVariationSeed(seededRandom(5));
+  const briefs = seed.map(({ campaignRole }) => ({
+    campaignRole, scene: { props: ['linen'] }, artDirection: { palette: ['cream'] },
+  }));
+  applyCreativeVariationSeed(briefs, seed);
+  briefs.forEach((brief, index) => {
+    assert.match(brief.scene.props[0], /ASSIGNED SCENE/);
+    assert.ok(brief.scene.props[0].includes(seed[index].supportType));
+    assert.match(brief.artDirection.palette[0], /ASSIGNED DOMINANT BACKGROUND COLOR WORLD/);
+    assert.ok(brief.artDirection.palette[0].includes(seed[index].colorWorld));
+    assert.equal(brief.scene.props[1], 'linen');
+  });
+  assert.equal(applyCreativeVariationSeed(undefined, seed), undefined);
 });

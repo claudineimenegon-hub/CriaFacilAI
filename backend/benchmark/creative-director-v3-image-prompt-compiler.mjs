@@ -73,9 +73,10 @@ function campaignVisualDiversityPolicy(campaignRole) {
   return section('E2. CREATIVE FREEDOM OUTSIDE THE PRODUCT', [
     ...policies[campaignRole],
     'No campaign role has a default palette, exposure, key level or light/dark treatment. Color world, background, support, props, lighting and arrangement are free creative decisions of the Creative Brief and must not repeat a pattern from other campaigns.',
-    'Choose backgrounds with real color and clear separation from the product. Avoid neutral-on-neutral compositions such as beige, cream or sand around a warm-toned product unless the Creative Brief deliberately chooses it.',
-    'Build a real, layered scene with concrete props and context (flowers, moss, leaves, fabric, packaging, mirrors, mannequins, busts or display forms, as fitting for the product). Never reduce the background to a plain stone, marble, concrete or beige slab or platform.',
-    'Use each item according to its own function: present every item in the way its own type is naturally used, worn or displayed, and never as if it were a different kind of product. Display forms such as hands, busts, mannequins or stands are used only for the items that naturally belong on them; the other items rest on other props, hang, or lie in the scene.',
+    'Choose each background deliberately, with a color world and scene that suit the product and the Creative Brief. Every color and every kind of scene is open, and the four campaigns of one generation differ clearly from each other.',
+    'Build a real, layered scene with concrete props and context (for example flowers, moss, leaves, fabric, packaging, mirrors, mannequins, busts, display forms, water or architecture, as fitting for the product). Any ASSIGNED SCENE or ASSIGNED COLOR WORLD listed in the props and palette must be clearly visible.',
+    'Use each item according to its own function: whenever a human model, a mannequin or any human-shaped form appears, each product on it is placed exactly the way people really use that type of product, and never as if it were a different kind of product. Items that are not worn or held that way rest, hang or lie in the scene. Outside human use the scene is free and varied.',
+    'Commercial purpose: this image advertises the product on social media, sales pages and online stores. The product is the clear hero: fully visible, sharp, well lit and desirable, never hidden, cropped or overpowered by props, background or people.',
     'Showcase goal: present the product in the way that best reveals its natural beauty, brilliance, materials and real colors, through display method, light and background, never by changing the piece.',
     'Only the physical product is locked: form, structure, proportions, materials, details, quantity and relationships. Its appearance may be enhanced: richer lighting, color vibrancy, finish, clarity and presentation, always within the intrinsic product colors and color family.',
   ]);
@@ -85,7 +86,7 @@ function sourcePhotoScope() {
   return section('E3. SOURCE PHOTO SCOPE', [
     'The source photograph supplies product identity only: geometry, materials, characteristic colors, details, quantities and relationships.',
     'Do NOT reproduce the source background, backdrop color, surface, cards, trays, packaging, lighting or the arrangement and layout of the items. Build the background, surface and item arrangement from the Creative Brief and the background color family it names.',
-    'Do not default to black, charcoal or near-black backgrounds, plates or pedestals; use a dark treatment only when the Creative Brief deliberately chooses a dark color world for this campaign.',
+    'Choose the background color deliberately for this campaign; light, dark, neutral or vivid are all valid when they follow the Creative Brief.',
   ]);
 }
 

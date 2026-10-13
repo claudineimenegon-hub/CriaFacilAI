@@ -11,6 +11,8 @@ const COLOR_WORLDS = Object.freeze([
   'forest green with natural wood tones', 'coral and peach', 'midnight navy with soft silver light',
   'butter yellow with white', 'olive green with warm taupe', 'powder blue and lavender',
   'rich plum with soft pink', 'emerald green with pale stone', 'sunset orange to rose gradient',
+  'deep black with warm gold highlights', 'warm cream and soft gold', 'light stone grey with pale green',
+  'rich chocolate brown with amber', 'crisp white with a single bold accent color', 'charcoal with copper light',
 ]);
 
 const SUPPORT_TYPES = Object.freeze([
@@ -29,6 +31,10 @@ const SUPPORT_TYPES = Object.freeze([
   'a colorful paper-craft or cut-out set with layered shapes and playful props',
   'a market, workshop or studio table with tools, fabrics and craft materials',
   'a window sill or balcony with potted plants, curtains and morning light',
+  'a stone podium or marble plinth in an architectural setting with shadows and greenery',
+  'a dark velvet display with dramatic spotlight and subtle reflections',
+  'a minimalist studio set with colored paper backdrop and a single sculptural prop',
+  'a cozy interior with books, ceramics, warm lamp light and textured textiles',
 ]);
 
 const COMPOSITION_STYLES = Object.freeze([
@@ -71,11 +77,28 @@ export function createCreativeVariationSeed(random = Math.random) {
   })));
 }
 
-export function buildCreativeVariationBlock(random = Math.random) {
+export function formatCreativeVariationBlock(seed) {
   return [
     'CREATIVE VARIATION SEED (assigned scene for any product category; each line is the default scene for its role):',
-    ...createCreativeVariationSeed(random).map(({ campaignRole, colorWorld, supportType, arrangement }) =>
+    ...seed.map(({ campaignRole, colorWorld, supportType, arrangement }) =>
       `- ${campaignRole}: color world = ${colorWorld}; scene, support and props = ${supportType}; arrangement geometry = ${arrangement}.`),
-    'Build each role around the assigned scene, color world and arrangement, and enrich it with concrete props (flowers, moss, fabric, packaging, mirrors, mannequins or display forms as fitting). Do not fall back to a plain stone, marble, concrete or beige slab. Deviate only when the assigned scene conflicts with the physical identity, canonical quantities, relationships or physical plausibility of the product. The seed guides scene, color and composition only, never the product itself.',
+    'Build each role around the assigned scene, color world and arrangement, and enrich it with concrete props (flowers, moss, fabric, packaging, mirrors, mannequins or display forms as fitting). No scene is a default; variety is the goal. Deviate only when the assigned scene conflicts with the physical identity, canonical quantities, relationships or physical plausibility of the product. The seed guides scene, color and composition only, never the product itself.',
   ].join('\n');
+}
+
+// Deterministic enforcement: the director model may ignore the seed and drift to a repeated scene
+// slab, so the assigned scene and color world are appended to each brief's props and palette.
+export function applyCreativeVariationSeed(briefs, seed) {
+  if (!Array.isArray(briefs)) return briefs;
+  for (const brief of briefs) {
+    const assigned = seed.find(({ campaignRole }) => campaignRole === brief?.campaignRole);
+    if (!assigned || !Array.isArray(brief.scene?.props) || !Array.isArray(brief.artDirection?.palette)) continue;
+    brief.scene.props = [`ASSIGNED SCENE (must be clearly visible): ${assigned.supportType}`, ...brief.scene.props];
+    brief.artDirection.palette = [`ASSIGNED DOMINANT BACKGROUND COLOR WORLD (must be clearly visible): ${assigned.colorWorld}`, ...brief.artDirection.palette];
+  }
+  return briefs;
+}
+
+export function buildCreativeVariationBlock(random = Math.random) {
+  return formatCreativeVariationBlock(createCreativeVariationSeed(random));
 }
