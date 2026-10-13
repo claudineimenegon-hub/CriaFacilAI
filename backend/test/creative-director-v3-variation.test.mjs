@@ -80,6 +80,7 @@ test('adapter envia o seed e as regras de diversidade ao Creative Director', asy
   assert.match(body.instructions, /Never default to black/);
   assert.match(body.instructions, /COMPOSITION AND SUPPORT DIVERSITY/);
   assert.match(body.instructions, /SCENE RICHNESS/);
+  assert.match(body.instructions, /USE EACH ITEM ACCORDING TO ITS OWN FUNCTION/);
   assert.match(body.instructions, /never copy the source photo background/);
   assert.doesNotMatch(body.instructions, /Avoid generic luxury filler/);
 });

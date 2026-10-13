@@ -15,7 +15,7 @@ const COLOR_WORLDS = Object.freeze([
 
 const SUPPORT_TYPES = Object.freeze([
   'moss-covered rocks with small wild flowers and ferns growing around',
-  'a mannequin, bust, hand form or display figure styled for the product category',
+  'a mannequin, bust, hand form or display figure, used only for items that are naturally worn or held that way',
   'an open gift box or branded packaging with tissue paper, ribbon and soft filler',
   'a lush garden or greenhouse scene with leaves, blossoms and dappled light',
   'draped silk or satin with fresh flowers and petals scattered around',
