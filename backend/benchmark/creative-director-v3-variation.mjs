@@ -1,3 +1,5 @@
+import { formatCategoryProfileBlock } from './creative-director-v3-category-profile.mjs';
+
 // Per-generation creative variation seed. Generic on purpose: valid for any product
 // category (food, electronics, clothing, cosmetics, jewelry, etc.). No campaign role owns
 // a palette or exposure; colors, supports and arrangements are drawn without replacement
@@ -65,10 +67,10 @@ function shuffled(list, random) {
   return copy;
 }
 
-export function createCreativeVariationSeed(random = Math.random) {
+export function createCreativeVariationSeed(random = Math.random, profile = null) {
   const colors = shuffled(COLOR_WORLDS, random);
-  const supports = shuffled(SUPPORT_TYPES, random);
-  const compositions = shuffled(COMPOSITION_STYLES, random);
+  const supports = shuffled(profile?.scenes ?? SUPPORT_TYPES, random);
+  const compositions = shuffled(profile?.arrangements ?? COMPOSITION_STYLES, random);
   return Object.freeze(ROLES.map((campaignRole, index) => Object.freeze({
     campaignRole,
     colorWorld: colors[index],
@@ -77,8 +79,9 @@ export function createCreativeVariationSeed(random = Math.random) {
   })));
 }
 
-export function formatCreativeVariationBlock(seed) {
+export function formatCreativeVariationBlock(seed, profile = null) {
   return [
+    ...(profile ? [formatCategoryProfileBlock(profile)] : []),
     'CREATIVE VARIATION SEED (assigned scene for any product category; each line is the default scene for its role):',
     ...seed.map(({ campaignRole, colorWorld, supportType, arrangement }) =>
       `- ${campaignRole}: color world = ${colorWorld}; scene, support and props = ${supportType}; arrangement geometry = ${arrangement}.`),
@@ -99,6 +102,6 @@ export function applyCreativeVariationSeed(briefs, seed) {
   return briefs;
 }
 
-export function buildCreativeVariationBlock(random = Math.random) {
-  return formatCreativeVariationBlock(createCreativeVariationSeed(random));
+export function buildCreativeVariationBlock(random = Math.random, profile = null) {
+  return formatCreativeVariationBlock(createCreativeVariationSeed(random, profile), profile);
 }

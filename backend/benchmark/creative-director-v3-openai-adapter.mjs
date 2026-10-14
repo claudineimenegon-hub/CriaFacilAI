@@ -1,5 +1,6 @@
 import { V3_CAMPAIGN_ROLES, V3_COLOR_STRATEGIES, V3_HUMAN_PRESENCE } from './creative-director-v3.mjs';
 import { prepareCreativeDirectorV3SourceImage } from './creative-director-v3-source-image.mjs';
+import { resolveCategoryProfile } from './creative-director-v3-category-profile.mjs';
 import { applyCreativeVariationSeed, createCreativeVariationSeed, formatCreativeVariationBlock } from './creative-director-v3-variation.mjs';
 
 export const OPENAI_CREATIVE_DIRECTOR_V3_MODEL = 'gpt-5.4-mini';
@@ -229,12 +230,13 @@ export function createOpenAICreativeDirectorV3Adapter({
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const startedAt = Date.now();
       try {
-        const variationSeed = createCreativeVariationSeed(random);
+        const categoryProfile = resolveCategoryProfile(normalizedInput.productIdentity);
+        const variationSeed = createCreativeVariationSeed(random, categoryProfile);
         const preparedSource = await prepareCreativeDirectorV3SourceImage(sourceImage);
         const content = [{ type: 'input_text', text: [
           canonicalRelationshipsSummary(normalizedInput),
           visibilityInstructions(normalizedInput),
-          formatCreativeVariationBlock(variationSeed),
+          formatCreativeVariationBlock(variationSeed, categoryProfile),
           'NORMALIZED V3 INPUT:',
           JSON.stringify(normalizedInput),
         ].join('\n') }];
