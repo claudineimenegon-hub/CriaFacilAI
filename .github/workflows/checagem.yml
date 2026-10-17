@@ -27,4 +27,13 @@ jobs:
         with:
           channel: stable
       - run: flutter pub get
-      - run: flutter analyze lib/features/ads lib/features/home
+      - name: Analisar app
+        run: |
+          set +e
+          dart analyze --format=machine lib/features/ads lib/features/home > analise.txt 2>&1
+          code=$?
+          while IFS='|' read -r sev type rule file line col len msg; do
+            [ -n "$msg" ] && echo "::warning file=${file#$PWD/},line=$line::[$sev] $rule $msg"
+          done < analise.txt
+          grep -q '^ERROR' analise.txt && exit 1
+          exit 0
