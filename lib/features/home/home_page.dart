@@ -50,6 +50,7 @@ class HomePage extends StatelessWidget {
       title: 'Criar Anúncio',
       description: 'Crie peças para campanhas e redes sociais.',
       page: AdsPage(),
+      available: true,
     ),
     _CreationTool(
       icon: Icons.auto_awesome_outlined,
