@@ -5,6 +5,7 @@ import {
   buildAdCopyInstruction,
   createAdCopyService,
   normalizeAdCopy,
+  sanitizeForbiddenTerms,
   validateAdCopyRequest,
 } from '../ads/ad-copy-service.mjs';
 import { createServer } from '../server.mjs';
@@ -125,7 +126,6 @@ test('checagem aponta promessas arriscadas e preço não informado', () => {
     }],
   });
   const messages = normalizeAdCopy(raw, request).review.warnings.map((w) => w.message).join('\n');
-  assert.match(messages, /ouro maciço/);
   assert.match(messages, /antialérgica/);
   assert.match(messages, /melhor do Brasil/);
   assert.match(messages, /frete grátis/);
@@ -143,6 +143,34 @@ test('foto expirada vira 404 amigável', async () => {
   const { impl } = fakeFetch(geminiCopy());
   const service = createAdCopyService({ apiKey: 'k', fetchImpl: impl, assetStore: { readImage: async () => null } });
   await assert.rejects(service.generate(basePayload), (error) => error.status === 404);
+});
+
+test('ouro maciço/puro nunca aparece: é trocado automaticamente', () => {
+  assert.equal(sanitizeForbiddenTerms('Brinco de ouro maciço'), 'Brinco com banho de ouro');
+  assert.equal(sanitizeForbiddenTerms('Peça em Ouro Puro'), 'Peça com banho de ouro');
+  assert.equal(sanitizeForbiddenTerms('Brilho do ouro maciço'), 'Brilho do banho de ouro');
+  assert.equal(sanitizeForbiddenTerms('Banhado a ouro 18k'), 'Banhado a ouro 18k');
+
+  const request = validateAdCopyRequest({
+    product: { name: 'Colar', details: 'dourado' }, platforms: ['instagram'], variants: 1,
+  });
+  const raw = geminiCopy({
+    platforms: [{
+      platform: 'instagram',
+      variants: [{
+        angle: 'luxo',
+        headline: 'Colar de ouro maciço',
+        caption: 'Feito em ouro puro.',
+        cta: 'Compre',
+        hashtags: ['#ouromaciço', '#semijoias'],
+      }],
+    }],
+  });
+  const copy = normalizeAdCopy(raw, request);
+  const all = JSON.stringify(copy);
+  assert.doesNotMatch(all, /ouro\s*(maci|pur)/i);
+  assert.deepEqual(copy.platforms[0].variants[0].hashtags, ['#semijoias']);
+  assert.ok(!copy.review.warnings.some((w) => /maciço/.test(w.message)));
 });
 
 // ---------- rota HTTP ----------

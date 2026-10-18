@@ -282,8 +282,19 @@ export function reviewAdCopy(copy, request) {
 }
 
 // ---------- Normalização dos limites de cada plataforma ----------
+// Termos que nunca devem aparecer no anúncio: são trocados automaticamente.
+const FORBIDDEN_TERMS = [
+  { pattern: /\b(de|em)\s+ouro\s+(maci[çc]o|puro|maci[çc]a|pura)\b/giu, replacement: 'com banho de ouro' },
+  { pattern: /\bouro\s+(maci[çc]o|puro|maci[çc]a|pura)\b/giu, replacement: 'banho de ouro' },
+];
+
+export function sanitizeForbiddenTerms(value) {
+  if (typeof value !== 'string') return value;
+  return FORBIDDEN_TERMS.reduce((text, rule) => text.replace(rule.pattern, rule.replacement), value);
+}
+
 function clip(value, max) {
-  const s = typeof value === 'string' ? value.trim() : '';
+  const s = typeof value === 'string' ? sanitizeForbiddenTerms(value).trim() : '';
   if (s.length <= max) return s;
   const cut = s.slice(0, max - 1);
   const lastSpace = cut.lastIndexOf(' ');
@@ -299,6 +310,7 @@ function list(value, max, itemMax = 300) {
 
 function normalizeHashtag(tag) {
   const cleaned = tag.normalize('NFC').replace(/^#+/, '').replace(/[^\p{L}\p{N}_]/gu, '');
+  if (/ouro(maci[çc][oa]|pur[oa])/iu.test(cleaned)) return '';
   return cleaned ? `#${cleaned.toLowerCase()}` : '';
 }
 
