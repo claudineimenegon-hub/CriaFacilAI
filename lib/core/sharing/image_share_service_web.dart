@@ -27,8 +27,7 @@ JSObject _toFile(ShareableImage image) => _newJs('File', [
 class _WebImageShareService implements ImageShareService {
   bool _canShare(JSObject data) {
     try {
-      final result = _navigator.callMethod<JSAny?>('canShare'.toJS, data);
-      return result is JSBoolean && result.toDart;
+      return _navigator.callMethod<JSBoolean>('canShare'.toJS, data).toDart;
     } catch (_) {
       return false;
     }
