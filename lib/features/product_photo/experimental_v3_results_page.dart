@@ -1,7 +1,16 @@
 import 'package:flutter/material.dart';
 
+import '../../core/sharing/image_share_service.dart';
 import 'domain/experimental_v3_generation_service.dart';
 import 'generation_duration_formatter.dart';
+import 'image_viewer_page.dart';
+
+const _fileNames = <String, String>{
+  'hero_commercial': 'hero-comercial',
+  'contextual_lifestyle': 'lifestyle',
+  'editorial_craft_detail': 'detalhes-editorial',
+  'concept_campaign': 'campanha-conceitual',
+};
 
 const _roles = <String, String>{
   'hero_commercial': 'Hero Comercial',
@@ -30,6 +39,33 @@ class ExperimentalV3ResultsPage extends StatelessWidget {
           builder: (context, snapshot) {
             final values = snapshot.data;
             final error = snapshot.hasError;
+            final stamp = DateTime.now().millisecondsSinceEpoch;
+            final ready = <({String role, ShareableImage image})>[
+              for (final role in _roles.keys)
+                if (values
+                        ?.where((item) => item.campaignRole == role)
+                        .firstOrNull
+                    case final result?
+                    when result.isCompleted && result.imageBytes != null)
+                  (
+                    role: role,
+                    image: ShareableImage(
+                      bytes: result.imageBytes!,
+                      fileName: 'criafacil-${_fileNames[role]}-$stamp',
+                    ),
+                  ),
+            ];
+            void openViewer(String role) {
+              final start = ready.indexWhere((item) => item.role == role);
+              if (start < 0) return;
+              ImageViewerPage.open(
+                context,
+                images: [for (final item in ready) item.image],
+                titles: [for (final item in ready) _roles[item.role]!],
+                initialIndex: start,
+              );
+            }
+
             return Column(
               children: [
                 Padding(
@@ -55,7 +91,7 @@ class ExperimentalV3ResultsPage extends StatelessWidget {
                             style: TextStyle(color: Colors.orangeAccent),
                           ),
                         )
-                      else
+                      else ...[
                         Expanded(
                           child: Text(
                             'Quatro campanhas concluídas em '
@@ -63,6 +99,13 @@ class ExperimentalV3ResultsPage extends StatelessWidget {
                             style: const TextStyle(color: Colors.greenAccent),
                           ),
                         ),
+                        if (ready.isNotEmpty)
+                          TextButton.icon(
+                            onPressed: () => openViewer(ready.first.role),
+                            icon: const Icon(Icons.download),
+                            label: const Text('Baixar'),
+                          ),
+                      ],
                     ],
                   ),
                 ),
@@ -89,6 +132,7 @@ class ExperimentalV3ResultsPage extends StatelessWidget {
                             snapshot.connectionState == ConnectionState.waiting,
                         result: result,
                         globalError: error,
+                        onTap: () => openViewer(role),
                       );
                     },
                   ),
@@ -108,7 +152,9 @@ class _ResultCard extends StatelessWidget {
     required this.loading,
     required this.result,
     required this.globalError,
+    this.onTap,
   });
+  final VoidCallback? onTap;
   final String title;
   final bool loading;
   final ExperimentalV3ImageResult? result;
@@ -117,9 +163,12 @@ class _ResultCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final image = result?.imageBytes;
+    final tappable = !loading && image != null && result!.isCompleted;
     return Card(
       clipBehavior: Clip.antiAlias,
-      child: Column(
+      child: InkWell(
+        onTap: tappable ? onTap : null,
+        child: Column(
         children: [
           Expanded(
             child: loading
@@ -160,7 +209,16 @@ class _ResultCard extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
+          if (tappable)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Toque para ampliar',
+                style: TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+            ),
         ],
+      ),
       ),
     );
   }
