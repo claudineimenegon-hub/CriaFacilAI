@@ -51,7 +51,10 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const VISUAL_SOURCE_KINDS = new Set(['full_set', 'isolated_item']);
 const ISOLATION_STATES = new Set(['isolated', 'contaminated', 'unknown']);
 const STRUCTURAL_FEATURE_PATTERN = /\b(?:closure|clasp|connector|attachment|fasten(?:er|ing)?|buckle|strap|hinge|hook|joint|terminal|extension chain|extender|cap|fecho|fechamento|conector|engate|fixa(?:ção|cao)|fivela|alça|alca|dobradiça|dobradica|gancho|junta|junção|juncao|terminal|corrente extensora|extensor|tampa)\b/i;
-const WEARABLE_FUNCTIONAL_TYPE_PATTERN = /\b(?:ear(?:ring)?|auricular|neck(?:lace)?|upper[ -]?torso|collar|pendant|finger|hand[ -]?worn|ring|wrist|watch|bracelet|bangle|face|head[ -]?worn|eyewear|glasses|spectacles|foot(?:wear)?|shoe|boot|sneaker|wearable|garment|clothing|apparel|dress|shirt|trouser|jacket|body[ -]?compatible)\b/i;
+// Aceita compostos (wristwatch, smartwatch, wristband) e plurais (earrings, rings,
+// bracelets, watches): antes, "wristwatch" não era reconhecido como vestível e
+// toda geração de relógio falhava na validação do Creative Director.
+const WEARABLE_FUNCTIONAL_TYPE_PATTERN = /\b(?:(?:wrist|smart|pocket)[ -]?watch|wrist[ -]?(?:band|worn)|ear(?:ring)?|auricular|neck(?:lace)?|upper[ -]?torso|collar|pendant|finger|hand[ -]?worn|ring|wrist|watch|bracelet|bangle|anklet|choker|brooch|face|head[ -]?worn|eyewear|glasses|spectacles|sunglasses|foot(?:wear)?|shoe|boot|sneaker|sandal|wearable|garment|clothing|apparel|dress|shirt|t-shirt|trouser|pant|jacket|body[ -]?compatible)(?:e?s)?\b/i;
 const defaultLogger = process.env.NODE_TEST_CONTEXT ? undefined : Object.freeze({
   info(event) { console.info(`[ExperimentalV3] ${JSON.stringify(event)}`); },
 });
@@ -355,10 +358,16 @@ export function buildCreativeDirectorV3Input({ analysis, request }) {
       subjectId, referenceId, relation, confidence,
     }));
   const [categoryAffordance, validContexts] = CATEGORY_SEMANTICS[request.category];
-  const wearableItemIds = items
+  const detectedWearableItemIds = items
     .filter(({ functionalType }) => WEARABLE_FUNCTIONAL_TYPE_PATTERN.test(functionalType))
     .map(({ id }) => id);
-  const identityConfirmsWearable = wearableItemIds.length > 0;
+  // Categoria vestível escolhida pelo usuário (joias, relógios, roupas...) mas nenhum
+  // nome reconhecido: confia na categoria. Sem isso, o Lifestyle exige uso no corpo
+  // sem nenhum item autorizado e TODA tentativa (OpenAI e fallback) é rejeitada.
+  const wearableItemIds = detectedWearableItemIds.length === 0 && categoryAffordance === 'wearable'
+    ? items.map(({ id }) => id)
+    : detectedWearableItemIds;
+  const identityConfirmsWearable = detectedWearableItemIds.length > 0;
   const effectiveAffordances = identityConfirmsWearable
     ? ['wearable'] : [categoryAffordance];
   const affordanceSource = identityConfirmsWearable

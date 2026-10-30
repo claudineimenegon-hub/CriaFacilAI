@@ -2,7 +2,7 @@ name: Checagem
 
 on:
   push:
-    branches: [robo-anuncios]
+    branches: [main, robo-anuncios, fotos-ampliar-baixar]
   pull_request:
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node --test test/ad-copy-service.test.mjs test/server.test.mjs
+      - run: node --test test/ad-copy-service.test.mjs test/server.test.mjs test/experimental-v3-wearable-detection.test.mjs
 
   app:
     runs-on: ubuntu-latest
@@ -30,8 +30,7 @@ jobs:
       - name: Analisar app
         run: |
           set +e
-          dart analyze --format=machine lib/features/ads lib/features/home > analise.txt 2>&1
-          code=$?
+          dart analyze --format=machine lib/features/ads lib/features/home lib/features/product_photo lib/core/sharing > analise.txt 2>&1
           while IFS='|' read -r sev type rule file line col len msg; do
             [ -n "$msg" ] && echo "::warning file=${file#$PWD/},line=$line::[$sev] $rule $msg"
           done < analise.txt
